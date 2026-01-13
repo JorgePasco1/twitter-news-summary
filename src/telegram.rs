@@ -16,10 +16,18 @@ pub async fn send_message(config: &Config, summary: &str) -> Result<()> {
 
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
     let message = format!(
-        "📰 *Twitter Summary*\n_{}_\n\n{}",
+        "📰 <b>Twitter Summary</b>\n<i>{}</i>\n\n{}",
         timestamp,
         summary
     );
+
+    // Save to run-history folder for debugging
+    let filename = format!(
+        "run-history/summary_{}.txt",
+        Utc::now().format("%Y%m%d_%H%M%S")
+    );
+    std::fs::write(&filename, &message)
+        .context(format!("Failed to write summary to {}", filename))?;
 
     // Telegram Bot API endpoint
     let url = format!(
@@ -30,7 +38,7 @@ pub async fn send_message(config: &Config, summary: &str) -> Result<()> {
     let request = SendMessageRequest {
         chat_id: config.telegram_chat_id.clone(),
         text: message,
-        parse_mode: "Markdown".to_string(),
+        parse_mode: "HTML".to_string(),
     };
 
     let response = client

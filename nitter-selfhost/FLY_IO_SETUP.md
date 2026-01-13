@@ -416,6 +416,30 @@ If you want password protection on your RSS feeds:
 - [Fly.io Documentation](https://fly.io/docs/)
 - [Official Nitter Fly.io Guide](https://github.com/sekai-soft/guide-nitter-self-hosting/blob/master/docs/fly-io.md)
 
+## Rate Limiting
+
+**Important**: With a single Twitter account session, you may encounter rate limiting (HTTP 429) when fetching many RSS feeds simultaneously.
+
+**Solutions:**
+
+1. **Sequential fetching with delays** (already implemented in the Rust app):
+   - Fetches one account at a time with 3-second delays
+   - For 34 accounts: ~2-3 minutes total
+   - No rate limit errors!
+
+2. **Add more Twitter account sessions** (optional):
+   ```bash
+   cd /path/to/nitter/tools
+   python3 create_session_browser.py 'username2' 'password2' 'totp2' --append ../sessions.jsonl
+
+   # Copy to deployment
+   cp ../sessions.jsonl /path/to/nitter-fly/
+   cd /path/to/nitter-fly
+   flyctl deploy
+   ```
+
+3. **Reduce number of accounts**: Keep only your top 10-15 most important accounts
+
 ## Summary
 
 You now have:
@@ -423,6 +447,7 @@ You now have:
 - ✅ Accessible at `https://YOUR-APP-NAME.fly.dev`
 - ✅ Automatic HTTPS with valid certificates
 - ✅ Covered by $5/month credit
+- ✅ Built-in rate limit handling (3s delays)
 
 **Total monthly cost: $0** (covered by credit) 🎉
 

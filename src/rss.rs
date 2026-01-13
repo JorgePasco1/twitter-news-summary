@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
-use futures::future::join_all;
 use tracing::{info, warn};
 use crate::config::Config;
 use crate::twitter::Tweet;
@@ -22,31 +21,28 @@ pub async fn fetch_tweets_from_rss(config: &Config) -> Result<Vec<Tweet>> {
     // Find a working Nitter instance
     let working_instance = find_working_instance(config).await?;
     info!("Using Nitter instance: {}", working_instance);
-    info!("Fetching RSS feeds for {} users", usernames.len());
+    info!("Fetching RSS feeds for {} users (with 3s delay between requests)", usernames.len());
 
-    // Fetch RSS feeds for all users in parallel using the working instance
-    let fetch_tasks: Vec<_> = usernames
-        .iter()
-        .map(|username| fetch_user_rss(&working_instance, username))
-        .collect();
-
-    let results = join_all(fetch_tasks).await;
-
-    // Collect all tweets from successful fetches
+    // Fetch RSS feeds sequentially with delay to avoid rate limiting
     let mut all_tweets = Vec::new();
     let mut success_count = 0;
     let mut fail_count = 0;
 
-    for (username, result) in usernames.iter().zip(results.iter()) {
-        match result {
+    for (index, username) in usernames.iter().enumerate() {
+        match fetch_user_rss(&working_instance, username).await {
             Ok(tweets) => {
                 success_count += 1;
-                all_tweets.extend(tweets.clone());
+                all_tweets.extend(tweets);
             }
             Err(e) => {
                 fail_count += 1;
                 warn!("Failed to fetch RSS for @{}: {}", username, e);
             }
+        }
+
+        // Add 3-second delay between requests (except after the last one)
+        if index < usernames.len() - 1 {
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         }
     }
 
