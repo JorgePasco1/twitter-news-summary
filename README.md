@@ -17,6 +17,28 @@ A Rust application that fetches tweets from a Twitter list via RSS feeds, summar
 - ⏰ Runs automatically twice daily via GitHub Actions
 - 🦀 Written in Rust for reliability and performance
 
+## ⚠️ Important: Public Nitter Instances Have Issues
+
+**Public Nitter instances have anti-bot protection that blocks automated RSS access.** For reliable 24/7 operation (required for GitHub Actions), you should self-host your own Nitter instance.
+
+### 🚀 FREE 24/7 Hosting Options
+
+| Option | Cost | Setup Time | Best For |
+|--------|------|------------|----------|
+| [**Fly.io**](./nitter-selfhost/FLY_IO_SETUP.md) ⚡ | $0 (free credit) | 15 min | Easiest, automatic HTTPS |
+| [**Oracle Cloud**](./nitter-selfhost/ORACLE_CLOUD_SETUP.md) 🏆 | $0 forever | 60 min | Truly free, more resources |
+| [Local Docker](./nitter-selfhost/README.md) | $0 (electricity) | 5 min | Testing only |
+
+**📊 [See detailed comparison](./nitter-selfhost/HOSTING_COMPARISON.md)**
+
+**Quick start:**
+```bash
+cd nitter-selfhost
+# Read the setup guide for your chosen option
+```
+
+---
+
 ## Prerequisites
 
 ### Extract Twitter List Members
@@ -442,6 +464,36 @@ Use [crontab.guru](https://crontab.guru) to generate custom schedules.
   ✓ Found working instance: https://nitter.poast.org
   ```
 - RSS feeds may be 5-10 minutes delayed (this is normal when working)
+
+### Self-Hosting Nitter (Recommended Solution)
+
+**Problem:** Public Nitter instances often have anti-bot protection that blocks automated RSS access.
+
+**Solution:** Self-host your own Nitter instance for unlimited, reliable RSS access!
+
+**Benefits:**
+- ✅ No bot detection or rate limits
+- ✅ Completely free (just need a free Twitter account)
+- ✅ **No Twitter API keys needed**
+- ✅ Runs locally via Docker
+- ✅ Takes ~10 minutes to set up
+
+**Quick Setup:**
+
+```bash
+cd nitter-selfhost
+
+# Follow the README.md in that directory for detailed setup instructions
+# Quick steps:
+# 1. Clone Nitter repo to get session creation tool
+# 2. Create session tokens from your Twitter account
+# 3. Run: ./setup.sh
+# 4. Update .env: NITTER_INSTANCE=http://localhost:8080
+```
+
+**See `nitter-selfhost/README.md` for complete setup guide.**
+
+This is the most reliable solution if public instances are having issues. You'll have your own private Nitter instance with zero restrictions!
 
 ### Telegram Not Receiving Messages
 - Ensure you've started a chat with your bot (send any message first)
