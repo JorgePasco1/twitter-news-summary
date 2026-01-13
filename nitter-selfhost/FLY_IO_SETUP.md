@@ -265,6 +265,201 @@ cd /path/to/twitter-news-summary
 make run
 ```
 
+## Step 12: Secure Your Instance (Optional but Recommended)
+
+By default, your Nitter instance is publicly accessible. To restrict access to only your GitHub Actions workflow, add API key authentication.
+
+### Why Secure It?
+
+- ✅ Prevents unauthorized users from using your instance
+- ✅ Protects your Twitter session tokens from abuse
+- ✅ Ensures your Nitter instance only serves your application
+- ✅ Simple to implement (no Fly.io native IP filtering needed)
+
+### Implementation Options
+
+**Option A: Using Caddy (Easiest)**
+
+1. **Update your Dockerfile** to use Caddy as a reverse proxy:
+
+```bash
+cat > Dockerfile << 'EOF'
+FROM caddy:2-alpine AS caddy
+FROM zedeus/nitter:latest
+
+# Install Caddy
+COPY --from=caddy /usr/bin/caddy /usr/local/bin/caddy
+
+# Copy configuration files
+COPY nitter.conf /src/nitter.conf
+COPY sessions.jsonl /src/sessions.jsonl
+COPY Caddyfile /etc/caddy/Caddyfile
+COPY start.sh /start.sh
+
+RUN chmod +x /start.sh
+
+EXPOSE 8080
+CMD ["/start.sh"]
+EOF
+```
+
+2. **Create Caddyfile** with API key validation:
+
+```bash
+cat > Caddyfile << 'EOF'
+:8080 {
+    @rss path_regexp ^/[^/]+/rss$
+
+    handle @rss {
+        @nokey not header X-API-Key {env.NITTER_API_KEY}
+        respond @nokey "Forbidden" 403
+        reverse_proxy localhost:8081
+    }
+
+    handle {
+        reverse_proxy localhost:8081
+    }
+}
+EOF
+```
+
+3. **Create startup script** to run both Nitter and Caddy:
+
+```bash
+cat > start.sh << 'EOF'
+#!/bin/sh
+
+# Start Nitter on port 8081
+cd /src
+nitter --port=8081 &
+
+# Start Caddy on port 8080 (exposed port)
+caddy run --config /etc/caddy/Caddyfile
+EOF
+```
+
+4. **Generate a secure API key**:
+
+```bash
+openssl rand -hex 32
+# Example output: a1b2c3d4e5f6...
+```
+
+5. **Set the API key as a Fly.io secret**:
+
+```bash
+flyctl secrets set NITTER_API_KEY="YOUR_GENERATED_KEY_HERE"
+```
+
+6. **Update your local `.env`** file:
+
+```bash
+NITTER_API_KEY=YOUR_GENERATED_KEY_HERE
+```
+
+7. **Set GitHub Secret** (Settings → Secrets → Actions → New secret):
+   - Name: `NITTER_API_KEY`
+   - Value: `YOUR_GENERATED_KEY_HERE`
+
+8. **Redeploy**:
+
+```bash
+flyctl deploy
+```
+
+**Option B: Using Nginx**
+
+1. **Update your Dockerfile**:
+
+```bash
+cat > Dockerfile << 'EOF'
+FROM nginx:alpine AS nginx
+FROM zedeus/nitter:latest
+
+# Install nginx
+COPY --from=nginx /usr/sbin/nginx /usr/sbin/nginx
+COPY --from=nginx /etc/nginx /etc/nginx
+
+# Copy configuration files
+COPY nitter.conf /src/nitter.conf
+COPY sessions.jsonl /src/sessions.jsonl
+COPY nginx.conf /etc/nginx/nginx.conf
+COPY start.sh /start.sh
+
+RUN chmod +x /start.sh
+
+EXPOSE 8080
+CMD ["/start.sh"]
+EOF
+```
+
+2. **Create nginx.conf** with API key validation:
+
+```bash
+cat > nginx.conf << 'EOF'
+events {
+    worker_connections 1024;
+}
+
+http {
+    server {
+        listen 8080;
+
+        location ~ ^/[^/]+/rss$ {
+            if ($http_x_api_key != "${NITTER_API_KEY}") {
+                return 403;
+            }
+            proxy_pass http://localhost:8081;
+        }
+
+        location / {
+            proxy_pass http://localhost:8081;
+        }
+    }
+}
+EOF
+```
+
+3. **Create startup script**:
+
+```bash
+cat > start.sh << 'EOF'
+#!/bin/sh
+
+# Substitute environment variables in nginx config
+envsubst '${NITTER_API_KEY}' < /etc/nginx/nginx.conf > /tmp/nginx.conf
+
+# Start Nitter on port 8081
+cd /src
+nitter --port=8081 &
+
+# Start nginx on port 8080
+nginx -c /tmp/nginx.conf -g 'daemon off;'
+EOF
+```
+
+4. **Follow steps 4-8 from Option A** (generate key, set secrets, deploy)
+
+### Verify Security
+
+Test that unauthorized access is blocked:
+
+```bash
+# Without API key - should fail with 403
+curl https://YOUR-APP-NAME.fly.dev/OpenAI/rss
+
+# With API key - should succeed
+curl -H "X-API-Key: YOUR_GENERATED_KEY_HERE" \
+  https://YOUR-APP-NAME.fly.dev/OpenAI/rss
+```
+
+### Benefits
+
+- **No shared IP ranges**: Unlike IP allowlisting with GitHub Actions IPs (thousands of shared addresses)
+- **Simple rotation**: Generate new key, update secrets, redeploy
+- **Fly.io native**: Uses Fly.io secrets management (encrypted, secure)
+- **Cost**: $0 (no additional charges)
+
 ## Check Your Costs
 
 ```bash
@@ -404,11 +599,12 @@ flyctl scale memory 256
 flyctl scale count 1
 ```
 
-## Alternative: Official Nitter Fly Guide
+## Alternative Guides
 
-If you want password protection on your RSS feeds:
+**For HTTP Basic Auth instead of API keys:**
 - Follow: https://github.com/sekai-soft/guide-nitter-self-hosting/blob/master/docs/fly-io.md
-- Adds nginx with HTTP basic auth and RSS password protection
+- Uses nginx with HTTP basic auth (username/password) instead of API key headers
+- May require modifying the Rust HTTP client to support basic auth
 
 ## Resources
 
@@ -448,7 +644,8 @@ You now have:
 - ✅ Automatic HTTPS with valid certificates
 - ✅ Covered by $5/month credit
 - ✅ Built-in rate limit handling (3s delays)
+- ✅ Optional API key security to restrict access
 
 **Total monthly cost: $0** (covered by credit) 🎉
 
-**Setup time: ~15 minutes** ⚡
+**Setup time: ~15 minutes** (+ ~10 minutes for optional security) ⚡
