@@ -378,21 +378,40 @@ make clean       # Clean build artifacts
    - `HOURS_LOOKBACK` (default: `12`)
    - `NITTER_INSTANCE` (default: `https://nitter.net`)
 
-5. The workflow runs at 8am and 6pm UTC. Adjust the cron schedule in `.github/workflows/summarize.yml` as needed.
+5. The workflow runs at **8am and 8pm Peru time (UTC-5)** by default. See [Schedule Customization](#schedule-customization) to adjust for your timezone.
 
 ## Schedule Customization
 
-Edit the cron expressions in `.github/workflows/summarize.yml`:
+The default schedule is **8am and 8pm Peru time (UTC-5)**:
+- 8am Peru = 1pm UTC
+- 8pm Peru = 1am UTC
 
-```yaml
-on:
-  schedule:
-    # Format: minute hour day month weekday
-    - cron: '0 8 * * *'   # 8:00 AM UTC
-    - cron: '0 18 * * *'  # 6:00 PM UTC
-```
+**To customize for your timezone:**
 
-Use [crontab.guru](https://crontab.guru) to generate custom schedules.
+1. Convert your desired times to UTC:
+   - Example: 9am EST (UTC-5 in winter) = 2pm UTC
+   - Example: 10am PST (UTC-8) = 6pm UTC
+   - Tool: Use [Time Zone Converter](https://www.timeanddate.com/worldclock/converter.html)
+
+2. Edit `.github/workflows/summarize.yml`:
+   ```yaml
+   on:
+     schedule:
+       # Format: 'minute hour day month weekday' (all in UTC)
+       - cron: '0 13 * * *'  # 8am Peru time (1pm UTC)
+       - cron: '0 1 * * *'   # 8pm Peru time (1am UTC next day)
+   ```
+
+3. Use [crontab.guru](https://crontab.guru) to validate your cron expressions
+
+**Common timezone conversions to UTC:**
+| Your Time | Your Timezone | UTC Cron |
+|-----------|---------------|----------|
+| 8am | Peru (UTC-5) | `'0 13 * * *'` |
+| 8pm | Peru (UTC-5) | `'0 1 * * *'` |
+| 9am | EST (UTC-5) | `'0 14 * * *'` |
+| 9am | PST (UTC-8) | `'0 17 * * *'` |
+| 8am | CET (UTC+1) | `'0 7 * * *'` |
 
 ## Project Structure
 
