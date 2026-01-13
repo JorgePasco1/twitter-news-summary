@@ -18,6 +18,10 @@ dotenvy = "0.15"
 rss = "2.0"
 futures = "0.3"
 
+[lib]
+name = "twitter_news_summary"
+path = "src/lib.rs"
+
 [[bin]]
 name = "export"
 path = "src/bin/fetch_list_members.rs"

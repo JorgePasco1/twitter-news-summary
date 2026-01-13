@@ -2,27 +2,27 @@
 
 A Rust application that fetches tweets from a Twitter list via RSS feeds, summarizes them using OpenAI, and sends the summary via Telegram.
 
-**Hybrid Approach**: One-time Twitter API export + ongoing RSS fetching (no API quota limits!)
+**Hybrid Approach**: Fetches list members from Twitter API, then gets tweets from RSS feeds (avoids tweet quota limits!)
 
 ## Features
 
 - 📰 Fetches recent tweets from Twitter list members via RSS
-- 🚀 **No Twitter API quota limits** - uses free Nitter RSS feeds
+- 🚀 **Avoids tweet quota limits** - uses free Nitter RSS feeds for tweets
+- 🔄 **Always up-to-date** - fetches current list members dynamically
 - 🤖 Generates concise summaries using OpenAI GPT
 - 📱 Delivers summaries via Telegram
 - ⏰ Runs automatically twice daily via GitHub Actions
 - 🦀 Written in Rust for reliability and performance
-- 💰 **Free forever** - only uses Twitter API once to export list members
 
 ## Prerequisites
 
-### Twitter API (One-Time Setup Only)
+### Twitter API
 1. Create a [Twitter Developer account](https://developer.twitter.com/en/portal/dashboard)
 2. Create a project and app
 3. Generate a Bearer Token (OAuth 2.0 App-Only)
 4. Find your list ID from the list URL: `twitter.com/i/lists/[LIST_ID]`
 
-**Note**: You only need the Twitter API to export your list members once. After that, the app uses free RSS feeds!
+**Note**: The app fetches list members from Twitter API each run (1-2 API calls), then gets tweets from free Nitter RSS feeds
 
 ### OpenAI API
 1. Create an [OpenAI account](https://platform.openai.com)
@@ -38,8 +38,6 @@ A Rust application that fetches tweets from a Twitter list via RSS feeds, summar
 
 ## Local Development
 
-### Step 1: One-Time List Export
-
 ```bash
 # Clone the repository
 git clone https://github.com/yourusername/twitter-news-summary.git
@@ -48,28 +46,21 @@ cd twitter-news-summary
 # Copy environment template
 cp .env.example .env
 
-# Edit .env with Twitter credentials (for one-time export)
+# Edit .env with all credentials
 vim .env
-# Add: TWITTER_BEARER_TOKEN and TWITTER_LIST_ID
-
-# Export list members to data/usernames.txt
-make export
-# Or: cargo run --bin export
-```
-
-### Step 2: Configure and Run
-
-```bash
-# Add remaining credentials to .env
-vim .env
-# Add: OPENAI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-# Optionally: NITTER_INSTANCE, MAX_TWEETS, HOURS_LOOKBACK
-
-# You can now remove TWITTER_BEARER_TOKEN and TWITTER_LIST_ID from .env
+# Required: TWITTER_BEARER_TOKEN, TWITTER_LIST_ID, OPENAI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# Optional: NITTER_INSTANCE, MAX_TWEETS, HOURS_LOOKBACK
 
 # Run the summary job
 make run
 # Or: cargo run
+```
+
+### Optional: Cache List Members
+
+If you want to cache list members to reduce API calls:
+```bash
+make export    # Saves to data/usernames.txt (not used by main app)
 ```
 
 ### Available Commands
@@ -88,10 +79,9 @@ make clean       # Clean build artifacts
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `TWITTER_BEARER_TOKEN` | One-time only | - | OAuth 2.0 Bearer Token (only for list export) |
-| `TWITTER_LIST_ID` | One-time only | - | Numeric list ID (only for list export) |
+| `TWITTER_BEARER_TOKEN` | Yes | - | OAuth 2.0 Bearer Token for list members |
+| `TWITTER_LIST_ID` | Yes | - | Numeric list ID from list URL |
 | `NITTER_INSTANCE` | No | `https://nitter.net` | Nitter instance URL for RSS feeds |
-| `USERNAMES_FILE` | No | `data/usernames.txt` | Path to exported usernames file |
 | `OPENAI_API_KEY` | Yes | - | API key from OpenAI |
 | `OPENAI_MODEL` | No | `gpt-4o-mini` | OpenAI model to use for summarization |
 | `TELEGRAM_BOT_TOKEN` | Yes | - | Bot token from @BotFather |
@@ -102,22 +92,14 @@ make clean       # Clean build artifacts
 
 ## GitHub Actions Setup
 
-### Important: First Export List Members Locally
-
-Before setting up GitHub Actions, you must:
-1. Run `make export` (or `cargo run --bin export`) locally
-2. Commit the generated `data/usernames.txt` file to your repository
-
-### Configure GitHub Actions
-
 1. Go to your repository Settings → Secrets and variables → Actions
 
 2. Add the following **secrets**:
+   - `TWITTER_BEARER_TOKEN`
+   - `TWITTER_LIST_ID`
    - `OPENAI_API_KEY`
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_CHAT_ID`
-
-   **Note**: Twitter credentials are NOT needed for GitHub Actions!
 
 3. Optionally add **variables** for customization:
    - `OPENAI_MODEL` (default: `gpt-4o-mini`)

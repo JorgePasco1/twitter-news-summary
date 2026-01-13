@@ -20,13 +20,12 @@ pub struct Config {
 
     // RSS/Nitter
     pub nitter_instance: String,
-    pub usernames_file: String,
 }
 
 impl Config {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
-            // Twitter - using Bearer Token (OAuth 2.0 App-Only)
+            // Twitter - Bearer Token (OAuth 2.0 App-Only)
             twitter_bearer_token: std::env::var("TWITTER_BEARER_TOKEN")
                 .context("TWITTER_BEARER_TOKEN not set")?,
             twitter_list_id: std::env::var("TWITTER_LIST_ID")
@@ -57,8 +56,6 @@ impl Config {
             // RSS/Nitter
             nitter_instance: std::env::var("NITTER_INSTANCE")
                 .unwrap_or_else(|_| "https://nitter.net".to_string()),
-            usernames_file: std::env::var("USERNAMES_FILE")
-                .unwrap_or_else(|_| "data/usernames.txt".to_string()),
         })
     }
 }

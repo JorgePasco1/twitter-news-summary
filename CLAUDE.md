@@ -5,13 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 This is a Rust application that uses a **hybrid approach**:
-1. **One-time setup**: Exports Twitter list members via Twitter API v2
-2. **Ongoing**: Fetches tweets from Nitter RSS feeds (no API quota limits)
+1. **Each run**: Fetches list members from Twitter API v2 (1-2 API calls)
+2. **Tweet fetching**: Uses Nitter RSS feeds (unlimited, no API quota)
 3. Summarizes them using OpenAI's Chat Completions API
 4. Sends the summary via Telegram using Telegram Bot API
 5. Runs automatically twice daily via GitHub Actions (8am and 6pm UTC)
 
-**Key Benefit**: Only uses Twitter API once, then relies on free RSS feeds forever!
+**Key Benefit**: Avoids Twitter's tweet quota limits by using free RSS feeds. List always stays up-to-date!
 
 ## Common Commands
 
@@ -42,17 +42,15 @@ cargo clippy               # Run linter
 cp .env.example .env
 
 # Required environment variables (see .env.example for formats):
-# One-time setup only:
-# - TWITTER_BEARER_TOKEN (OAuth 2.0 App-Only, only for list export)
-# - TWITTER_LIST_ID (numeric ID from list URL, only for list export)
-#
-# Main application:
-# - NITTER_INSTANCE (defaults to https://nitter.net) - RSS feed source
-# - USERNAMES_FILE (defaults to data/usernames.txt) - Exported usernames
+# - TWITTER_BEARER_TOKEN (OAuth 2.0 App-Only, fetches list members each run)
+# - TWITTER_LIST_ID (numeric ID from list URL)
 # - OPENAI_API_KEY
-# - OPENAI_MODEL (defaults to gpt-4o-mini)
 # - TELEGRAM_BOT_TOKEN (from @BotFather on Telegram)
 # - TELEGRAM_CHAT_ID (numeric chat/user ID)
+#
+# Optional (with defaults):
+# - NITTER_INSTANCE (defaults to https://nitter.net) - RSS feed source
+# - OPENAI_MODEL (defaults to gpt-4o-mini)
 # - MAX_TWEETS (defaults to 50) - Maximum tweets to return per run
 # - HOURS_LOOKBACK (defaults to 12) - Time window for tweet filtering
 # - RUST_LOG (defaults to info)
@@ -70,26 +68,31 @@ cp .env.example .env
 ## Architecture
 
 ### Module Structure
-- `main.rs` - Entry point with 3-step orchestration flow
+- `main.rs` - Entry point with 4-step orchestration flow
 - `config.rs` - Environment variable loading and validation
+- `twitter.rs` - Twitter API v2 client for fetching list members dynamically
 - `rss.rs` - Nitter RSS feed fetcher (main tweet source)
-- `twitter.rs` - Twitter API v2 client (only used by export binary)
 - `openai.rs` - OpenAI chat completions for summarization
 - `telegram.rs` - Telegram Bot API messaging
-- `bin/fetch_list_members.rs` - One-time "export" binary to export list members
+- `bin/fetch_list_members.rs` - Optional "export" binary to cache list members to file
 
 ### Execution Flow (src/main.rs)
 1. Load configuration from environment variables
-2. Fetch tweets from RSS feeds (via `rss::fetch_tweets_from_rss`)
-   - Reads usernames from `data/usernames.txt`
-   - Fetches RSS feed for each username from Nitter
+2. Fetch list members from Twitter API (via `twitter::fetch_list_members`)
+   - Calls Twitter API v2 `/lists/{id}/members` endpoint
+   - Handles pagination to get all members
+   - Returns Vec of usernames
+   - Uses 1-2 API calls per run (well within free tier limits)
+3. Fetch tweets from RSS feeds (via `rss::fetch_tweets_from_rss`)
+   - Takes usernames from step 2 as input
+   - Fetches RSS feed for each username from Nitter in parallel
    - Filters to last `HOURS_LOOKBACK` (default 12) hours
    - Returns up to `MAX_TWEETS` (default 50) tweets
-3. If tweets exist, generate summary with OpenAI
-4. Send summary via Telegram with timestamp header
+4. If tweets exist, generate summary with OpenAI
+5. Send summary via Telegram with timestamp header
 
 ### RSS Integration (src/rss.rs) - Main Tweet Source
-- Reads usernames from `data/usernames.txt` file
+- Accepts usernames as parameter (from Twitter API fetch)
 - Fetches RSS feeds from Nitter instance for each username
 - Uses parallel fetching with `futures::join_all` for performance
 - Parses RSS XML using `rss` crate
@@ -99,13 +102,14 @@ cp .env.example .env
 - Returns up to `MAX_TWEETS` tweets
 - **No API quota limits** - unlimited free fetches
 
-### Twitter Integration (src/twitter.rs) - One-Time Export Only
-- **Only used by `bin/fetch_list_members.rs`** binary
+### Twitter Integration (src/twitter.rs) - List Member Fetching
+- **Used by both main application and export binary**
 - Uses Twitter API v2 `/lists/{id}/members` endpoint
 - Requires Bearer Token (OAuth 2.0 App-Only authentication)
 - Fetches all list members with pagination support
-- Extracts usernames and saves to `data/usernames.txt`
-- **Not used by main application** - only for initial setup
+- Returns Vec of usernames to be used for RSS fetching
+- Main app calls this each run to keep list up-to-date (1-2 API calls)
+- Export binary optionally saves results to `data/usernames.txt` for reference
 
 ### OpenAI Summarization (src/openai.rs)
 - Uses Chat Completions API (`/v1/chat/completions`)
@@ -135,11 +139,13 @@ cp .env.example .env
 
 ## Important Notes
 
-### Twitter API Requirements (One-Time Only)
+### Twitter API Requirements
 - Bearer Token must have read access to lists
 - List must be public OR use OAuth 2.0 User Context for private lists
 - List ID is numeric and found in URL: `twitter.com/i/lists/{id}`
-- **Only needed once** to export list members via `make export` or `cargo run --bin export`
+- **Required for each run** - fetches current list members dynamically (1-2 API calls per run)
+- Well within free tier limits (10,000 requests/month for list members endpoint)
+- Optional: Export binary (`make export`) caches members to file for reference
 
 ### Nitter/RSS Setup
 - Primary instance: `https://nitter.net`

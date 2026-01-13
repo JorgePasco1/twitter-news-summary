@@ -1,25 +1,13 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use futures::future::join_all;
-use std::fs;
 use tracing::{info, warn};
 use crate::config::Config;
 use crate::twitter::Tweet;
 
 /// Fetch tweets from Nitter RSS feeds
-pub async fn fetch_tweets_from_rss(config: &Config) -> Result<Vec<Tweet>> {
-    // Read usernames from file
-    let usernames_content = fs::read_to_string(&config.usernames_file)
-        .context("Failed to read usernames file. Run 'cargo run --bin fetch_list_members' first")?;
-
-    let usernames: Vec<String> = usernames_content
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    info!("Loaded {} usernames from {}", usernames.len(), config.usernames_file);
-    info!("Fetching RSS feeds from Nitter instance: {}", config.nitter_instance);
+pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Result<Vec<Tweet>> {
+    info!("Fetching RSS feeds for {} users from {}", usernames.len(), config.nitter_instance);
 
     // Fetch RSS feeds for all users in parallel
     let fetch_tasks: Vec<_> = usernames
