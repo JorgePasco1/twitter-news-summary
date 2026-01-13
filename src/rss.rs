@@ -24,9 +24,10 @@ pub async fn fetch_tweets_from_rss(config: &Config) -> Result<Vec<Tweet>> {
         anyhow::bail!(
             "Nitter instance {} is not responding or returning invalid RSS feeds.\n\
             Please check:\n\
-            1. Your Nitter instance is running (e.g., https://nitter-fly.fly.dev/)\n\
-            2. You can access it in a browser\n\
+            1. Your Nitter instance is running (accessible in browser)\n\
+            2. You can access it: {}\n\
             3. RSS feeds work: {}/OpenAI/rss",
+            config.nitter_instance,
             config.nitter_instance,
             config.nitter_instance
         );
@@ -65,7 +66,7 @@ pub async fn fetch_tweets_from_rss(config: &Config) -> Result<Vec<Tweet>> {
     if success_count == 0 && fail_count > 0 {
         warn!("All RSS fetches failed! Check your Nitter instance: {}", config.nitter_instance);
         warn!("Verify it's accessible: {}/OpenAI/rss", config.nitter_instance);
-        warn!("If it's down, check your Fly.io deployment: flyctl status --app nitter-fly");
+        warn!("If using Fly.io, check deployment: flyctl status --app <your-app-name>");
     }
 
     // Sort by date (newest first)

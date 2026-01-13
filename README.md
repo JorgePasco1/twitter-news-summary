@@ -306,7 +306,7 @@ RUST_LOG=info
 **Nitter RSS errors:**
 - Make sure your self-hosted Nitter instance is running
 - Test it in browser: `https://YOUR-NITTER-INSTANCE/OpenAI/rss`
-- If using Fly.io, check status: `flyctl status --app nitter-fly`
+- If using Fly.io, check status: `flyctl status --app your-nitter-app`
 
 ### Update List Members
 
@@ -382,7 +382,7 @@ make clean       # Clean build artifacts
    - `TELEGRAM_CHAT_ID`
 
 4. Add **required variables**:
-   - `NITTER_INSTANCE` - Your self-hosted Nitter URL (e.g., `https://nitter-fly.fly.dev`)
+   - `NITTER_INSTANCE` - Your self-hosted Nitter URL (e.g., `https://your-nitter.fly.dev`)
 
 5. Optionally add **variables** for customization:
    - `USERNAMES_FILE` (default: `data/usernames.txt`)
@@ -487,19 +487,19 @@ The default schedule is **8am and 8pm Peru time (UTC-5)**:
   curl -s "https://YOUR-NITTER-INSTANCE/OpenAI/rss" | head -10
 
   # If using Fly.io
-  flyctl status --app nitter-fly
-  flyctl logs --app nitter-fly
+  flyctl status --app your-nitter-app
+  flyctl logs --app your-nitter-app
   ```
 - **Verify NITTER_INSTANCE is set correctly:**
   ```bash
   # In .env file
-  NITTER_INSTANCE=https://nitter-fly.fly.dev
+  NITTER_INSTANCE=https://your-nitter.fly.dev
 
   # In GitHub repository variables
   Settings → Secrets and variables → Actions → Variables → NITTER_INSTANCE
   ```
 - **If your instance is down:**
-  - Restart it: `flyctl apps restart nitter-fly`
+  - Restart it: `flyctl apps restart your-nitter-app`
   - Check the deployment guide: [nitter-selfhost/FLY_IO_SETUP.md](./nitter-selfhost/FLY_IO_SETUP.md)
 - RSS feeds may be 5-10 minutes delayed (this is normal when working)
 
