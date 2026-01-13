@@ -1,5 +1,6 @@
 mod config;
 mod openai;
+mod rss;
 mod telegram;
 mod twitter;
 
@@ -24,9 +25,9 @@ async fn main() -> Result<()> {
     // Load configuration from environment
     let config = config::Config::from_env()?;
 
-    // Step 1: Fetch tweets from the Twitter list
-    info!("Fetching tweets from list: {}", config.twitter_list_id);
-    let tweets = twitter::fetch_list_tweets(&config).await?;
+    // Step 1: Fetch tweets from RSS feeds
+    info!("Fetching tweets from RSS feeds");
+    let tweets = rss::fetch_tweets_from_rss(&config).await?;
     
     if tweets.is_empty() {
         info!("No tweets found in the last period, skipping summary");

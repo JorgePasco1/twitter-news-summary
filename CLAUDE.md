@@ -4,30 +4,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Rust application that:
-1. Fetches tweets from a Twitter list using Twitter API v2
-2. Summarizes them using OpenAI's Chat Completions API
-3. Sends the summary via Telegram using Telegram Bot API
-4. Runs automatically twice daily via GitHub Actions (8am and 6pm UTC)
+This is a Rust application that uses a **hybrid approach**:
+1. **One-time setup**: Exports Twitter list members via Twitter API v2
+2. **Ongoing**: Fetches tweets from Nitter RSS feeds (no API quota limits)
+3. Summarizes them using OpenAI's Chat Completions API
+4. Sends the summary via Telegram using Telegram Bot API
+5. Runs automatically twice daily via GitHub Actions (8am and 6pm UTC)
+
+**Key Benefit**: Only uses Twitter API once, then relies on free RSS feeds forever!
 
 ## Common Commands
 
 ### Development
+
+**Using Makefile (recommended):**
 ```bash
-# Run the application locally
-cargo run
+make help        # Show all available commands
+make export      # Export Twitter list members (one-time)
+make run         # Run the news summary job
+make build       # Build release binary
+make check       # Check code
+```
 
-# Build release binary (optimized for size)
-cargo build --release
-
-# Check code without building
-cargo check
-
-# Format code
-cargo fmt
-
-# Run linter
-cargo clippy
+**Using Cargo directly:**
+```bash
+cargo run --bin export    # Export Twitter list members
+cargo run                  # Run the main application
+cargo build --release      # Build release binary
+cargo check                # Check code
+cargo fmt                  # Format code
+cargo clippy               # Run linter
 ```
 
 ### Environment Setup
@@ -36,13 +42,18 @@ cargo clippy
 cp .env.example .env
 
 # Required environment variables (see .env.example for formats):
-# - TWITTER_BEARER_TOKEN (OAuth 2.0 App-Only from Twitter Developer Portal)
-# - TWITTER_LIST_ID (numeric ID from list URL: twitter.com/i/lists/[ID])
+# One-time setup only:
+# - TWITTER_BEARER_TOKEN (OAuth 2.0 App-Only, only for list export)
+# - TWITTER_LIST_ID (numeric ID from list URL, only for list export)
+#
+# Main application:
+# - NITTER_INSTANCE (defaults to https://nitter.net) - RSS feed source
+# - USERNAMES_FILE (defaults to data/usernames.txt) - Exported usernames
 # - OPENAI_API_KEY
 # - OPENAI_MODEL (defaults to gpt-4o-mini)
 # - TELEGRAM_BOT_TOKEN (from @BotFather on Telegram)
 # - TELEGRAM_CHAT_ID (numeric chat/user ID)
-# - MAX_TWEETS (defaults to 50) - Maximum tweets to fetch per run
+# - MAX_TWEETS (defaults to 50) - Maximum tweets to return per run
 # - HOURS_LOOKBACK (defaults to 12) - Time window for tweet filtering
 # - RUST_LOG (defaults to info)
 ```
@@ -61,24 +72,40 @@ cp .env.example .env
 ### Module Structure
 - `main.rs` - Entry point with 3-step orchestration flow
 - `config.rs` - Environment variable loading and validation
-- `twitter.rs` - Twitter API v2 client for fetching list tweets
+- `rss.rs` - Nitter RSS feed fetcher (main tweet source)
+- `twitter.rs` - Twitter API v2 client (only used by export binary)
 - `openai.rs` - OpenAI chat completions for summarization
 - `telegram.rs` - Telegram Bot API messaging
+- `bin/fetch_list_members.rs` - One-time "export" binary to export list members
 
 ### Execution Flow (src/main.rs)
 1. Load configuration from environment variables
-2. Fetch up to `MAX_TWEETS` (default 50) tweets from last `HOURS_LOOKBACK` (default 12) hours
+2. Fetch tweets from RSS feeds (via `rss::fetch_tweets_from_rss`)
+   - Reads usernames from `data/usernames.txt`
+   - Fetches RSS feed for each username from Nitter
+   - Filters to last `HOURS_LOOKBACK` (default 12) hours
+   - Returns up to `MAX_TWEETS` (default 50) tweets
 3. If tweets exist, generate summary with OpenAI
 4. Send summary via Telegram with timestamp header
 
-### Twitter Integration (src/twitter.rs)
-- Uses Twitter API v2 `/lists/{id}/tweets` endpoint
+### RSS Integration (src/rss.rs) - Main Tweet Source
+- Reads usernames from `data/usernames.txt` file
+- Fetches RSS feeds from Nitter instance for each username
+- Uses parallel fetching with `futures::join_all` for performance
+- Parses RSS XML using `rss` crate
+- Converts RSS items to `Tweet` struct (compatible with existing code)
+- Client-side filtering by `HOURS_LOOKBACK` time window
+- Sorts tweets by date (newest first)
+- Returns up to `MAX_TWEETS` tweets
+- **No API quota limits** - unlimited free fetches
+
+### Twitter Integration (src/twitter.rs) - One-Time Export Only
+- **Only used by `bin/fetch_list_members.rs`** binary
+- Uses Twitter API v2 `/lists/{id}/members` endpoint
 - Requires Bearer Token (OAuth 2.0 App-Only authentication)
-- Time-based filtering: calculates `start_time` as `now - HOURS_LOOKBACK` hours
-- Fetches up to `MAX_TWEETS` with expansions for author data
-- Uses ISO 8601 format for `start_time` parameter (e.g., `2024-01-01T00:00:00Z`)
-- Enriches tweet text with author info: "@username (Full Name): tweet text"
-- Returns `Vec<Tweet>` with id, text, author_id, created_at fields
+- Fetches all list members with pagination support
+- Extracts usernames and saves to `data/usernames.txt`
+- **Not used by main application** - only for initial setup
 
 ### OpenAI Summarization (src/openai.rs)
 - Uses Chat Completions API (`/v1/chat/completions`)
@@ -108,10 +135,19 @@ cp .env.example .env
 
 ## Important Notes
 
-### Twitter API Requirements
+### Twitter API Requirements (One-Time Only)
 - Bearer Token must have read access to lists
 - List must be public OR use OAuth 2.0 User Context for private lists
 - List ID is numeric and found in URL: `twitter.com/i/lists/{id}`
+- **Only needed once** to export list members via `make export` or `cargo run --bin export`
+
+### Nitter/RSS Setup
+- Primary instance: `https://nitter.net`
+- Alternative instances: `https://nitter.poast.org`, `https://nitter.1d4.us`
+- Can be changed via `NITTER_INSTANCE` environment variable
+- RSS feeds may be 5-10 minutes delayed (normal and acceptable)
+- No API keys or authentication required
+- Unlimited free fetches
 
 ### Telegram Bot Setup
 - Create bot via @BotFather on Telegram (send `/newbot`)
@@ -133,3 +169,6 @@ The release profile is highly optimized for binary size:
 - `anyhow` + `thiserror` - error handling
 - `chrono` - timestamp formatting
 - `tracing` + `tracing-subscriber` - structured logging
+- `dotenvy` - .env file loading
+- `rss` - RSS/Atom feed parsing
+- `futures` - parallel async operations

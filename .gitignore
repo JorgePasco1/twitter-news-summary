@@ -6,6 +6,9 @@ Cargo.lock
 .env
 .env.local
 
+# Data
+/data/
+
 # IDE
 .idea/
 .vscode/

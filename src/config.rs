@@ -17,6 +17,10 @@ pub struct Config {
     // Filtering
     pub max_tweets: u32,
     pub hours_lookback: u32,
+
+    // RSS/Nitter
+    pub nitter_instance: String,
+    pub usernames_file: String,
 }
 
 impl Config {
@@ -49,6 +53,12 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(12),
+
+            // RSS/Nitter
+            nitter_instance: std::env::var("NITTER_INSTANCE")
+                .unwrap_or_else(|_| "https://nitter.net".to_string()),
+            usernames_file: std::env::var("USERNAMES_FILE")
+                .unwrap_or_else(|_| "data/usernames.txt".to_string()),
         })
     }
 }
