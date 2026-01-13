@@ -177,6 +177,10 @@ Update your `nitter.conf` to use environment variables, or upload it as a file.
 
 **Option A: Simple approach - Mount config files**
 
+This option has two required steps:
+
+**Step 8.1: Create Dockerfile**
+
 ```bash
 # Create a Dockerfile to include config files
 cat > Dockerfile << 'EOF'
@@ -189,23 +193,32 @@ COPY sessions.jsonl /src/sessions.jsonl
 EXPOSE 8080
 CMD ["nitter"]
 EOF
+```
 
-# Update fly.toml to use local Dockerfile
-sed -i '' 's/image = "zedeus\/nitter:latest"/# image = "zedeus\/nitter:latest"/' fly.toml
+Now **manually edit your `fly.toml`** file and find the `[build]` section (around line 9). Change it from:
+```toml
+[build]
+  image = 'zedeus/nitter:latest'
+```
 
-cat >> fly.toml << 'EOF'
-
+To:
+```toml
 [build]
   dockerfile = "Dockerfile"
-EOF
 ```
 
-**Update nitter.conf:**
+**Important:** Make sure there's only ONE `[build]` section in the file!
 
-```bash
-# Edit nitter.conf - change hostname to your fly app name
-# hostname = "my-nitter-instance.fly.dev"
+**Step 8.2: Update nitter.conf (REQUIRED)**
+
+Open `nitter.conf` and update these two lines:
+
+```conf
+hostname = "YOUR-APP-NAME.fly.dev"  # Replace with your app name from step 6
+https = true  # Change from false to true (Fly.io provides automatic HTTPS)
 ```
+
+Example: If your app is named `my-nitter`, use `hostname = "my-nitter.fly.dev"`
 
 ## Step 9: Deploy!
 
