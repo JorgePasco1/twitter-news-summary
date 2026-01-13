@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use crate::config::Config;
 
@@ -43,7 +44,12 @@ struct FullTwitterResponse {
 /// Fetch recent tweets from a Twitter list
 pub async fn fetch_list_tweets(config: &Config) -> Result<Vec<Tweet>> {
     let client = reqwest::Client::new();
-    
+
+    // Calculate cutoff time for filtering tweets
+    let cutoff_time = Utc::now() - Duration::hours(config.hours_lookback as i64);
+    let start_time = cutoff_time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let max_results = config.max_tweets.to_string();
+
     // Twitter API v2 endpoint for list tweets
     let url = format!(
         "https://api.twitter.com/2/lists/{}/tweets",
@@ -54,7 +60,8 @@ pub async fn fetch_list_tweets(config: &Config) -> Result<Vec<Tweet>> {
         .get(&url)
         .bearer_auth(&config.twitter_bearer_token)
         .query(&[
-            ("max_results", "100"),
+            ("max_results", max_results.as_str()),
+            ("start_time", start_time.as_str()),
             ("tweet.fields", "created_at,author_id,text"),
             ("expansions", "author_id"),
             ("user.fields", "name,username"),

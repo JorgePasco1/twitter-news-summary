@@ -43,5 +43,7 @@ jobs:
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MAX_TWEETS: ${{ vars.MAX_TWEETS || '50' }}
+          HOURS_LOOKBACK: ${{ vars.HOURS_LOOKBACK || '12' }}
           RUST_LOG: info
         run: ./target/release/twitter-news-summary

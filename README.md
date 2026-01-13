@@ -47,6 +47,20 @@ vim .env
 cargo run
 ```
 
+### Configuration Options
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `TWITTER_BEARER_TOKEN` | Yes | - | OAuth 2.0 Bearer Token from Twitter Developer Portal |
+| `TWITTER_LIST_ID` | Yes | - | Numeric list ID from list URL |
+| `OPENAI_API_KEY` | Yes | - | API key from OpenAI |
+| `OPENAI_MODEL` | No | `gpt-4o-mini` | OpenAI model to use for summarization |
+| `TELEGRAM_BOT_TOKEN` | Yes | - | Bot token from @BotFather |
+| `TELEGRAM_CHAT_ID` | Yes | - | Your chat ID or group chat ID |
+| `MAX_TWEETS` | No | `50` | Maximum number of tweets to fetch per run |
+| `HOURS_LOOKBACK` | No | `12` | Only fetch tweets from last N hours |
+| `RUST_LOG` | No | `info` | Log level (trace, debug, info, warn, error) |
+
 ## GitHub Actions Setup
 
 1. Go to your repository Settings → Secrets and variables → Actions
@@ -58,8 +72,10 @@ cargo run
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_CHAT_ID`
 
-3. Optionally add a **variable**:
+3. Optionally add **variables** for customization:
    - `OPENAI_MODEL` (default: `gpt-4o-mini`)
+   - `MAX_TWEETS` (default: `50`)
+   - `HOURS_LOOKBACK` (default: `12`)
 
 4. The workflow runs at 8am and 6pm UTC. Adjust the cron schedule in `.github/workflows/summarize.yml` as needed.
 

@@ -13,6 +13,10 @@ pub struct Config {
     // Telegram
     pub telegram_bot_token: String,
     pub telegram_chat_id: String,
+
+    // Filtering
+    pub max_tweets: u32,
+    pub hours_lookback: u32,
 }
 
 impl Config {
@@ -35,6 +39,16 @@ impl Config {
                 .context("TELEGRAM_BOT_TOKEN not set")?,
             telegram_chat_id: std::env::var("TELEGRAM_CHAT_ID")
                 .context("TELEGRAM_CHAT_ID not set")?,
+
+            // Filtering
+            max_tweets: std::env::var("MAX_TWEETS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(50),
+            hours_lookback: std::env::var("HOURS_LOOKBACK")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(12),
         })
     }
 }

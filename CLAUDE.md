@@ -42,6 +42,8 @@ cp .env.example .env
 # - OPENAI_MODEL (defaults to gpt-4o-mini)
 # - TELEGRAM_BOT_TOKEN (from @BotFather on Telegram)
 # - TELEGRAM_CHAT_ID (numeric chat/user ID)
+# - MAX_TWEETS (defaults to 50) - Maximum tweets to fetch per run
+# - HOURS_LOOKBACK (defaults to 12) - Time window for tweet filtering
 # - RUST_LOG (defaults to info)
 ```
 
@@ -65,14 +67,16 @@ cp .env.example .env
 
 ### Execution Flow (src/main.rs)
 1. Load configuration from environment variables
-2. Fetch up to 100 recent tweets from the Twitter list
+2. Fetch up to `MAX_TWEETS` (default 50) tweets from last `HOURS_LOOKBACK` (default 12) hours
 3. If tweets exist, generate summary with OpenAI
 4. Send summary via Telegram with timestamp header
 
 ### Twitter Integration (src/twitter.rs)
 - Uses Twitter API v2 `/lists/{id}/tweets` endpoint
 - Requires Bearer Token (OAuth 2.0 App-Only authentication)
-- Fetches max 100 tweets with expansions for author data
+- Time-based filtering: calculates `start_time` as `now - HOURS_LOOKBACK` hours
+- Fetches up to `MAX_TWEETS` with expansions for author data
+- Uses ISO 8601 format for `start_time` parameter (e.g., `2024-01-01T00:00:00Z`)
 - Enriches tweet text with author info: "@username (Full Name): tweet text"
 - Returns `Vec<Tweet>` with id, text, author_id, created_at fields
 
