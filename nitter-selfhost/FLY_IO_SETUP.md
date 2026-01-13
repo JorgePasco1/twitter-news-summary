@@ -86,6 +86,13 @@ cp /path/to/nitter/sessions.jsonl .
 
 ## Step 5: Create fly.toml Configuration
 
+**Make sure you're in the nitter-fly directory first:**
+```bash
+cd /path/to/twitter-news-summary/nitter-fly
+```
+
+**Then copy and paste this entire command** (including the EOF lines) into your terminal and press Enter:
+
 ```bash
 cat > fly.toml << 'EOF'
 app = ""
@@ -131,6 +138,17 @@ primary_region = "sjc"
   cpus = 1
   memory_mb = 256
 EOF
+```
+
+**What this does:**
+- Creates a file named `fly.toml` with Fly.io configuration
+- Sets your app to use 256MB RAM (~$1.94/month, covered by $5 credit)
+- Configures HTTP/HTTPS on ports 80/443 with automatic SSL
+- Sets up health checks to keep your app running
+
+**Verify it worked:**
+```bash
+ls -la fly.toml  # Should show the file was created
 ```
 
 ## Step 6: Launch the App
