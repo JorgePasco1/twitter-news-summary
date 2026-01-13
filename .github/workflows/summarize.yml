@@ -26,6 +26,43 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Validate required environment variables
+        run: |
+          echo "Validating required environment variables..."
+          MISSING_VARS=()
+
+          # Check secrets
+          if [ -z "${{ secrets.OPENAI_API_KEY }}" ]; then
+            MISSING_VARS+=("OPENAI_API_KEY (secret)")
+          fi
+          if [ -z "${{ secrets.TELEGRAM_BOT_TOKEN }}" ]; then
+            MISSING_VARS+=("TELEGRAM_BOT_TOKEN (secret)")
+          fi
+          if [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
+            MISSING_VARS+=("TELEGRAM_CHAT_ID (secret)")
+          fi
+
+          # Check variables
+          if [ -z "${{ vars.NITTER_INSTANCE }}" ]; then
+            MISSING_VARS+=("NITTER_INSTANCE (variable)")
+          fi
+
+          # Fail if any required variables are missing
+          if [ ${#MISSING_VARS[@]} -gt 0 ]; then
+            echo "❌ ERROR: Missing required environment variables:"
+            for var in "${MISSING_VARS[@]}"; do
+              echo "  - $var"
+            done
+            echo ""
+            echo "Please set these in:"
+            echo "  Repository Settings → Secrets and variables → Actions"
+            echo "  - Secrets: OPENAI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID"
+            echo "  - Variables: NITTER_INSTANCE"
+            exit 1
+          fi
+
+          echo "✅ All required environment variables are set"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -46,7 +83,7 @@ jobs:
       - name: Run summary job
         env:
           USERNAMES_FILE: ${{ vars.USERNAMES_FILE || 'data/usernames.txt' }}
-          NITTER_INSTANCE: ${{ vars.NITTER_INSTANCE || 'https://nitter.net' }}
+          NITTER_INSTANCE: ${{ vars.NITTER_INSTANCE }}  # REQUIRED: Set in repository variables
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

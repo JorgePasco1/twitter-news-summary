@@ -18,9 +18,20 @@ pub async fn fetch_tweets_from_rss(config: &Config) -> Result<Vec<Tweet>> {
 
     info!("Loaded {} usernames from {}", usernames.len(), config.usernames_file);
 
-    // Find a working Nitter instance
-    let working_instance = find_working_instance(config).await?;
-    info!("Using Nitter instance: {}", working_instance);
+    // Verify Nitter instance is working
+    info!("Testing Nitter instance: {}", config.nitter_instance);
+    if !test_nitter_instance(&config.nitter_instance).await {
+        anyhow::bail!(
+            "Nitter instance {} is not responding or returning invalid RSS feeds.\n\
+            Please check:\n\
+            1. Your Nitter instance is running (e.g., https://nitter-fly.fly.dev/)\n\
+            2. You can access it in a browser\n\
+            3. RSS feeds work: {}/OpenAI/rss",
+            config.nitter_instance,
+            config.nitter_instance
+        );
+    }
+    info!("✓ Nitter instance is working: {}", config.nitter_instance);
     info!("Fetching RSS feeds for {} users (with 3s delay between requests)", usernames.len());
 
     // Fetch RSS feeds sequentially with delay to avoid rate limiting
@@ -29,7 +40,7 @@ pub async fn fetch_tweets_from_rss(config: &Config) -> Result<Vec<Tweet>> {
     let mut fail_count = 0;
 
     for (index, username) in usernames.iter().enumerate() {
-        match fetch_user_rss(&working_instance, username).await {
+        match fetch_user_rss(&config.nitter_instance, username).await {
             Ok(tweets) => {
                 success_count += 1;
                 all_tweets.extend(tweets);
@@ -52,9 +63,9 @@ pub async fn fetch_tweets_from_rss(config: &Config) -> Result<Vec<Tweet>> {
     );
 
     if success_count == 0 && fail_count > 0 {
-        warn!("All RSS fetches failed! Nitter instance may be down.");
-        warn!("Try alternative instances in .env: NITTER_INSTANCE=https://nitter.DOMAIN");
-        warn!("Check https://status.d420.de/ for working Nitter instances");
+        warn!("All RSS fetches failed! Check your Nitter instance: {}", config.nitter_instance);
+        warn!("Verify it's accessible: {}/OpenAI/rss", config.nitter_instance);
+        warn!("If it's down, check your Fly.io deployment: flyctl status --app nitter-fly");
     }
 
     // Sort by date (newest first)
@@ -117,35 +128,6 @@ async fn test_nitter_instance(instance: &str) -> bool {
         }
         Err(_) => false,
     }
-}
-
-/// Find a working Nitter instance from config and fallbacks
-async fn find_working_instance(config: &Config) -> Result<String> {
-    // Try primary instance first
-    info!("Testing primary instance: {}", config.nitter_instance);
-    if test_nitter_instance(&config.nitter_instance).await {
-        return Ok(config.nitter_instance.clone());
-    }
-
-    warn!("Primary instance {} is not working, trying fallbacks...", config.nitter_instance);
-
-    // Try fallback instances
-    for instance in &config.nitter_fallback_instances {
-        info!("Testing fallback instance: {}", instance);
-        if test_nitter_instance(instance).await {
-            info!("✓ Found working instance: {}", instance);
-            return Ok(instance.clone());
-        }
-    }
-
-    anyhow::bail!(
-        "No working Nitter instances found. Tried:\n\
-        - Primary: {}\n\
-        - Fallbacks: {}\n\
-        Check https://status.d420.de/ for working instances",
-        config.nitter_instance,
-        config.nitter_fallback_instances.join(", ")
-    )
 }
 
 /// Fetch RSS feed for a single user

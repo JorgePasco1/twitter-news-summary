@@ -241,7 +241,7 @@ HOURS_LOOKBACK=12
 RUST_LOG=info
 ```
 
-**Note on Nitter instances:** The app automatically tests instances and falls back to alternatives if the primary is down. Built-in fallbacks: `nitter.poast.org`, `nitter.privacydev.net`, `nitter.1d4.us`, `nitter.cz`, `nitter.unixfox.eu`
+**Note on Nitter instances:** You must self-host your own Nitter instance (see [nitter-selfhost](./nitter-selfhost/) for free hosting options). Public instances are unreliable and not supported.
 
 ### Testing the Application
 
@@ -304,9 +304,9 @@ RUST_LOG=info
 - Check that `TELEGRAM_BOT_TOKEN` is correct
 
 **Nitter RSS errors:**
-- If nitter.net is down, try alternative instances:
-  - `NITTER_INSTANCE=https://nitter.poast.org`
-  - `NITTER_INSTANCE=https://nitter.1d4.us`
+- Make sure your self-hosted Nitter instance is running
+- Test it in browser: `https://YOUR-NITTER-INSTANCE/OpenAI/rss`
+- If using Fly.io, check status: `flyctl status --app nitter-fly`
 
 ### Update List Members
 
@@ -381,14 +381,16 @@ make clean       # Clean build artifacts
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_CHAT_ID`
 
-4. Optionally add **variables** for customization:
+4. Add **required variables**:
+   - `NITTER_INSTANCE` - Your self-hosted Nitter URL (e.g., `https://nitter-fly.fly.dev`)
+
+5. Optionally add **variables** for customization:
    - `USERNAMES_FILE` (default: `data/usernames.txt`)
    - `OPENAI_MODEL` (default: `gpt-4o-mini`)
    - `MAX_TWEETS` (default: `50`)
    - `HOURS_LOOKBACK` (default: `12`)
-   - `NITTER_INSTANCE` (default: `https://nitter.net`)
 
-5. The workflow runs at **8am and 8pm Peru time (UTC-5)** by default. See [Schedule Customization](#schedule-customization) to adjust for your timezone.
+6. The workflow runs at **8am and 8pm Peru time (UTC-5)** by default. See [Schedule Customization](#schedule-customization) to adjust for your timezone.
 
 ## Schedule Customization
 
@@ -479,19 +481,26 @@ The default schedule is **8am and 8pm Peru time (UTC-5)**:
 - Check that `data/usernames.txt` was created successfully
 
 ### Nitter/RSS Errors / All RSS Fetches Failed
-- **The app automatically tries fallback instances** if the primary is down
-- Built-in fallbacks: `nitter.poast.org`, `nitter.privacydev.net`, `nitter.1d4.us`, `nitter.cz`, `nitter.unixfox.eu`
-- If ALL instances fail, check https://status.d420.de/ to find currently working instances
-- You can update your `.env` file with a working instance:
+- **Check your self-hosted Nitter instance:**
   ```bash
-  NITTER_INSTANCE=https://nitter.WORKING-DOMAIN
+  # Test if it's accessible
+  curl -s "https://YOUR-NITTER-INSTANCE/OpenAI/rss" | head -10
+
+  # If using Fly.io
+  flyctl status --app nitter-fly
+  flyctl logs --app nitter-fly
   ```
-- The log will show which instance is being tested and used:
+- **Verify NITTER_INSTANCE is set correctly:**
+  ```bash
+  # In .env file
+  NITTER_INSTANCE=https://nitter-fly.fly.dev
+
+  # In GitHub repository variables
+  Settings → Secrets and variables → Actions → Variables → NITTER_INSTANCE
   ```
-  Testing primary instance: https://nitter.net
-  Testing fallback instance: https://nitter.poast.org
-  ✓ Found working instance: https://nitter.poast.org
-  ```
+- **If your instance is down:**
+  - Restart it: `flyctl apps restart nitter-fly`
+  - Check the deployment guide: [nitter-selfhost/FLY_IO_SETUP.md](./nitter-selfhost/FLY_IO_SETUP.md)
 - RSS feeds may be 5-10 minutes delayed (this is normal when working)
 
 ### Self-Hosting Nitter (Recommended Solution)

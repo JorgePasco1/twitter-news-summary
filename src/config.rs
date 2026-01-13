@@ -22,7 +22,6 @@ pub struct Config {
 
     // RSS/Nitter
     pub nitter_instance: String,
-    pub nitter_fallback_instances: Vec<String>,
     pub usernames_file: String,
 }
 
@@ -57,14 +56,7 @@ impl Config {
 
             // RSS/Nitter
             nitter_instance: std::env::var("NITTER_INSTANCE")
-                .unwrap_or_else(|_| "https://nitter.net".to_string()),
-            nitter_fallback_instances: vec![
-                "https://nitter.poast.org".to_string(),
-                "https://nitter.privacydev.net".to_string(),
-                "https://nitter.1d4.us".to_string(),
-                "https://nitter.cz".to_string(),
-                "https://nitter.unixfox.eu".to_string(),
-            ],
+                .context("NITTER_INSTANCE not set - you must provide your own Nitter instance URL")?,
             usernames_file: std::env::var("USERNAMES_FILE")
                 .unwrap_or_else(|_| "data/usernames.txt".to_string()),
         })
