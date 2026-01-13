@@ -24,7 +24,7 @@ export:
 # Run the main news summary application
 run:
 	@echo "🚀 Running Twitter news summary..."
-	cargo run
+	cargo run --bin twitter-news-summary
 
 # Build release binary
 build:

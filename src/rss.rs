@@ -6,13 +6,28 @@ use crate::config::Config;
 use crate::twitter::Tweet;
 
 /// Fetch tweets from Nitter RSS feeds
-pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Result<Vec<Tweet>> {
-    info!("Fetching RSS feeds for {} users from {}", usernames.len(), config.nitter_instance);
+pub async fn fetch_tweets_from_rss(config: &Config) -> Result<Vec<Tweet>> {
+    // Read usernames from file
+    let usernames_content = std::fs::read_to_string(&config.usernames_file)
+        .context(format!("Failed to read usernames from {}", config.usernames_file))?;
 
-    // Fetch RSS feeds for all users in parallel
+    let usernames: Vec<String> = usernames_content
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    info!("Loaded {} usernames from {}", usernames.len(), config.usernames_file);
+
+    // Find a working Nitter instance
+    let working_instance = find_working_instance(config).await?;
+    info!("Using Nitter instance: {}", working_instance);
+    info!("Fetching RSS feeds for {} users", usernames.len());
+
+    // Fetch RSS feeds for all users in parallel using the working instance
     let fetch_tasks: Vec<_> = usernames
         .iter()
-        .map(|username| fetch_user_rss(config, username))
+        .map(|username| fetch_user_rss(&working_instance, username))
         .collect();
 
     let results = join_all(fetch_tasks).await;
@@ -39,6 +54,12 @@ pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Res
         "RSS fetch complete: {} successful, {} failed",
         success_count, fail_count
     );
+
+    if success_count == 0 && fail_count > 0 {
+        warn!("All RSS fetches failed! Nitter instance may be down.");
+        warn!("Try alternative instances in .env: NITTER_INSTANCE=https://nitter.DOMAIN");
+        warn!("Check https://status.d420.de/ for working Nitter instances");
+    }
 
     // Sort by date (newest first)
     all_tweets.sort_by(|a, b| {
@@ -70,12 +91,74 @@ pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Res
     Ok(filtered_tweets)
 }
 
+/// Test if a Nitter instance is working by fetching a sample RSS feed
+async fn test_nitter_instance(instance: &str) -> bool {
+    let test_url = format!("{}/OpenAI/rss", instance);
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+        .build() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    match client.get(&test_url).send().await {
+        Ok(response) => {
+            if !response.status().is_success() {
+                return false;
+            }
+
+            match response.bytes().await {
+                Ok(body) => {
+                    // Check if it's actually RSS/XML, not HTML
+                    !body.starts_with(b"<!DOCTYPE") &&
+                    !body.starts_with(b"<html") &&
+                    (body.starts_with(b"<?xml") || body.starts_with(b"<rss"))
+                }
+                Err(_) => false,
+            }
+        }
+        Err(_) => false,
+    }
+}
+
+/// Find a working Nitter instance from config and fallbacks
+async fn find_working_instance(config: &Config) -> Result<String> {
+    // Try primary instance first
+    info!("Testing primary instance: {}", config.nitter_instance);
+    if test_nitter_instance(&config.nitter_instance).await {
+        return Ok(config.nitter_instance.clone());
+    }
+
+    warn!("Primary instance {} is not working, trying fallbacks...", config.nitter_instance);
+
+    // Try fallback instances
+    for instance in &config.nitter_fallback_instances {
+        info!("Testing fallback instance: {}", instance);
+        if test_nitter_instance(instance).await {
+            info!("✓ Found working instance: {}", instance);
+            return Ok(instance.clone());
+        }
+    }
+
+    anyhow::bail!(
+        "No working Nitter instances found. Tried:\n\
+        - Primary: {}\n\
+        - Fallbacks: {}\n\
+        Check https://status.d420.de/ for working instances",
+        config.nitter_instance,
+        config.nitter_fallback_instances.join(", ")
+    )
+}
+
 /// Fetch RSS feed for a single user
-async fn fetch_user_rss(config: &Config, username: &str) -> Result<Vec<Tweet>> {
-    let url = format!("{}/{}/rss", config.nitter_instance, username);
+async fn fetch_user_rss(instance: &str, username: &str) -> Result<Vec<Tweet>> {
+    let url = format!("{}/{}/rss", instance, username);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
         .build()?;
 
     let response = client
@@ -84,11 +167,12 @@ async fn fetch_user_rss(config: &Config, username: &str) -> Result<Vec<Tweet>> {
         .await
         .context(format!("Failed to fetch RSS for @{}", username))?;
 
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
         anyhow::bail!(
-            "RSS fetch failed for @{}: HTTP {}",
+            "RSS fetch failed for @{}: HTTP {} (Instance may be down, try alternative)",
             username,
-            response.status()
+            status
         );
     }
 
@@ -97,8 +181,15 @@ async fn fetch_user_rss(config: &Config, username: &str) -> Result<Vec<Tweet>> {
         .await
         .context("Failed to read RSS response")?;
 
+    // Debug: Check if we got HTML error page instead of RSS
+    if body.starts_with(b"<!DOCTYPE") || body.starts_with(b"<html") {
+        anyhow::bail!(
+            "Nitter instance returned HTML instead of RSS (instance may be broken/down)"
+        );
+    }
+
     let channel = rss::Channel::read_from(&body[..])
-        .context(format!("Failed to parse RSS for @{}", username))?;
+        .context(format!("Failed to parse RSS XML for @{}", username))?;
 
     // Convert RSS items to Tweet structs
     let tweets: Vec<Tweet> = channel

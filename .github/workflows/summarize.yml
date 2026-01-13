@@ -37,8 +37,8 @@ jobs:
 
       - name: Run summary job
         env:
-          TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
-          TWITTER_LIST_ID: ${{ secrets.TWITTER_LIST_ID }}
+          USERNAMES_FILE: ${{ vars.USERNAMES_FILE || 'data/usernames.txt' }}
+          NITTER_INSTANCE: ${{ vars.NITTER_INSTANCE || 'https://nitter.net' }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

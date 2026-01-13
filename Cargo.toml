@@ -2,7 +2,8 @@
 name = "twitter-news-summary"
 version = "0.1.0"
 edition = "2021"
-description = "Summarize Twitter list tweets and send via WhatsApp"
+description = "Summarize Twitter list tweets and send via Telegram"
+default-run = "twitter-news-summary"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -21,6 +22,10 @@ futures = "0.3"
 [lib]
 name = "twitter_news_summary"
 path = "src/lib.rs"
+
+[[bin]]
+name = "twitter-news-summary"
+path = "src/main.rs"
 
 [[bin]]
 name = "export"

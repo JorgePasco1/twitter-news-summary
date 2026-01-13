@@ -21,6 +21,14 @@ async fn main() -> Result<()> {
     // Load config from environment
     let config = config::Config::from_env()?;
 
+    // Ensure Twitter credentials are set (required for export)
+    if config.twitter_bearer_token.is_none() || config.twitter_list_id.is_none() {
+        anyhow::bail!(
+            "Twitter credentials required for export.\n\
+            Set TWITTER_BEARER_TOKEN and TWITTER_LIST_ID in .env file."
+        );
+    }
+
     // Fetch list members using shared function
     let usernames = twitter::fetch_list_members(&config).await?;
 
@@ -30,7 +38,7 @@ async fn main() -> Result<()> {
         .context("Failed to write usernames to file")?;
 
     info!("✓ Exported {} usernames to {}", usernames.len(), output_path);
-    info!("Note: This export is optional. The main app fetches members dynamically.");
+    info!("The main app will now read usernames from this file.");
 
     Ok(())
 }

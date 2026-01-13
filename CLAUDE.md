@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Rust application that uses a **hybrid approach**:
-1. **Each run**: Fetches list members from Twitter API v2 (1-2 API calls)
+This is a Rust application that fetches and summarizes Twitter list tweets:
+1. **List members**: Extracted via browser console script (saved to `data/usernames.txt`)
 2. **Tweet fetching**: Uses Nitter RSS feeds (unlimited, no API quota)
 3. Summarizes them using OpenAI's Chat Completions API
 4. Sends the summary via Telegram using Telegram Bot API
 5. Runs automatically twice daily via GitHub Actions (8am and 6pm UTC)
 
-**Key Benefit**: Avoids Twitter's tweet quota limits by using free RSS feeds. List always stays up-to-date!
+**Key Benefit**: No Twitter API required! Extract usernames once, use free RSS feeds for tweets.
 
 ## Common Commands
 
@@ -42,18 +42,21 @@ cargo clippy               # Run linter
 cp .env.example .env
 
 # Required environment variables (see .env.example for formats):
-# - TWITTER_BEARER_TOKEN (OAuth 2.0 App-Only, fetches list members each run)
-# - TWITTER_LIST_ID (numeric ID from list URL)
 # - OPENAI_API_KEY
 # - TELEGRAM_BOT_TOKEN (from @BotFather on Telegram)
 # - TELEGRAM_CHAT_ID (numeric chat/user ID)
 #
 # Optional (with defaults):
+# - USERNAMES_FILE (defaults to data/usernames.txt)
 # - NITTER_INSTANCE (defaults to https://nitter.net) - RSS feed source
 # - OPENAI_MODEL (defaults to gpt-4o-mini)
 # - MAX_TWEETS (defaults to 50) - Maximum tweets to return per run
 # - HOURS_LOOKBACK (defaults to 12) - Time window for tweet filtering
 # - RUST_LOG (defaults to info)
+#
+# Optional - Only for `make export` command:
+# - TWITTER_BEARER_TOKEN (OAuth 2.0 App-Only)
+# - TWITTER_LIST_ID (numeric ID from list URL)
 ```
 
 ### GitHub Actions
@@ -68,48 +71,43 @@ cp .env.example .env
 ## Architecture
 
 ### Module Structure
-- `main.rs` - Entry point with 4-step orchestration flow
+- `main.rs` - Entry point with 3-step orchestration flow
 - `config.rs` - Environment variable loading and validation
-- `twitter.rs` - Twitter API v2 client for fetching list members dynamically
-- `rss.rs` - Nitter RSS feed fetcher (main tweet source)
+- `rss.rs` - Nitter RSS feed fetcher (reads from usernames file, main tweet source)
 - `openai.rs` - OpenAI chat completions for summarization
 - `telegram.rs` - Telegram Bot API messaging
-- `bin/fetch_list_members.rs` - Optional "export" binary to cache list members to file
+- `twitter.rs` - Twitter API v2 client (only used by export binary, optional)
+- `bin/fetch_list_members.rs` - Optional "export" binary to fetch list members via Twitter API
 
 ### Execution Flow (src/main.rs)
 1. Load configuration from environment variables
-2. Fetch list members from Twitter API (via `twitter::fetch_list_members`)
-   - Calls Twitter API v2 `/lists/{id}/members` endpoint
-   - Handles pagination to get all members
-   - Returns Vec of usernames
-   - Uses 1-2 API calls per run (well within free tier limits)
-3. Fetch tweets from RSS feeds (via `rss::fetch_tweets_from_rss`)
-   - Takes usernames from step 2 as input
+2. Fetch tweets from RSS feeds (via `rss::fetch_tweets_from_rss`)
+   - Reads usernames from `data/usernames.txt` file
    - Fetches RSS feed for each username from Nitter in parallel
    - Filters to last `HOURS_LOOKBACK` (default 12) hours
    - Returns up to `MAX_TWEETS` (default 50) tweets
-4. If tweets exist, generate summary with OpenAI
-5. Send summary via Telegram with timestamp header
+3. If tweets exist, generate summary with OpenAI
+4. Send summary via Telegram with timestamp header
 
 ### RSS Integration (src/rss.rs) - Main Tweet Source
-- Accepts usernames as parameter (from Twitter API fetch)
+- Reads usernames from `USERNAMES_FILE` (defaults to `data/usernames.txt`)
 - Fetches RSS feeds from Nitter instance for each username
 - Uses parallel fetching with `futures::join_all` for performance
 - Parses RSS XML using `rss` crate
-- Converts RSS items to `Tweet` struct (compatible with existing code)
+- Converts RSS items to `Tweet` struct
 - Client-side filtering by `HOURS_LOOKBACK` time window
 - Sorts tweets by date (newest first)
 - Returns up to `MAX_TWEETS` tweets
 - **No API quota limits** - unlimited free fetches
 
-### Twitter Integration (src/twitter.rs) - List Member Fetching
-- **Used by both main application and export binary**
+### Twitter Integration (src/twitter.rs) - Optional Export Tool
+- **Only used by `make export` binary** (optional)
 - Uses Twitter API v2 `/lists/{id}/members` endpoint
 - Requires Bearer Token (OAuth 2.0 App-Only authentication)
 - Fetches all list members with pagination support
-- Returns Vec of usernames to be used for RSS fetching
-- Main app calls this each run to keep list up-to-date (1-2 API calls)
-- Export binary optionally saves results to `data/usernames.txt` for reference
+- Returns Vec of usernames
+- Export binary saves results to `data/usernames.txt`
+- **Not used by main application** - main app reads from file
 
 ### OpenAI Summarization (src/openai.rs)
 - Uses Chat Completions API (`/v1/chat/completions`)
@@ -139,13 +137,33 @@ cp .env.example .env
 
 ## Important Notes
 
-### Twitter API Requirements
-- Bearer Token must have read access to lists
+### Extracting List Members
+
+**Option 1: Browser Console Script (Recommended)**
+1. Go to your Twitter list page: `https://x.com/i/lists/YOUR_LIST_ID/members`
+2. Scroll down to load all members
+3. Open DevTools Console (F12)
+4. Run this script (see README.md for full version with validation):
+```javascript
+const usernames = [...document.querySelectorAll('[data-testid^="UserAvatar-Container-"]')]
+  .map(el => el.getAttribute('data-testid').replace('UserAvatar-Container-', ''))
+  .filter(u => u && u !== 'unknown');
+const currentUserElement = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"] img');
+const currentUser = currentUserElement ? currentUserElement.getAttribute('alt').replace('@', '') : null;
+const uniqueUsernames = [...new Set(usernames)]
+  .filter(u => u !== currentUser)
+  .sort();
+console.log('Found ' + uniqueUsernames.length + ' users:\n');
+console.log(uniqueUsernames.join('\n'));
+```
+5. Copy output (usernames only) and save to `data/usernames.txt`
+
+**Option 2: Twitter API (Optional)**
+- Only needed if you want to use `make export` command
+- Requires Bearer Token with read access to lists
 - List must be public OR use OAuth 2.0 User Context for private lists
 - List ID is numeric and found in URL: `twitter.com/i/lists/{id}`
-- **Required for each run** - fetches current list members dynamically (1-2 API calls per run)
-- Well within free tier limits (10,000 requests/month for list members endpoint)
-- Optional: Export binary (`make export`) caches members to file for reference
+- Run `make export` to save usernames to file
 
 ### Nitter/RSS Setup
 - Primary instance: `https://nitter.net`

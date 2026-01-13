@@ -25,13 +25,9 @@ async fn main() -> Result<()> {
     // Load configuration from environment
     let config = config::Config::from_env()?;
 
-    // Step 1: Fetch list members from Twitter
-    info!("Fetching list members from Twitter list: {}", config.twitter_list_id);
-    let usernames = twitter::fetch_list_members(&config).await?;
-
-    // Step 2: Fetch tweets from RSS feeds
+    // Step 1: Fetch tweets from RSS feeds
     info!("Fetching tweets from RSS feeds");
-    let tweets = rss::fetch_tweets_from_rss(&config, &usernames).await?;
+    let tweets = rss::fetch_tweets_from_rss(&config).await?;
     
     if tweets.is_empty() {
         info!("No tweets found in the last period, skipping summary");
@@ -40,11 +36,11 @@ async fn main() -> Result<()> {
 
     info!("Fetched {} tweets", tweets.len());
 
-    // Step 3: Generate summary using OpenAI
+    // Step 2: Generate summary using OpenAI
     info!("Generating summary with OpenAI");
     let summary = openai::summarize_tweets(&config, &tweets).await?;
 
-    // Step 4: Send summary via Telegram
+    // Step 3: Send summary via Telegram
     info!("Sending summary via Telegram");
     telegram::send_message(&config, &summary).await?;
 
