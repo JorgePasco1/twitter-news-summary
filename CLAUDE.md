@@ -45,10 +45,11 @@ cp .env.example .env
 # - OPENAI_API_KEY
 # - TELEGRAM_BOT_TOKEN (from @BotFather on Telegram)
 # - TELEGRAM_CHAT_ID (numeric chat/user ID)
+# - NITTER_INSTANCE (self-hosted instance URL, see nitter-selfhost/FLY_IO_SETUP.md)
 #
 # Optional (with defaults):
 # - USERNAMES_FILE (defaults to data/usernames.txt)
-# - NITTER_INSTANCE (defaults to https://nitter.net) - RSS feed source
+# - NITTER_API_KEY (if your Nitter instance requires authentication)
 # - OPENAI_MODEL (defaults to gpt-4o-mini)
 # - MAX_TWEETS (defaults to 50) - Maximum tweets to return per run
 # - HOURS_LOOKBACK (defaults to 12) - Time window for tweet filtering
@@ -92,7 +93,9 @@ cp .env.example .env
 ### RSS Integration (src/rss.rs) - Main Tweet Source
 - Reads usernames from `USERNAMES_FILE` (defaults to `data/usernames.txt`)
 - Fetches RSS feeds from Nitter instance for each username
-- Uses parallel fetching with `futures::join_all` for performance
+- Supports optional API key authentication via `NITTER_API_KEY` for secured instances
+- Sends `X-API-Key` header when API key is configured
+- Uses sequential fetching with 3s delays to avoid rate limiting
 - Parses RSS XML using `rss` crate
 - Converts RSS items to `Tweet` struct
 - Client-side filtering by `HOURS_LOOKBACK` time window
@@ -166,12 +169,18 @@ console.log(uniqueUsernames.join('\n'));
 - Run `make export` to save usernames to file
 
 ### Nitter/RSS Setup
-- Primary instance: `https://nitter.net`
-- Alternative instances: `https://nitter.poast.org`, `https://nitter.1d4.us`
-- Can be changed via `NITTER_INSTANCE` environment variable
+- **Self-hosted instance required** (public instances are unreliable)
+- See `nitter-selfhost/FLY_IO_SETUP.md` for free hosting on Fly.io
+- Set via `NITTER_INSTANCE` environment variable
 - RSS feeds may be 5-10 minutes delayed (normal and acceptable)
-- No API keys or authentication required
-- Unlimited free fetches
+- Unlimited free fetches (no Twitter API quotas)
+
+**Security (Optional):**
+- Protect your Nitter instance with API key authentication
+- Generate key: `openssl rand -hex 32`
+- Configure your reverse proxy (nginx/Caddy) to require `X-API-Key` header
+- Set `NITTER_API_KEY` environment variable to match
+- Application automatically sends the key in all RSS requests
 
 ### Telegram Bot Setup
 - Create bot via @BotFather on Telegram (send `/newbot`)

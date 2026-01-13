@@ -22,6 +22,7 @@ pub struct Config {
 
     // RSS/Nitter
     pub nitter_instance: String,
+    pub nitter_api_key: Option<String>,
     pub usernames_file: String,
 }
 
@@ -57,6 +58,7 @@ impl Config {
             // RSS/Nitter
             nitter_instance: std::env::var("NITTER_INSTANCE")
                 .context("NITTER_INSTANCE not set - you must provide your own Nitter instance URL")?,
+            nitter_api_key: std::env::var("NITTER_API_KEY").ok(),
             usernames_file: std::env::var("USERNAMES_FILE")
                 .unwrap_or_else(|_| "data/usernames.txt".to_string()),
         })

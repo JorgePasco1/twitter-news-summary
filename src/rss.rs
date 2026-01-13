@@ -20,7 +20,7 @@ pub async fn fetch_tweets_from_rss(config: &Config) -> Result<Vec<Tweet>> {
 
     // Verify Nitter instance is working
     info!("Testing Nitter instance: {}", config.nitter_instance);
-    if !test_nitter_instance(&config.nitter_instance).await {
+    if !test_nitter_instance(&config.nitter_instance, config.nitter_api_key.as_deref()).await {
         anyhow::bail!(
             "Nitter instance {} is not responding or returning invalid RSS feeds.\n\
             Please check:\n\
@@ -42,7 +42,7 @@ pub async fn fetch_tweets_from_rss(config: &Config) -> Result<Vec<Tweet>> {
 
     for (index, username) in usernames.iter().enumerate() {
         info!("Fetching @{} account...", username);
-        match fetch_user_rss(&config.nitter_instance, username).await {
+        match fetch_user_rss(&config.nitter_instance, username, config.nitter_api_key.as_deref()).await {
             Ok(tweets) => {
                 success_count += 1;
                 let tweet_count = tweets.len();
@@ -103,13 +103,23 @@ pub async fn fetch_tweets_from_rss(config: &Config) -> Result<Vec<Tweet>> {
 }
 
 /// Test if a Nitter instance is working by fetching a sample RSS feed
-async fn test_nitter_instance(instance: &str) -> bool {
+async fn test_nitter_instance(instance: &str, api_key: Option<&str>) -> bool {
     let test_url = format!("{}/OpenAI/rss", instance);
 
-    let client = match reqwest::Client::builder()
+    let mut client_builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-        .build() {
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36");
+
+    // Add API key header if provided
+    if let Some(key) = api_key {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(header_value) = key.parse() {
+            headers.insert("X-API-Key", header_value);
+            client_builder = client_builder.default_headers(headers);
+        }
+    }
+
+    let client = match client_builder.build() {
         Ok(c) => c,
         Err(_) => return false,
     };
@@ -135,13 +145,24 @@ async fn test_nitter_instance(instance: &str) -> bool {
 }
 
 /// Fetch RSS feed for a single user
-async fn fetch_user_rss(instance: &str, username: &str) -> Result<Vec<Tweet>> {
+async fn fetch_user_rss(instance: &str, username: &str, api_key: Option<&str>) -> Result<Vec<Tweet>> {
     let url = format!("{}/{}/rss", instance, username);
 
-    let client = reqwest::Client::builder()
+    let mut client_builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-        .build()?;
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36");
+
+    // Add API key header if provided
+    if let Some(key) = api_key {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "X-API-Key",
+            key.parse().context("Invalid API key format")?
+        );
+        client_builder = client_builder.default_headers(headers);
+    }
+
+    let client = client_builder.build()?;
 
     let response = client
         .get(&url)

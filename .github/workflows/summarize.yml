@@ -85,6 +85,7 @@ jobs:
         env:
           USERNAMES_FILE: ${{ vars.USERNAMES_FILE || 'data/usernames.txt' }}
           NITTER_INSTANCE: ${{ vars.NITTER_INSTANCE }}  # REQUIRED: Set in repository variables
+          NITTER_API_KEY: ${{ secrets.NITTER_API_KEY }}  # OPTIONAL: For secured Nitter instances
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
