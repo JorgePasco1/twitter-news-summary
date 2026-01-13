@@ -7,7 +7,8 @@ Cargo.lock
 .env.local
 
 # Data
-/data/
+/data/*
+!/data/usernames.txt
 /run-history/
 
 # IDE

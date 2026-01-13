@@ -357,12 +357,22 @@ make clean       # Clean build artifacts
 
 ## GitHub Actions Setup
 
-1. **Commit your usernames file** to the repository:
+**IMPORTANT:** The `data/usernames.txt` file must be committed to the repository for GitHub Actions to work.
+
+1. **Create and commit your usernames file:**
+
+   a. Extract usernames using the browser console script (see [Prerequisites](#prerequisites))
+
+   b. Save the output to `data/usernames.txt`
+
+   c. Commit and push:
    ```bash
    git add data/usernames.txt
    git commit -m "Add Twitter list usernames"
    git push
    ```
+
+   **Note:** The `.gitignore` is configured to allow `data/usernames.txt` while ignoring other files in the data directory.
 
 2. Go to your repository Settings → Secrets and variables → Actions
 
