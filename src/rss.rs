@@ -41,14 +41,17 @@ pub async fn fetch_tweets_from_rss(config: &Config) -> Result<Vec<Tweet>> {
     let mut fail_count = 0;
 
     for (index, username) in usernames.iter().enumerate() {
+        info!("Fetching @{} account...", username);
         match fetch_user_rss(&config.nitter_instance, username).await {
             Ok(tweets) => {
                 success_count += 1;
+                let tweet_count = tweets.len();
                 all_tweets.extend(tweets);
+                info!("✓ @{} - {} tweets fetched", username, tweet_count);
             }
             Err(e) => {
                 fail_count += 1;
-                warn!("Failed to fetch RSS for @{}: {}", username, e);
+                warn!("✗ Failed to fetch RSS for @{}: {}", username, e);
             }
         }
 

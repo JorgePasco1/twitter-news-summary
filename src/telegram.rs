@@ -21,13 +21,15 @@ pub async fn send_message(config: &Config, summary: &str) -> Result<()> {
         summary
     );
 
-    // Save to run-history folder for debugging
-    let filename = format!(
-        "run-history/summary_{}.txt",
-        Utc::now().format("%Y%m%d_%H%M%S")
-    );
-    std::fs::write(&filename, &message)
-        .context(format!("Failed to write summary to {}", filename))?;
+    // Save to run-history folder for debugging (only when running locally)
+    if std::env::var("CI").is_err() {
+        let filename = format!(
+            "run-history/summary_{}.txt",
+            Utc::now().format("%Y%m%d_%H%M%S")
+        );
+        // Ignore errors if directory doesn't exist or write fails
+        let _ = std::fs::write(&filename, &message);
+    }
 
     // Telegram Bot API endpoint
     let url = format!(
