@@ -14,6 +14,7 @@ thiserror = "1"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"
 
 [profile.release]
 opt-level = "z"

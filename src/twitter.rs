@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 use crate::config::Config;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,16 +12,6 @@ pub struct Tweet {
     pub created_at: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct TwitterResponse {
-    data: Option<Vec<Tweet>>,
-    meta: Option<Meta>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Meta {
-    result_count: i32,
-}
 
 #[derive(Debug, Deserialize)]
 struct UserData {
@@ -38,17 +29,11 @@ struct IncludesResponse {
 struct FullTwitterResponse {
     data: Option<Vec<Tweet>>,
     includes: Option<IncludesResponse>,
-    meta: Option<Meta>,
 }
 
 /// Fetch recent tweets from a Twitter list
 pub async fn fetch_list_tweets(config: &Config) -> Result<Vec<Tweet>> {
     let client = reqwest::Client::new();
-
-    // Calculate cutoff time for filtering tweets
-    let cutoff_time = Utc::now() - Duration::hours(config.hours_lookback as i64);
-    let start_time = cutoff_time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let max_results = config.max_tweets.to_string();
 
     // Twitter API v2 endpoint for list tweets
     let url = format!(
@@ -56,12 +41,12 @@ pub async fn fetch_list_tweets(config: &Config) -> Result<Vec<Tweet>> {
         config.twitter_list_id
     );
 
+    // Fetch up to 100 tweets (we'll filter by time client-side)
     let response = client
         .get(&url)
         .bearer_auth(&config.twitter_bearer_token)
         .query(&[
-            ("max_results", max_results.as_str()),
-            ("start_time", start_time.as_str()),
+            ("max_results", "100"),
             ("tweet.fields", "created_at,author_id,text"),
             ("expansions", "author_id"),
             ("user.fields", "name,username"),
@@ -69,6 +54,28 @@ pub async fn fetch_list_tweets(config: &Config) -> Result<Vec<Tweet>> {
         .send()
         .await
         .context("Failed to send request to Twitter API")?;
+
+    // Log rate limit information
+    if let Some(remaining) = response.headers().get("x-rate-limit-remaining") {
+        let limit = response.headers()
+            .get("x-rate-limit-limit")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("?");
+        let reset = response.headers()
+            .get("x-rate-limit-reset")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|ts| ts.parse::<i64>().ok())
+            .and_then(|ts| DateTime::from_timestamp(ts, 0))
+            .map(|dt| dt.format("%H:%M:%S UTC").to_string())
+            .unwrap_or_else(|| "?".to_string());
+
+        info!(
+            "Twitter API rate limit: {}/{} remaining (resets at {})",
+            remaining.to_str().unwrap_or("?"),
+            limit,
+            reset
+        );
+    }
 
     if !response.status().is_success() {
         let status = response.status();
@@ -105,5 +112,19 @@ pub async fn fetch_list_tweets(config: &Config) -> Result<Vec<Tweet>> {
         })
         .collect();
 
-    Ok(tweets)
+    // Filter tweets by time window (client-side)
+    let cutoff_time = Utc::now() - Duration::hours(config.hours_lookback as i64);
+    let filtered_tweets: Vec<Tweet> = tweets
+        .into_iter()
+        .filter(|tweet| {
+            tweet.created_at
+                .as_ref()
+                .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
+                .map(|dt| dt.with_timezone(&Utc) > cutoff_time)
+                .unwrap_or(true)  // Keep tweets without timestamp
+        })
+        .take(config.max_tweets as usize)  // Limit to max_tweets after filtering
+        .collect();
+
+    Ok(filtered_tweets)
 }
