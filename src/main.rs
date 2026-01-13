@@ -1,10 +1,10 @@
 mod config;
 mod openai;
+mod telegram;
 mod twitter;
-mod whatsapp;
 
 use anyhow::Result;
-use tracing::{info, error};
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -36,9 +36,9 @@ async fn main() -> Result<()> {
     info!("Generating summary with OpenAI");
     let summary = openai::summarize_tweets(&config, &tweets).await?;
 
-    // Step 3: Send summary via WhatsApp (Twilio)
-    info!("Sending summary via WhatsApp");
-    whatsapp::send_message(&config, &summary).await?;
+    // Step 3: Send summary via Telegram
+    info!("Sending summary via Telegram");
+    telegram::send_message(&config, &summary).await?;
 
     info!("Summary sent successfully!");
     Ok(())

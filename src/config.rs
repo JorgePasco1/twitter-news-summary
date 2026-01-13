@@ -10,11 +10,9 @@ pub struct Config {
     pub openai_api_key: String,
     pub openai_model: String,
 
-    // Twilio WhatsApp
-    pub twilio_account_sid: String,
-    pub twilio_auth_token: String,
-    pub twilio_whatsapp_from: String,
-    pub whatsapp_to: String,
+    // Telegram
+    pub telegram_bot_token: String,
+    pub telegram_chat_id: String,
 }
 
 impl Config {
@@ -32,15 +30,11 @@ impl Config {
             openai_model: std::env::var("OPENAI_MODEL")
                 .unwrap_or_else(|_| "gpt-4o-mini".to_string()),
 
-            // Twilio
-            twilio_account_sid: std::env::var("TWILIO_ACCOUNT_SID")
-                .context("TWILIO_ACCOUNT_SID not set")?,
-            twilio_auth_token: std::env::var("TWILIO_AUTH_TOKEN")
-                .context("TWILIO_AUTH_TOKEN not set")?,
-            twilio_whatsapp_from: std::env::var("TWILIO_WHATSAPP_FROM")
-                .context("TWILIO_WHATSAPP_FROM not set (format: whatsapp:+14155238886)")?,
-            whatsapp_to: std::env::var("WHATSAPP_TO")
-                .context("WHATSAPP_TO not set (format: whatsapp:+1234567890)")?,
+            // Telegram
+            telegram_bot_token: std::env::var("TELEGRAM_BOT_TOKEN")
+                .context("TELEGRAM_BOT_TOKEN not set")?,
+            telegram_chat_id: std::env::var("TELEGRAM_CHAT_ID")
+                .context("TELEGRAM_CHAT_ID not set")?,
         })
     }
 }

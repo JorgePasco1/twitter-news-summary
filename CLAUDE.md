@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a Rust application that:
 1. Fetches tweets from a Twitter list using Twitter API v2
 2. Summarizes them using OpenAI's Chat Completions API
-3. Sends the summary via WhatsApp using Twilio's API
+3. Sends the summary via Telegram using Telegram Bot API
 4. Runs automatically twice daily via GitHub Actions (8am and 6pm UTC)
 
 ## Common Commands
@@ -40,9 +40,8 @@ cp .env.example .env
 # - TWITTER_LIST_ID (numeric ID from list URL: twitter.com/i/lists/[ID])
 # - OPENAI_API_KEY
 # - OPENAI_MODEL (defaults to gpt-4o-mini)
-# - TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-# - TWILIO_WHATSAPP_FROM (format: whatsapp:+14155238886)
-# - WHATSAPP_TO (format: whatsapp:+1234567890)
+# - TELEGRAM_BOT_TOKEN (from @BotFather on Telegram)
+# - TELEGRAM_CHAT_ID (numeric chat/user ID)
 # - RUST_LOG (defaults to info)
 ```
 
@@ -62,13 +61,13 @@ cp .env.example .env
 - `config.rs` - Environment variable loading and validation
 - `twitter.rs` - Twitter API v2 client for fetching list tweets
 - `openai.rs` - OpenAI chat completions for summarization
-- `whatsapp.rs` - Twilio WhatsApp messaging
+- `telegram.rs` - Telegram Bot API messaging
 
 ### Execution Flow (src/main.rs)
 1. Load configuration from environment variables
 2. Fetch up to 100 recent tweets from the Twitter list
 3. If tweets exist, generate summary with OpenAI
-4. Send summary via WhatsApp with timestamp header
+4. Send summary via Telegram with timestamp header
 
 ### Twitter Integration (src/twitter.rs)
 - Uses Twitter API v2 `/lists/{id}/tweets` endpoint
@@ -82,19 +81,20 @@ cp .env.example .env
 - System prompt instructs to group topics, use bullet points, limit to 500 words
 - Sends numbered list of tweets (with author prefixes from Twitter module)
 - Temperature 0.7, max_tokens 1000
-- Returns plain text summary suitable for WhatsApp
+- Returns plain text summary suitable for Telegram
 
-### WhatsApp Delivery (src/whatsapp.rs)
-- Uses Twilio Messages API
+### Telegram Delivery (src/telegram.rs)
+- Uses Telegram Bot API `/sendMessage` endpoint
 - Formats message with header: "📰 *Twitter Summary*" + UTC timestamp
-- Basic auth with Account SID and Auth Token
-- Supports Twilio Sandbox (for testing) and production numbers
+- Uses Markdown parse mode for formatting
+- Bot token embedded in URL, no separate authentication needed
+- Supports both personal chats and group chats (bot must be added to group)
 
 ### Error Handling
 - Uses `anyhow::Result` for error propagation throughout
 - All external API calls include `.context()` for clear error messages
 - Non-2xx responses from APIs are converted to errors with status + body
-- If no tweets found, gracefully exits without sending WhatsApp message
+- If no tweets found, gracefully exits without sending Telegram message
 
 ### GitHub Actions Workflow (.github/workflows/summarize.yml)
 - Builds release binary with caching (speed optimization)
@@ -109,10 +109,11 @@ cp .env.example .env
 - List must be public OR use OAuth 2.0 User Context for private lists
 - List ID is numeric and found in URL: `twitter.com/i/lists/{id}`
 
-### Twilio WhatsApp Sandbox
-- Free tier: requires joining sandbox by sending join code from phone
-- Sandbox sessions expire after 72 hours of inactivity
-- Production: requires approved Twilio WhatsApp Business profile
+### Telegram Bot Setup
+- Create bot via @BotFather on Telegram (send `/newbot`)
+- Must start a conversation with the bot before it can send messages
+- Get chat ID from `https://api.telegram.org/bot<TOKEN>/getUpdates` after sending a message
+- For groups: add bot to group and use the group's chat ID (negative number)
 
 ### Cargo Release Profile
 The release profile is highly optimized for binary size:
