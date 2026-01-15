@@ -12,10 +12,6 @@ primary_region = 'sjc'
 [env]
   PORT = '8080'
 
-[[mounts]]
-  source = 'subscriber_data'
-  destination = '/data'
-
 [[services]]
   protocol = 'tcp'
   internal_port = 8080

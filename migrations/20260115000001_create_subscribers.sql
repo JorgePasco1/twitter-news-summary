@@ -1,5 +1,5 @@
 -- Create subscribers table
-CREATE TABLE subscribers (
+CREATE TABLE IF NOT EXISTS subscribers (
     chat_id TEXT PRIMARY KEY,
     username TEXT,
     subscribed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -9,4 +9,4 @@ CREATE TABLE subscribers (
 );
 
 -- Index for filtering active subscribers
-CREATE INDEX idx_subscribers_active ON subscribers(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_subscribers_active ON subscribers(is_active) WHERE is_active = TRUE;
