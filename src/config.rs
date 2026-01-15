@@ -15,6 +15,7 @@ pub struct Config {
     // Telegram
     pub telegram_bot_token: String,
     pub telegram_chat_id: String,  // Admin chat ID for notifications
+    pub telegram_webhook_secret: Option<String>,  // Webhook secret for security
 
     // Filtering
     pub max_tweets: u32,
@@ -58,6 +59,7 @@ impl Config {
                 .context("TELEGRAM_BOT_TOKEN not set")?,
             telegram_chat_id: std::env::var("TELEGRAM_CHAT_ID")
                 .unwrap_or_else(|_| "".to_string()),  // Optional in service mode
+            telegram_webhook_secret: std::env::var("TELEGRAM_WEBHOOK_SECRET").ok(),
 
             // Filtering
             max_tweets: std::env::var("MAX_TWEETS")

@@ -121,6 +121,7 @@ mod tests {
             openai_model: "gpt-4o-mini".to_string(),
             telegram_bot_token: "test-token".to_string(),
             telegram_chat_id: "".to_string(),
+            telegram_webhook_secret: None,
             max_tweets: 50,
             hours_lookback: 12,
             nitter_instance: "https://nitter.example.com".to_string(),

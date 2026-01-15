@@ -8,7 +8,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tracing::{info, warn};
-use twitter_news_summary::{config, db, scheduler, telegram};
+use twitter_news_summary::{config, db, scheduler, security, telegram};
 
 struct AppState {
     config: Arc<config::Config>,
@@ -74,8 +74,26 @@ async fn health_check() -> impl IntoResponse {
 /// Telegram webhook handler
 async fn webhook_handler(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(update): Json<telegram::Update>,
 ) -> impl IntoResponse {
+    // Verify Telegram webhook secret if configured
+    if let Some(expected_secret) = &state.config.telegram_webhook_secret {
+        match headers.get("X-Telegram-Bot-Api-Secret-Token") {
+            Some(header_value) => {
+                let provided_secret = header_value.to_str().unwrap_or("");
+                if !security::constant_time_compare(provided_secret, expected_secret) {
+                    warn!("Webhook authentication failed: invalid secret token");
+                    return StatusCode::UNAUTHORIZED;
+                }
+            }
+            None => {
+                warn!("Webhook authentication failed: missing secret token header");
+                return StatusCode::UNAUTHORIZED;
+            }
+        }
+    }
+
     info!("Received webhook: update_id={}", update.update_id);
 
     match telegram::handle_webhook(&state.config, &state.db, update).await {
@@ -92,14 +110,18 @@ async fn trigger_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    // Check API key
-    if let Some(api_key) = &state.config.api_key {
+    // Check API key with constant-time comparison
+    if let Some(expected_key) = &state.config.api_key {
         match headers.get("X-API-Key") {
-            Some(key) if key.to_str().unwrap_or("") == api_key => {
-                // API key valid, proceed
+            Some(header_value) => {
+                let provided_key = header_value.to_str().unwrap_or("");
+                if !security::constant_time_compare(provided_key, expected_key) {
+                    warn!("Unauthorized trigger attempt: invalid API key");
+                    return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+                }
             }
-            _ => {
-                warn!("Unauthorized trigger attempt");
+            None => {
+                warn!("Unauthorized trigger attempt: missing API key");
                 return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
             }
         }
@@ -124,13 +146,20 @@ async fn subscribers_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    // Check API key
-    if let Some(api_key) = &state.config.api_key {
+    // Check API key with constant-time comparison
+    if let Some(expected_key) = &state.config.api_key {
         match headers.get("X-API-Key") {
-            Some(key) if key.to_str().unwrap_or("") == api_key => {
-                // API key valid, proceed
+            Some(header_value) => {
+                let provided_key = header_value.to_str().unwrap_or("");
+                if !security::constant_time_compare(provided_key, expected_key) {
+                    warn!("Unauthorized subscribers list attempt: invalid API key");
+                    return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({
+                        "error": "Unauthorized"
+                    }))).into_response();
+                }
             }
-            _ => {
+            None => {
+                warn!("Unauthorized subscribers list attempt: missing API key");
                 return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({
                     "error": "Unauthorized"
                 }))).into_response();
