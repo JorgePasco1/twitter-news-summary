@@ -1,12 +1,12 @@
-use anyhow::Result;
-use tokio_cron_scheduler::{Job, JobScheduler};
-use tracing::{info, error};
-use std::sync::Arc;
 use crate::config::Config;
 use crate::db::Database;
-use crate::rss;
 use crate::openai;
+use crate::rss;
 use crate::telegram;
+use anyhow::Result;
+use std::sync::Arc;
+use tokio_cron_scheduler::{Job, JobScheduler};
+use tracing::{error, info};
 
 /// Initialize and start the scheduler
 pub async fn start_scheduler(config: Arc<Config>, db: Arc<Database>) -> Result<JobScheduler> {
@@ -90,6 +90,10 @@ async fn run_summary_job(config: &Config, db: &Database, usernames: &[String]) -
     // Generate summary
     info!("Generating summary with OpenAI");
     let summary = openai::summarize_tweets(config, &tweets).await?;
+
+    // Save summary to database
+    db.save_summary(&summary)?;
+    info!("✓ Summary saved to database");
 
     // Send to all subscribers
     info!("Sending summary via Telegram");
@@ -350,14 +354,14 @@ mod tests {
     fn test_utc_conversion_table() {
         // Peru is UTC-5, so we add 5 hours and wrap with modulo 24
         let test_cases = vec![
-            ("00:00", 5),   // 00:00 Peru = 05:00 UTC
-            ("06:00", 11),  // 06:00 Peru = 11:00 UTC
-            ("08:00", 13),  // 08:00 Peru = 13:00 UTC
-            ("12:00", 17),  // 12:00 Peru = 17:00 UTC
-            ("18:00", 23),  // 18:00 Peru = 23:00 UTC
-            ("19:00", 0),   // 19:00 Peru = 00:00 UTC
-            ("20:00", 1),   // 20:00 Peru = 01:00 UTC
-            ("23:00", 4),   // 23:00 Peru = 04:00 UTC
+            ("00:00", 5),  // 00:00 Peru = 05:00 UTC
+            ("06:00", 11), // 06:00 Peru = 11:00 UTC
+            ("08:00", 13), // 08:00 Peru = 13:00 UTC
+            ("12:00", 17), // 12:00 Peru = 17:00 UTC
+            ("18:00", 23), // 18:00 Peru = 23:00 UTC
+            ("19:00", 0),  // 19:00 Peru = 00:00 UTC
+            ("20:00", 1),  // 20:00 Peru = 01:00 UTC
+            ("23:00", 4),  // 23:00 Peru = 04:00 UTC
         ];
 
         for (peru_time, expected_utc_hour) in test_cases {
@@ -401,10 +405,7 @@ mod tests {
     #[test]
     fn test_schedule_times_with_spaces() {
         let times_str = " 08:00 , 12:00 , 20:00 ";
-        let times: Vec<String> = times_str
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .collect();
+        let times: Vec<String> = times_str.split(',').map(|s| s.trim().to_string()).collect();
 
         assert_eq!(times.len(), 3);
         assert_eq!(times[0], "08:00");

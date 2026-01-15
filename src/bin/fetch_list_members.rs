@@ -12,7 +12,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("fetch_list_members=info".parse()?)
+                .add_directive("fetch_list_members=info".parse()?),
         )
         .init();
 
@@ -34,10 +34,13 @@ async fn main() -> Result<()> {
 
     // Save to file
     let output_path = "data/usernames.txt";
-    fs::write(output_path, usernames.join("\n"))
-        .context("Failed to write usernames to file")?;
+    fs::write(output_path, usernames.join("\n")).context("Failed to write usernames to file")?;
 
-    info!("✓ Exported {} usernames to {}", usernames.len(), output_path);
+    info!(
+        "✓ Exported {} usernames to {}",
+        usernames.len(),
+        output_path
+    );
     info!("The main app will now read usernames from this file.");
 
     Ok(())

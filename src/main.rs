@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("twitter_news_summary=info".parse()?)
+                .add_directive("twitter_news_summary=info".parse()?),
         )
         .init();
 
@@ -36,7 +36,9 @@ async fn main() -> Result<()> {
 
     // Warn if API_KEY is not configured
     if config.api_key.is_none() {
-        warn!("⚠️  API_KEY not configured - /trigger and /subscribers endpoints will be unprotected");
+        warn!(
+            "⚠️  API_KEY not configured - /trigger and /subscribers endpoints will be unprotected"
+        );
     }
 
     // Initialize database
@@ -157,16 +159,24 @@ async fn subscribers_handler(
                 let provided_key = header_value.to_str().unwrap_or("");
                 if !security::constant_time_compare(provided_key, expected_key) {
                     warn!("Unauthorized subscribers list attempt: invalid API key");
-                    return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({
-                        "error": "Unauthorized"
-                    }))).into_response();
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({
+                            "error": "Unauthorized"
+                        })),
+                    )
+                        .into_response();
                 }
             }
             None => {
                 warn!("Unauthorized subscribers list attempt: missing API key");
-                return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({
-                    "error": "Unauthorized"
-                }))).into_response();
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "error": "Unauthorized"
+                    })),
+                )
+                    .into_response();
             }
         }
     }
@@ -174,16 +184,24 @@ async fn subscribers_handler(
     match state.db.list_subscribers() {
         Ok(subscribers) => {
             let chat_ids: Vec<String> = subscribers.iter().map(|s| s.chat_id.clone()).collect();
-            (StatusCode::OK, Json(serde_json::json!({
-                "subscribers": chat_ids,
-                "count": subscribers.len()
-            }))).into_response()
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "subscribers": chat_ids,
+                    "count": subscribers.len()
+                })),
+            )
+                .into_response()
         }
         Err(e) => {
             warn!("Failed to list subscribers: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                "error": format!("Error: {}", e)
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Error: {}", e)
+                })),
+            )
+                .into_response()
         }
     }
 }

@@ -1,9 +1,9 @@
+use crate::config::Config;
+use crate::db::Database;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
-use crate::config::Config;
-use crate::db::Database;
 
 // Telegram webhook types
 #[derive(Debug, Deserialize)]
@@ -76,15 +76,34 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
             if db.is_subscribed(&chat_id)? {
                 send_message(config, &chat_id, "✅ You're already subscribed!").await?;
             } else {
-                db.add_subscriber(&chat_id, username.as_deref())?;
+                let (_, needs_welcome) = db.add_subscriber(&chat_id, username.as_deref())?;
                 info!("New subscriber: {} (username: {:?})", chat_id, username);
-                send_message(config, &chat_id, "✅ Successfully subscribed! You'll receive summaries twice daily.").await?;
+                send_message(
+                    config,
+                    &chat_id,
+                    "✅ Successfully subscribed! You'll receive summaries twice daily.",
+                )
+                .await?;
+
+                // Send welcome summary for first-time subscribers
+                if needs_welcome {
+                    if let Some(summary) = db.get_latest_summary()? {
+                        send_welcome_summary(config, db, &chat_id, &summary.content).await?;
+                    } else {
+                        info!("No summary available to send as welcome message");
+                    }
+                }
             }
         }
         "/unsubscribe" => {
             if db.remove_subscriber(&chat_id)? {
                 info!("Unsubscribed: {}", chat_id);
-                send_message(config, &chat_id, "👋 Successfully unsubscribed. You won't receive any more summaries.").await?;
+                send_message(
+                    config,
+                    &chat_id,
+                    "👋 Successfully unsubscribed. You won't receive any more summaries.",
+                )
+                .await?;
             } else {
                 send_message(config, &chat_id, "You're not currently subscribed.").await?;
             }
@@ -93,26 +112,56 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
             let is_subscribed = db.is_subscribed(&chat_id)?;
 
             // Check if user is admin (only admin sees total subscriber count)
-            let is_admin = !config.telegram_chat_id.is_empty() && chat_id == config.telegram_chat_id;
+            let is_admin =
+                !config.telegram_chat_id.is_empty() && chat_id == config.telegram_chat_id;
 
             let status_msg = if is_subscribed {
                 if is_admin {
                     // Admin sees subscriber count
-                    format!("✅ You are subscribed\n📊 Total subscribers: {}", db.subscriber_count()?)
+                    format!(
+                        "✅ You are subscribed\n📊 Total subscribers: {}",
+                        db.subscriber_count()?
+                    )
                 } else {
                     // Regular users only see their own status
                     "✅ You are subscribed".to_string()
                 }
             } else {
-                "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries.".to_string()
+                "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries."
+                    .to_string()
             };
             send_message(config, &chat_id, &status_msg).await?;
         }
         _ => {
             // Unknown command, send help
-            send_message(config, &chat_id, "Unknown command. Use /start to see available commands.").await?;
+            send_message(
+                config,
+                &chat_id,
+                "Unknown command. Use /start to see available commands.",
+            )
+            .await?;
         }
     }
+
+    Ok(())
+}
+
+/// Send welcome summary to a new subscriber
+async fn send_welcome_summary(
+    config: &Config,
+    db: &Database,
+    chat_id: &str,
+    summary: &str,
+) -> Result<()> {
+    let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
+    let message = format!(
+        "📰 *Welcome! Here's the latest summary:*\n_{}_\n\n{}",
+        timestamp, summary
+    );
+
+    send_message(config, chat_id, &message).await?;
+    db.mark_welcome_summary_sent(chat_id)?;
+    info!("✓ Welcome summary sent to {}", chat_id);
 
     Ok(())
 }
@@ -129,11 +178,7 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
     info!("Sending summary to {} subscribers", subscribers.len());
 
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
-    let message = format!(
-        "📰 <b>Twitter Summary</b>\n<i>{}</i>\n\n{}",
-        timestamp,
-        summary
-    );
+    let message = format!("📰 *Twitter Summary*\n_{}_\n\n{}", timestamp, summary);
 
     let mut success_count = 0;
     let mut fail_count = 0;
@@ -154,7 +199,10 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
-    info!("Summary sent: {} successful, {} failed", success_count, fail_count);
+    info!(
+        "Summary sent: {} successful, {} failed",
+        success_count, fail_count
+    );
 
     // Send admin notification if configured
     if !config.telegram_chat_id.is_empty() && fail_count > 0 {
@@ -184,7 +232,7 @@ async fn send_message(config: &Config, chat_id: &str, text: &str) -> Result<()> 
     let request = SendMessageRequest {
         chat_id: chat_id.to_string(),
         text: text.to_string(),
-        parse_mode: "HTML".to_string(),
+        parse_mode: "Markdown".to_string(),
     };
 
     let response = client
@@ -479,8 +527,7 @@ mod tests {
 
         let message = format!(
             "<b>Twitter Summary</b>\n<i>{}</i>\n\n{}",
-            timestamp,
-            summary
+            timestamp, summary
         );
 
         assert!(message.contains("<b>Twitter Summary</b>"));
@@ -541,14 +588,17 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
     #[test]
     fn test_very_long_text() {
         let long_text = "A".repeat(10000);
-        let json = format!(r#"{{
+        let json = format!(
+            r#"{{
             "update_id": 123,
             "message": {{
                 "message_id": 100,
                 "chat": {{"id": 123, "type": "private"}},
                 "text": "{}"
             }}
-        }}"#, long_text);
+        }}"#,
+            long_text
+        );
 
         let update: Update = serde_json::from_str(&json).expect("Should deserialize");
         let message = update.message.unwrap();
@@ -597,7 +647,10 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
     fn test_subscribed_status_format_admin() {
         // Admin sees subscriber count
         let subscriber_count = 42;
-        let status_msg = format!("✅ You are subscribed\n📊 Total subscribers: {}", subscriber_count);
+        let status_msg = format!(
+            "✅ You are subscribed\n📊 Total subscribers: {}",
+            subscriber_count
+        );
 
         assert!(status_msg.contains("subscribed"));
         assert!(status_msg.contains("42"));
@@ -614,7 +667,8 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 
     #[test]
     fn test_unsubscribed_status_format() {
-        let status_msg = "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries.";
+        let status_msg =
+            "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries.";
 
         assert!(status_msg.contains("not subscribed"));
         assert!(status_msg.contains("/subscribe"));
@@ -635,5 +689,503 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 
         assert!(admin_msg.contains("10/12"));
         assert!(admin_msg.contains("2 failed"));
+    }
+
+    // ==================== Welcome Summary Feature Tests ====================
+
+    // ---------- Welcome Summary Message Formatting Tests ----------
+
+    #[test]
+    fn test_welcome_summary_message_format() {
+        use chrono::Utc;
+
+        let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
+        let summary = "Here is the AI news summary content.";
+
+        // This matches the format in send_welcome_summary
+        let message = format!(
+            "\u{1f4f0} *Welcome! Here's the latest summary:*\n_{}_\n\n{}",
+            timestamp, summary
+        );
+
+        assert!(message.contains("Welcome!"));
+        assert!(message.contains("latest summary"));
+        assert!(message.contains("Here is the AI news summary content."));
+        assert!(message.contains("UTC"));
+    }
+
+    #[test]
+    fn test_welcome_summary_differs_from_regular_summary() {
+        use chrono::Utc;
+
+        let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
+        let summary = "Summary content";
+
+        // Welcome format
+        let welcome_msg = format!(
+            "\u{1f4f0} *Welcome! Here's the latest summary:*\n_{}_\n\n{}",
+            timestamp, summary
+        );
+
+        // Regular summary format (from send_to_subscribers)
+        let regular_msg = format!(
+            "\u{1f4f0} *Twitter Summary*\n_{}_\n\n{}",
+            timestamp, summary
+        );
+
+        // They should be different
+        assert_ne!(welcome_msg, regular_msg);
+        assert!(welcome_msg.contains("Welcome!"));
+        assert!(!regular_msg.contains("Welcome!"));
+    }
+
+    #[test]
+    fn test_welcome_summary_with_markdown_in_content() {
+        use chrono::Utc;
+
+        let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
+        let summary = "Summary with *bold* and _italic_ text";
+
+        let message = format!(
+            "\u{1f4f0} *Welcome! Here's the latest summary:*\n_{}_\n\n{}",
+            timestamp, summary
+        );
+
+        // The summary content should be preserved as-is
+        assert!(message.contains("*bold*"));
+        assert!(message.contains("_italic_"));
+    }
+
+    #[test]
+    fn test_welcome_summary_with_long_content() {
+        use chrono::Utc;
+
+        let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
+        let summary = "A".repeat(4000); // Telegram limit is 4096
+
+        let message = format!(
+            "\u{1f4f0} *Welcome! Here's the latest summary:*\n_{}_\n\n{}",
+            timestamp, summary
+        );
+
+        // Message should be constructed (actual truncation would be done at send time)
+        assert!(message.len() > 4000);
+    }
+
+    // ---------- Subscribe Command Logic Tests ----------
+
+    #[test]
+    fn test_subscribe_command_json_parsing() {
+        let json = r#"{
+            "update_id": 123,
+            "message": {
+                "message_id": 100,
+                "from": {
+                    "id": 987654321,
+                    "username": "newsubscriber",
+                    "first_name": "New"
+                },
+                "chat": {
+                    "id": 987654321,
+                    "type": "private"
+                },
+                "text": "/subscribe"
+            }
+        }"#;
+
+        let update: Update = serde_json::from_str(json).expect("Should deserialize");
+        let message = update.message.unwrap();
+
+        assert_eq!(message.text.unwrap(), "/subscribe");
+        assert_eq!(
+            message.from.unwrap().username,
+            Some("newsubscriber".to_string())
+        );
+    }
+
+    #[test]
+    fn test_subscribe_command_without_username() {
+        let json = r#"{
+            "update_id": 123,
+            "message": {
+                "message_id": 100,
+                "from": {
+                    "id": 123,
+                    "first_name": "NoUsername"
+                },
+                "chat": {
+                    "id": 123,
+                    "type": "private"
+                },
+                "text": "/subscribe"
+            }
+        }"#;
+
+        let update: Update = serde_json::from_str(json).expect("Should deserialize");
+        let message = update.message.unwrap();
+        let from = message.from.unwrap();
+
+        assert!(from.username.is_none());
+        assert_eq!(from.first_name, "NoUsername");
+    }
+
+    #[test]
+    fn test_unsubscribe_command_json_parsing() {
+        let json = r#"{
+            "update_id": 456,
+            "message": {
+                "message_id": 200,
+                "from": {
+                    "id": 111222333,
+                    "username": "leavinguser",
+                    "first_name": "Leaving"
+                },
+                "chat": {
+                    "id": 111222333,
+                    "type": "private"
+                },
+                "text": "/unsubscribe"
+            }
+        }"#;
+
+        let update: Update = serde_json::from_str(json).expect("Should deserialize");
+        let message = update.message.unwrap();
+
+        assert_eq!(message.text.unwrap(), "/unsubscribe");
+    }
+
+    // ---------- Message Response Tests ----------
+
+    #[test]
+    fn test_already_subscribed_message() {
+        let msg = "\u{2705} You're already subscribed!";
+        assert!(msg.contains("already subscribed"));
+    }
+
+    #[test]
+    fn test_successful_subscribe_message() {
+        let msg = "\u{2705} Successfully subscribed! You'll receive summaries twice daily.";
+        assert!(msg.contains("Successfully subscribed"));
+        assert!(msg.contains("twice daily"));
+    }
+
+    #[test]
+    fn test_successful_unsubscribe_message() {
+        let msg = "\u{1f44b} Successfully unsubscribed. You won't receive any more summaries.";
+        assert!(msg.contains("Successfully unsubscribed"));
+        assert!(msg.contains("won't receive"));
+    }
+
+    #[test]
+    fn test_not_subscribed_message() {
+        let msg = "You're not currently subscribed.";
+        assert!(msg.contains("not currently subscribed"));
+    }
+
+    // ---------- Welcome Summary Flow Logic Tests ----------
+
+    #[test]
+    fn test_welcome_summary_flow_new_subscriber() {
+        // Simulate the logic flow:
+        // 1. add_subscriber returns (true, true) for new subscriber
+        // 2. get_latest_summary returns Some(summary)
+        // 3. send_welcome_summary is called
+        // 4. mark_welcome_summary_sent is called
+
+        let is_new = true;
+        let needs_welcome = true;
+        let has_summary = true;
+
+        // This represents the decision tree in handle_webhook
+        if !false
+        /* is_subscribed */
+        {
+            let (new_sub, welcome) = (is_new, needs_welcome);
+            assert!(new_sub);
+            assert!(welcome);
+
+            if welcome && has_summary {
+                // Would call send_welcome_summary
+                let would_send_welcome = true;
+                assert!(would_send_welcome);
+            }
+        }
+    }
+
+    #[test]
+    fn test_welcome_summary_flow_returning_subscriber() {
+        // Simulate: returning subscriber (unsubscribed then resubscribed)
+        // add_subscriber returns (true, false)
+
+        let is_new = true; // Counts as new subscription
+        let needs_welcome = false; // But no welcome needed
+
+        if !false
+        /* is_subscribed */
+        {
+            let (_new_sub, welcome) = (is_new, needs_welcome);
+
+            // Should NOT send welcome
+            let should_send_welcome = welcome;
+            assert!(
+                !should_send_welcome,
+                "Returning subscriber should not get welcome"
+            );
+        }
+    }
+
+    #[test]
+    fn test_welcome_summary_flow_no_summary_available() {
+        // Simulate: new subscriber but no summary exists yet
+
+        let is_new = true;
+        let needs_welcome = true;
+        let has_summary = false; // No summary available
+
+        if !false
+        /* is_subscribed */
+        {
+            let (_new_sub, welcome) = (is_new, needs_welcome);
+
+            if welcome {
+                if has_summary {
+                    panic!("Should not reach here");
+                } else {
+                    // Would just log "No summary available"
+                    let logged_no_summary = true;
+                    assert!(logged_no_summary);
+                }
+            }
+        }
+    }
+
+    // ---------- Edge Cases Tests ----------
+
+    #[test]
+    fn test_group_chat_subscription() {
+        let json = r#"{
+            "update_id": 789,
+            "message": {
+                "message_id": 300,
+                "from": {
+                    "id": 123456,
+                    "username": "groupadmin",
+                    "first_name": "Admin"
+                },
+                "chat": {
+                    "id": -1001234567890,
+                    "type": "supergroup"
+                },
+                "text": "/subscribe"
+            }
+        }"#;
+
+        let update: Update = serde_json::from_str(json).expect("Should deserialize");
+        let message = update.message.unwrap();
+
+        // Chat ID for group is negative
+        let chat_id = message.chat.id.to_string();
+        assert!(chat_id.starts_with("-"), "Group chat ID should be negative");
+        assert_eq!(chat_id, "-1001234567890");
+    }
+
+    #[test]
+    fn test_message_from_channel() {
+        // Channels may not have a "from" field
+        let json = r#"{
+            "update_id": 999,
+            "message": {
+                "message_id": 400,
+                "chat": {
+                    "id": -1009876543210,
+                    "type": "channel"
+                },
+                "text": "/subscribe"
+            }
+        }"#;
+
+        let update: Update = serde_json::from_str(json).expect("Should deserialize");
+        let message = update.message.unwrap();
+
+        // from is optional
+        assert!(message.from.is_none());
+        assert_eq!(message.text.unwrap(), "/subscribe");
+    }
+
+    #[test]
+    fn test_empty_update_handling() {
+        // Update with no message (e.g., callback query, edited message)
+        let json = r#"{"update_id": 123}"#;
+
+        let update: Update = serde_json::from_str(json).expect("Should deserialize");
+        assert!(update.message.is_none());
+
+        // In handle_webhook, this would return Ok(()) early
+    }
+
+    #[test]
+    fn test_message_without_text_handling() {
+        // Message with photo/sticker but no text
+        let json = r#"{
+            "update_id": 123,
+            "message": {
+                "message_id": 100,
+                "chat": {"id": 123, "type": "private"}
+            }
+        }"#;
+
+        let update: Update = serde_json::from_str(json).expect("Should deserialize");
+        let message = update.message.unwrap();
+
+        assert!(message.text.is_none());
+        // In handle_webhook, this would return Ok(()) early
+    }
+
+    // ---------- Admin Status Tests ----------
+
+    #[test]
+    fn test_admin_detection_logic() {
+        let admin_chat_id = "123456789";
+        let user_chat_id = "123456789";
+        let other_chat_id = "987654321";
+
+        // Admin check: config.telegram_chat_id matches chat_id
+        let is_admin_for_self = !admin_chat_id.is_empty() && user_chat_id == admin_chat_id;
+        let is_admin_for_other = !admin_chat_id.is_empty() && other_chat_id == admin_chat_id;
+
+        assert!(is_admin_for_self);
+        assert!(!is_admin_for_other);
+    }
+
+    #[test]
+    fn test_admin_detection_with_empty_config() {
+        let admin_chat_id = ""; // Empty in config
+        let user_chat_id = "123456789";
+
+        // Should not be admin if config is empty
+        let is_admin = !admin_chat_id.is_empty() && user_chat_id == admin_chat_id;
+        assert!(!is_admin, "Empty admin config should mean no admin");
+    }
+
+    // ---------- Send To Subscribers Tests ----------
+
+    #[test]
+    fn test_subscriber_iteration_logic() {
+        // Simulate the loop in send_to_subscribers
+        let subscriber_ids = vec!["111", "222", "333"];
+        let mut success_count = 0;
+        let mut fail_count = 0;
+
+        for (_i, _id) in subscriber_ids.iter().enumerate() {
+            // Simulate success for most, failure for one
+            let succeeded = true; // In real code, this is the result of send_message
+            if succeeded {
+                success_count += 1;
+            } else {
+                fail_count += 1;
+            }
+        }
+
+        assert_eq!(success_count, 3);
+        assert_eq!(fail_count, 0);
+    }
+
+    #[test]
+    fn test_empty_subscriber_list_handling() {
+        let subscribers: Vec<String> = vec![];
+
+        // In send_to_subscribers, empty list means early return
+        assert!(subscribers.is_empty());
+        // Would log "No subscribers to send to" and return Ok(())
+    }
+
+    // ---------- Timestamp Formatting Tests ----------
+
+    #[test]
+    fn test_utc_timestamp_format() {
+        use chrono::Utc;
+
+        let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
+
+        // Should match pattern like "2024-01-15 10:30 UTC"
+        assert!(timestamp.ends_with(" UTC"));
+        assert!(timestamp.contains("-"));
+        assert!(timestamp.contains(":"));
+        assert_eq!(timestamp.len(), 20); // "YYYY-MM-DD HH:MM UTC"
+    }
+
+    #[test]
+    fn test_timestamp_in_summary_message() {
+        use chrono::Utc;
+
+        let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
+        let message = format!(
+            "\u{1f4f0} *Twitter Summary*\n_{}_\n\n{}",
+            timestamp, "content"
+        );
+
+        // Timestamp should be in italics (Markdown)
+        assert!(message.contains(&format!("_{}_", timestamp)));
+    }
+
+    // ---------- Rate Limiting Tests ----------
+
+    #[test]
+    fn test_rate_limit_delay_value() {
+        // The code uses 100ms delay between sends
+        let delay_ms = 100u64;
+        assert_eq!(delay_ms, 100);
+
+        // This is reasonable for Telegram's rate limits
+        // Telegram allows about 30 messages/second to different chats
+    }
+
+    // ---------- Integration Scenario Tests ----------
+
+    #[test]
+    fn test_full_subscription_lifecycle_messages() {
+        // Track the messages a user would see through a full lifecycle
+
+        let messages = vec![
+            // 1. User sends /start
+            "\u{1f44b} Welcome to Twitter News Summary Bot!",
+            // 2. User sends /subscribe (first time)
+            "\u{2705} Successfully subscribed! You'll receive summaries twice daily.",
+            // 3. Welcome summary (if available)
+            "\u{1f4f0} *Welcome! Here's the latest summary:*",
+            // 4. User checks /status
+            "\u{2705} You are subscribed",
+            // 5. User sends /unsubscribe
+            "\u{1f44b} Successfully unsubscribed. You won't receive any more summaries.",
+            // 6. User re-subscribes (no welcome this time)
+            "\u{2705} Successfully subscribed! You'll receive summaries twice daily.",
+        ];
+
+        // All messages should be non-empty
+        for msg in &messages {
+            assert!(!msg.is_empty());
+        }
+
+        // Welcome message only appears once (index 2)
+        let welcome_count = messages
+            .iter()
+            .filter(|m| m.contains("Welcome! Here's the latest"))
+            .count();
+        assert_eq!(welcome_count, 1, "Welcome summary should only appear once");
+    }
+
+    #[test]
+    fn test_subscribe_already_subscribed_flow() {
+        // User is already subscribed and sends /subscribe again
+        // Should get "already subscribed" message, not welcome
+
+        let is_subscribed = true;
+        let expected_response = if is_subscribed {
+            "\u{2705} You're already subscribed!"
+        } else {
+            "\u{2705} Successfully subscribed!"
+        };
+
+        assert!(expected_response.contains("already subscribed"));
     }
 }

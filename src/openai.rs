@@ -1,7 +1,7 @@
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::twitter::Tweet;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
 struct ChatRequest {
@@ -322,9 +322,7 @@ mod tests {
 
     #[test]
     fn test_user_prompt_format() {
-        let tweets = vec![
-            create_tweet("1", "@user1: Test tweet"),
-        ];
+        let tweets = vec![create_tweet("1", "@user1: Test tweet")];
 
         let tweets_text = tweets
             .iter()
