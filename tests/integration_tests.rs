@@ -29,7 +29,7 @@ fn create_test_config(nitter_url: &str, temp_dir: &TempDir) -> Config {
         openai_model: "gpt-4o-mini".to_string(),
         telegram_bot_token: "test-telegram-token".to_string(),
         telegram_chat_id: "123456789".to_string(),
-        telegram_webhook_secret: None,
+        telegram_webhook_secret: "test-webhook-secret".to_string(),
         max_tweets: 50,
         hours_lookback: 12,
         nitter_instance: nitter_url.to_string(),

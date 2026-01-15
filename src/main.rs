@@ -77,20 +77,19 @@ async fn webhook_handler(
     headers: HeaderMap,
     Json(update): Json<telegram::Update>,
 ) -> impl IntoResponse {
-    // Verify Telegram webhook secret if configured
-    if let Some(expected_secret) = &state.config.telegram_webhook_secret {
-        match headers.get("X-Telegram-Bot-Api-Secret-Token") {
-            Some(header_value) => {
-                let provided_secret = header_value.to_str().unwrap_or("");
-                if !security::constant_time_compare(provided_secret, expected_secret) {
-                    warn!("Webhook authentication failed: invalid secret token");
-                    return StatusCode::UNAUTHORIZED;
-                }
-            }
-            None => {
-                warn!("Webhook authentication failed: missing secret token header");
+    // Verify Telegram webhook secret (REQUIRED)
+    let expected_secret = &state.config.telegram_webhook_secret;
+    match headers.get("X-Telegram-Bot-Api-Secret-Token") {
+        Some(header_value) => {
+            let provided_secret = header_value.to_str().unwrap_or("");
+            if !security::constant_time_compare(provided_secret, expected_secret) {
+                warn!("Webhook authentication failed: invalid secret token");
                 return StatusCode::UNAUTHORIZED;
             }
+        }
+        None => {
+            warn!("Webhook authentication failed: missing secret token header");
+            return StatusCode::UNAUTHORIZED;
         }
     }
 

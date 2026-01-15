@@ -15,7 +15,7 @@ pub struct Config {
     // Telegram
     pub telegram_bot_token: String,
     pub telegram_chat_id: String,  // Admin chat ID for notifications
-    pub telegram_webhook_secret: Option<String>,  // Webhook secret for security
+    pub telegram_webhook_secret: String,  // REQUIRED: Webhook secret for security
 
     // Filtering
     pub max_tweets: u32,
@@ -59,7 +59,8 @@ impl Config {
                 .context("TELEGRAM_BOT_TOKEN not set")?,
             telegram_chat_id: std::env::var("TELEGRAM_CHAT_ID")
                 .unwrap_or_else(|_| "".to_string()),  // Optional in service mode
-            telegram_webhook_secret: std::env::var("TELEGRAM_WEBHOOK_SECRET").ok(),
+            telegram_webhook_secret: std::env::var("TELEGRAM_WEBHOOK_SECRET")
+                .context("TELEGRAM_WEBHOOK_SECRET not set - REQUIRED for webhook security. Generate with: openssl rand -hex 32")?,
 
             // Filtering
             max_tweets: std::env::var("MAX_TWEETS")
@@ -129,6 +130,7 @@ mod tests {
     fn set_required_env_vars() {
         env::set_var("OPENAI_API_KEY", "test-openai-key");
         env::set_var("TELEGRAM_BOT_TOKEN", "test-telegram-token");
+        env::set_var("TELEGRAM_WEBHOOK_SECRET", "test-webhook-secret");
         env::set_var("NITTER_INSTANCE", "https://nitter.example.com");
     }
 
