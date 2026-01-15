@@ -30,8 +30,12 @@ COPY --from=builder /app/target/release/twitter-news-summary /app/twitter-news-s
 # Copy data directory (usernames.txt)
 COPY data /app/data
 
-# Create data directory for SQLite database
-RUN mkdir -p /data && chmod 777 /data
+# Create non-root user and data directory
+RUN adduser -D -u 1000 appuser && \
+    mkdir -p /data && \
+    chown appuser:appuser /data
+
+USER appuser
 
 EXPOSE 8080
 

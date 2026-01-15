@@ -34,6 +34,11 @@ async fn main() -> Result<()> {
     let config = Arc::new(config::Config::from_env()?);
     info!("✓ Configuration loaded");
 
+    // Warn if API_KEY is not configured
+    if config.api_key.is_none() {
+        warn!("⚠️  API_KEY not configured - /trigger and /subscribers endpoints will be unprotected");
+    }
+
     // Initialize database
     let db = Arc::new(db::Database::new(&config.database_path)?);
     info!("✓ Database initialized at {}", config.database_path);

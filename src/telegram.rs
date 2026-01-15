@@ -164,7 +164,9 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
             success_count + fail_count,
             fail_count
         );
-        let _ = send_message(config, &config.telegram_chat_id, &admin_msg).await;
+        if let Err(e) = send_message(config, &config.telegram_chat_id, &admin_msg).await {
+            warn!("Failed to send admin notification: {}", e);
+        }
     }
 
     Ok(())

@@ -63,8 +63,8 @@ fn time_to_cron(time: &str) -> Result<String> {
     let hour: u8 = parts[0].parse()?;
     let minute: u8 = parts[1].parse()?;
 
-    // Convert Peru time (UTC-5) to UTC
-    // For example: 08:00 Peru = 13:00 UTC
+    // Convert FROM Peru time (UTC-5) TO UTC
+    // For example: 08:00 Peru becomes 13:00 UTC (add 5 hours)
     let utc_hour = (hour + 5) % 24;
 
     // Cron format: "second minute hour day month day_of_week"

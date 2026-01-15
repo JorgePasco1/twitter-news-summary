@@ -3,10 +3,12 @@ use subtle::ConstantTimeEq;
 /// Constant-time string comparison to prevent timing attacks
 /// Use this for comparing API keys, webhook secrets, and other sensitive values
 pub fn constant_time_compare(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.as_bytes().ct_eq(b.as_bytes()).into()
+    // Compare lengths in constant time to avoid leaking secret length
+    let len_eq = a.len().ct_eq(&b.len());
+    // Compare contents in constant time
+    let bytes_eq = a.as_bytes().ct_eq(b.as_bytes());
+    // Combine both checks (both must be true)
+    (len_eq & bytes_eq).into()
 }
 
 #[cfg(test)]
