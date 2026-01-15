@@ -183,7 +183,7 @@ async fn subscribers_handler(
 
     match state.db.list_subscribers().await {
         Ok(subscribers) => {
-            let chat_ids: Vec<String> = subscribers.iter().map(|s| s.chat_id.clone()).collect();
+            let chat_ids: Vec<i64> = subscribers.iter().map(|s| s.chat_id).collect();
             (
                 StatusCode::OK,
                 Json(serde_json::json!({

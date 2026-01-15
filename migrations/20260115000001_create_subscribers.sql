@@ -1,6 +1,6 @@
 -- Create subscribers table
 CREATE TABLE IF NOT EXISTS subscribers (
-    chat_id TEXT PRIMARY KEY,
+    chat_id BIGINT PRIMARY KEY,
     username TEXT,
     subscribed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     first_subscribed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
