@@ -91,6 +91,10 @@ async fn run_summary_job(config: &Config, db: &Database, usernames: &[String]) -
     info!("Generating summary with OpenAI");
     let summary = openai::summarize_tweets(config, &tweets).await?;
 
+    // Save summary to database
+    db.save_summary(&summary)?;
+    info!("✓ Summary saved to database");
+
     // Send to all subscribers
     info!("Sending summary via Telegram");
     telegram::send_to_subscribers(config, db, &summary).await?;

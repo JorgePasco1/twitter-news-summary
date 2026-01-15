@@ -76,9 +76,18 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
             if db.is_subscribed(&chat_id)? {
                 send_message(config, &chat_id, "✅ You're already subscribed!").await?;
             } else {
-                db.add_subscriber(&chat_id, username.as_deref())?;
+                let (_, needs_welcome) = db.add_subscriber(&chat_id, username.as_deref())?;
                 info!("New subscriber: {} (username: {:?})", chat_id, username);
                 send_message(config, &chat_id, "✅ Successfully subscribed! You'll receive summaries twice daily.").await?;
+
+                // Send welcome summary for first-time subscribers
+                if needs_welcome {
+                    if let Some(summary) = db.get_latest_summary()? {
+                        send_welcome_summary(config, db, &chat_id, &summary.content).await?;
+                    } else {
+                        info!("No summary available to send as welcome message");
+                    }
+                }
             }
         }
         "/unsubscribe" => {
@@ -113,6 +122,22 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
             send_message(config, &chat_id, "Unknown command. Use /start to see available commands.").await?;
         }
     }
+
+    Ok(())
+}
+
+/// Send welcome summary to a new subscriber
+async fn send_welcome_summary(config: &Config, db: &Database, chat_id: &str, summary: &str) -> Result<()> {
+    let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
+    let message = format!(
+        "<b>📰 Welcome! Here's the latest summary:</b>\n<i>{}</i>\n\n{}",
+        timestamp,
+        summary
+    );
+
+    send_message(config, chat_id, &message).await?;
+    db.mark_welcome_summary_sent(chat_id)?;
+    info!("✓ Welcome summary sent to {}", chat_id);
 
     Ok(())
 }
