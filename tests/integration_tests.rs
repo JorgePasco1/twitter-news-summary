@@ -192,7 +192,10 @@ fn test_tweet_collection_operations() {
     assert_eq!(tweets[9].id, "1");
 
     // Filter
-    let filtered: Vec<_> = tweets.iter().filter(|t| t.id.parse::<i32>().unwrap() > 5).collect();
+    let filtered: Vec<_> = tweets
+        .iter()
+        .filter(|t| t.id.parse::<i32>().unwrap() > 5)
+        .collect();
     assert_eq!(filtered.len(), 5); // 6, 7, 8, 9, 10
 
     // Take first N
@@ -210,8 +213,12 @@ fn test_config_creates_valid_paths() {
     let config = create_test_config(mock_server_uri, &temp_dir);
 
     // Verify paths are absolute and exist or can be created
-    assert!(config.usernames_file.contains(temp_dir.path().to_str().unwrap()));
-    assert!(config.database_path.contains(temp_dir.path().to_str().unwrap()));
+    assert!(config
+        .usernames_file
+        .contains(temp_dir.path().to_str().unwrap()));
+    assert!(config
+        .database_path
+        .contains(temp_dir.path().to_str().unwrap()));
 
     // Verify usernames file exists
     assert!(std::path::Path::new(&config.usernames_file).exists());
@@ -362,13 +369,17 @@ fn test_subscriber_workflow() {
     assert!(is_new);
 
     // Simulate /subscribe
-    db.add_subscriber(chat_id, Some("newuser")).expect("subscribe");
+    db.add_subscriber(chat_id, Some("newuser"))
+        .expect("subscribe");
     assert!(db.is_subscribed(chat_id).expect("check"));
     assert_eq!(db.subscriber_count().expect("count"), 1);
 
     // Simulate /status
     let status = if db.is_subscribed(chat_id).expect("check") {
-        format!("Subscribed. Total: {}", db.subscriber_count().expect("count"))
+        format!(
+            "Subscribed. Total: {}",
+            db.subscriber_count().expect("count")
+        )
     } else {
         "Not subscribed".to_string()
     };
@@ -509,12 +520,7 @@ fn test_special_characters_handling() {
     let db = Database::new(db_path.to_str().unwrap()).expect("create");
 
     // Test various special characters in username
-    let test_usernames = vec![
-        "user_underscore",
-        "user-dash",
-        "user.dot",
-        "user123numbers",
-    ];
+    let test_usernames = vec!["user_underscore", "user-dash", "user.dot", "user123numbers"];
 
     for username in &test_usernames {
         db.add_subscriber(&format!("id_{}", username), Some(username))
@@ -537,7 +543,8 @@ fn test_empty_and_whitespace_handling() {
     assert!(db.is_subscribed("").expect("check"));
 
     // Whitespace in username
-    db.add_subscriber("id2", Some("  ")).expect("add whitespace");
+    db.add_subscriber("id2", Some("  "))
+        .expect("add whitespace");
     let subs = db.list_subscribers().expect("list");
     let found = subs.iter().find(|s| s.chat_id == "id2");
     assert!(found.is_some());

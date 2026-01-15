@@ -14,8 +14,8 @@ pub struct Config {
 
     // Telegram
     pub telegram_bot_token: String,
-    pub telegram_chat_id: String,  // Admin chat ID for notifications
-    pub telegram_webhook_secret: String,  // REQUIRED: Webhook secret for security
+    pub telegram_chat_id: String, // Admin chat ID for notifications
+    pub telegram_webhook_secret: String, // REQUIRED: Webhook secret for security
 
     // Filtering
     pub max_tweets: u32,
@@ -36,8 +36,8 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self> {
         // Parse schedule times
-        let schedule_times_str = std::env::var("SCHEDULE_TIMES")
-            .unwrap_or_else(|_| "08:00,20:00".to_string());
+        let schedule_times_str =
+            std::env::var("SCHEDULE_TIMES").unwrap_or_else(|_| "08:00,20:00".to_string());
         let schedule_times: Vec<String> = schedule_times_str
             .split(',')
             .map(|s| s.trim().to_string())
@@ -335,7 +335,10 @@ mod tests {
         env::set_var("MAX_TWEETS", "not_a_number");
 
         let config = Config::from_env().unwrap();
-        assert_eq!(config.max_tweets, 50, "Should use default for invalid MAX_TWEETS");
+        assert_eq!(
+            config.max_tweets, 50,
+            "Should use default for invalid MAX_TWEETS"
+        );
     }
 
     #[test]
@@ -372,7 +375,10 @@ mod tests {
         env::set_var("MAX_TWEETS", "-1");
 
         let config = Config::from_env().unwrap();
-        assert_eq!(config.max_tweets, 50, "Should use default for negative value");
+        assert_eq!(
+            config.max_tweets, 50,
+            "Should use default for negative value"
+        );
     }
 
     #[test]

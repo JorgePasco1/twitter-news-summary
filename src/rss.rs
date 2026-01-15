@@ -1,8 +1,8 @@
+use crate::config::Config;
+use crate::twitter::Tweet;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use tracing::{info, warn};
-use crate::config::Config;
-use crate::twitter::Tweet;
 
 /// Fetch tweets from Nitter RSS feeds for given usernames
 pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Result<Vec<Tweet>> {
@@ -23,7 +23,10 @@ pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Res
         );
     }
     info!("✓ Nitter instance is working: {}", config.nitter_instance);
-    info!("Fetching RSS feeds for {} users (with 3s delay between requests)", usernames.len());
+    info!(
+        "Fetching RSS feeds for {} users (with 3s delay between requests)",
+        usernames.len()
+    );
 
     // Fetch RSS feeds sequentially with delay to avoid rate limiting
     let mut all_tweets = Vec::new();
@@ -32,7 +35,13 @@ pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Res
 
     for (index, username) in usernames.iter().enumerate() {
         info!("Fetching @{} account...", username);
-        match fetch_user_rss(&config.nitter_instance, username, config.nitter_api_key.as_deref()).await {
+        match fetch_user_rss(
+            &config.nitter_instance,
+            username,
+            config.nitter_api_key.as_deref(),
+        )
+        .await
+        {
             Ok(tweets) => {
                 success_count += 1;
                 let tweet_count = tweets.len();
@@ -57,15 +66,27 @@ pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Res
     );
 
     if success_count == 0 && fail_count > 0 {
-        warn!("All RSS fetches failed! Check your Nitter instance: {}", config.nitter_instance);
-        warn!("Verify it's accessible: {}/OpenAI/rss", config.nitter_instance);
+        warn!(
+            "All RSS fetches failed! Check your Nitter instance: {}",
+            config.nitter_instance
+        );
+        warn!(
+            "Verify it's accessible: {}/OpenAI/rss",
+            config.nitter_instance
+        );
         warn!("If using Fly.io, check deployment: flyctl status --app <your-app-name>");
     }
 
     // Sort by date (newest first)
     all_tweets.sort_by(|a, b| {
-        let date_a = a.created_at.as_ref().and_then(|d| DateTime::parse_from_rfc3339(d).ok());
-        let date_b = b.created_at.as_ref().and_then(|d| DateTime::parse_from_rfc3339(d).ok());
+        let date_a = a
+            .created_at
+            .as_ref()
+            .and_then(|d| DateTime::parse_from_rfc3339(d).ok());
+        let date_b = b
+            .created_at
+            .as_ref()
+            .and_then(|d| DateTime::parse_from_rfc3339(d).ok());
         date_b.cmp(&date_a)
     });
 
@@ -74,7 +95,8 @@ pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Res
     let filtered_tweets: Vec<Tweet> = all_tweets
         .into_iter()
         .filter(|tweet| {
-            tweet.created_at
+            tweet
+                .created_at
                 .as_ref()
                 .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
                 .map(|dt| dt.with_timezone(&Utc) > cutoff_time)
@@ -123,9 +145,9 @@ async fn test_nitter_instance(instance: &str, api_key: Option<&str>) -> bool {
             match response.bytes().await {
                 Ok(body) => {
                     // Check if it's actually RSS/XML, not HTML
-                    !body.starts_with(b"<!DOCTYPE") &&
-                    !body.starts_with(b"<html") &&
-                    (body.starts_with(b"<?xml") || body.starts_with(b"<rss"))
+                    !body.starts_with(b"<!DOCTYPE")
+                        && !body.starts_with(b"<html")
+                        && (body.starts_with(b"<?xml") || body.starts_with(b"<rss"))
                 }
                 Err(_) => false,
             }
@@ -135,7 +157,11 @@ async fn test_nitter_instance(instance: &str, api_key: Option<&str>) -> bool {
 }
 
 /// Fetch RSS feed for a single user
-async fn fetch_user_rss(instance: &str, username: &str, api_key: Option<&str>) -> Result<Vec<Tweet>> {
+async fn fetch_user_rss(
+    instance: &str,
+    username: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<Tweet>> {
     let url = format!("{}/{}/rss", instance, username);
 
     let mut client_builder = reqwest::Client::builder()
@@ -145,10 +171,7 @@ async fn fetch_user_rss(instance: &str, username: &str, api_key: Option<&str>) -
     // Add API key header if provided
     if let Some(key) = api_key {
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            "X-API-Key",
-            key.parse().context("Invalid API key format")?
-        );
+        headers.insert("X-API-Key", key.parse().context("Invalid API key format")?);
         client_builder = client_builder.default_headers(headers);
     }
 
@@ -176,9 +199,7 @@ async fn fetch_user_rss(instance: &str, username: &str, api_key: Option<&str>) -
 
     // Debug: Check if we got HTML error page instead of RSS
     if body.starts_with(b"<!DOCTYPE") || body.starts_with(b"<html") {
-        anyhow::bail!(
-            "Nitter instance returned HTML instead of RSS (instance may be broken/down)"
-        );
+        anyhow::bail!("Nitter instance returned HTML instead of RSS (instance may be broken/down)");
     }
 
     let channel = rss::Channel::read_from(&body[..])
@@ -237,7 +258,7 @@ mod tests {
     use super::*;
     use chrono::Duration;
     use wiremock::{
-        matchers::{method, path, header},
+        matchers::{header, method, path},
         Mock, MockServer, ResponseTemplate,
     };
 
@@ -460,9 +481,14 @@ mod tests {
     async fn test_nitter_instance_valid_rss_response() {
         let mock_server = MockServer::start().await;
 
-        let rss_content = create_rss_feed("OpenAI", vec![
-            ("Test tweet", "https://example.com/OpenAI/status/1", "Mon, 15 Jan 2024 10:30:00 +0000"),
-        ]);
+        let rss_content = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test tweet",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
 
         Mock::given(method("GET"))
             .and(path("/OpenAI/rss"))
@@ -480,9 +506,10 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/OpenAI/rss"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                "<!DOCTYPE html><html><body>Error page</body></html>",
-            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("<!DOCTYPE html><html><body>Error page</body></html>"),
+            )
             .mount(&mock_server)
             .await;
 
@@ -515,9 +542,14 @@ mod tests {
     async fn test_nitter_instance_with_api_key() {
         let mock_server = MockServer::start().await;
 
-        let rss_content = create_rss_feed("OpenAI", vec![
-            ("Test tweet", "https://example.com/OpenAI/status/1", "Mon, 15 Jan 2024 10:30:00 +0000"),
-        ]);
+        let rss_content = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test tweet",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
 
         Mock::given(method("GET"))
             .and(path("/OpenAI/rss"))
@@ -539,10 +571,21 @@ mod tests {
         let now = Utc::now();
         let pub_date = now.format("%a, %d %b %Y %H:%M:%S %z").to_string();
 
-        let rss_content = create_rss_feed("testuser", vec![
-            ("First tweet", "https://nitter.example.com/testuser/status/1", &pub_date),
-            ("Second tweet", "https://nitter.example.com/testuser/status/2", &pub_date),
-        ]);
+        let rss_content = create_rss_feed(
+            "testuser",
+            vec![
+                (
+                    "First tweet",
+                    "https://nitter.example.com/testuser/status/1",
+                    &pub_date,
+                ),
+                (
+                    "Second tweet",
+                    "https://nitter.example.com/testuser/status/2",
+                    &pub_date,
+                ),
+            ],
+        );
 
         Mock::given(method("GET"))
             .and(path("/testuser/rss"))
@@ -573,7 +616,11 @@ mod tests {
         assert!(result.is_err());
 
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("404"), "Error should mention 404 status: {}", err);
+        assert!(
+            err.contains("404"),
+            "Error should mention 404 status: {}",
+            err
+        );
     }
 
     #[tokio::test]
@@ -604,9 +651,14 @@ mod tests {
     async fn test_fetch_user_rss_with_api_key() {
         let mock_server = MockServer::start().await;
 
-        let rss_content = create_rss_feed("testuser", vec![
-            ("Protected tweet", "https://example.com/testuser/status/1", "Mon, 15 Jan 2024 10:30:00 +0000"),
-        ]);
+        let rss_content = create_rss_feed(
+            "testuser",
+            vec![(
+                "Protected tweet",
+                "https://example.com/testuser/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
 
         Mock::given(method("GET"))
             .and(path("/testuser/rss"))
@@ -665,9 +717,14 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         // Create RSS feed for the Nitter instance test
-        let test_rss = create_rss_feed("OpenAI", vec![
-            ("Test", "https://example.com/OpenAI/status/1", "Mon, 15 Jan 2024 10:30:00 +0000"),
-        ]);
+        let test_rss = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
 
         Mock::given(method("GET"))
             .and(path("/OpenAI/rss"))
@@ -677,9 +734,14 @@ mod tests {
 
         // Create RSS feed for user1 with recent tweets
         let recent_date = rfc2822_date_offset(1); // 1 hour ago
-        let user1_rss = create_rss_feed("user1", vec![
-            ("Recent tweet from user1", "https://example.com/user1/status/100", &recent_date),
-        ]);
+        let user1_rss = create_rss_feed(
+            "user1",
+            vec![(
+                "Recent tweet from user1",
+                "https://example.com/user1/status/100",
+                &recent_date,
+            )],
+        );
 
         Mock::given(method("GET"))
             .and(path("/user1/rss"))
@@ -703,9 +765,14 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         // Nitter instance test feed
-        let test_rss = create_rss_feed("OpenAI", vec![
-            ("Test", "https://example.com/OpenAI/status/1", "Mon, 15 Jan 2024 10:30:00 +0000"),
-        ]);
+        let test_rss = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
 
         Mock::given(method("GET"))
             .and(path("/OpenAI/rss"))
@@ -714,13 +781,20 @@ mod tests {
             .await;
 
         // Create feed with one recent and one old tweet
-        let recent_date = rfc2822_date_offset(2);  // 2 hours ago (within 12h window)
-        let old_date = rfc2822_date_offset(24);    // 24 hours ago (outside 12h window)
+        let recent_date = rfc2822_date_offset(2); // 2 hours ago (within 12h window)
+        let old_date = rfc2822_date_offset(24); // 24 hours ago (outside 12h window)
 
-        let user_rss = create_rss_feed("user1", vec![
-            ("Recent tweet", "https://example.com/user1/status/1", &recent_date),
-            ("Old tweet", "https://example.com/user1/status/2", &old_date),
-        ]);
+        let user_rss = create_rss_feed(
+            "user1",
+            vec![
+                (
+                    "Recent tweet",
+                    "https://example.com/user1/status/1",
+                    &recent_date,
+                ),
+                ("Old tweet", "https://example.com/user1/status/2", &old_date),
+            ],
+        );
 
         Mock::given(method("GET"))
             .and(path("/user1/rss"))
@@ -745,9 +819,14 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         // Nitter instance test feed
-        let test_rss = create_rss_feed("OpenAI", vec![
-            ("Test", "https://example.com/OpenAI/status/1", "Mon, 15 Jan 2024 10:30:00 +0000"),
-        ]);
+        let test_rss = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
 
         Mock::given(method("GET"))
             .and(path("/OpenAI/rss"))
@@ -780,7 +859,7 @@ mod tests {
             .await;
 
         let mut config = create_test_config(&mock_server.uri());
-        config.max_tweets = 3;  // Limit to 3 tweets
+        config.max_tweets = 3; // Limit to 3 tweets
 
         let usernames = vec!["user1".to_string()];
 
@@ -796,9 +875,14 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         // Nitter instance test feed
-        let test_rss = create_rss_feed("OpenAI", vec![
-            ("Test", "https://example.com/OpenAI/status/1", "Mon, 15 Jan 2024 10:30:00 +0000"),
-        ]);
+        let test_rss = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
 
         Mock::given(method("GET"))
             .and(path("/OpenAI/rss"))
@@ -811,11 +895,26 @@ mod tests {
         let date_1h_ago = rfc2822_date_offset(1);
         let date_5h_ago = rfc2822_date_offset(5);
 
-        let user_rss = create_rss_feed("user1", vec![
-            ("3 hours ago", "https://example.com/user1/status/3", &date_3h_ago),
-            ("1 hour ago", "https://example.com/user1/status/1", &date_1h_ago),
-            ("5 hours ago", "https://example.com/user1/status/5", &date_5h_ago),
-        ]);
+        let user_rss = create_rss_feed(
+            "user1",
+            vec![
+                (
+                    "3 hours ago",
+                    "https://example.com/user1/status/3",
+                    &date_3h_ago,
+                ),
+                (
+                    "1 hour ago",
+                    "https://example.com/user1/status/1",
+                    &date_1h_ago,
+                ),
+                (
+                    "5 hours ago",
+                    "https://example.com/user1/status/5",
+                    &date_5h_ago,
+                ),
+            ],
+        );
 
         Mock::given(method("GET"))
             .and(path("/user1/rss"))
@@ -841,9 +940,14 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         // Nitter instance test feed
-        let test_rss = create_rss_feed("OpenAI", vec![
-            ("Test", "https://example.com/OpenAI/status/1", "Mon, 15 Jan 2024 10:30:00 +0000"),
-        ]);
+        let test_rss = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
 
         Mock::given(method("GET"))
             .and(path("/OpenAI/rss"))
@@ -853,9 +957,14 @@ mod tests {
 
         // User1 succeeds
         let recent_date = rfc2822_date_offset(1);
-        let user1_rss = create_rss_feed("user1", vec![
-            ("User1 tweet", "https://example.com/user1/status/1", &recent_date),
-        ]);
+        let user1_rss = create_rss_feed(
+            "user1",
+            vec![(
+                "User1 tweet",
+                "https://example.com/user1/status/1",
+                &recent_date,
+            )],
+        );
 
         Mock::given(method("GET"))
             .and(path("/user1/rss"))
@@ -887,9 +996,14 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         // Nitter instance test feed
-        let test_rss = create_rss_feed("OpenAI", vec![
-            ("Test", "https://example.com/OpenAI/status/1", "Mon, 15 Jan 2024 10:30:00 +0000"),
-        ]);
+        let test_rss = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
 
         Mock::given(method("GET"))
             .and(path("/OpenAI/rss"))
@@ -912,9 +1026,14 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         // Nitter instance test feed
-        let test_rss = create_rss_feed("OpenAI", vec![
-            ("Test", "https://example.com/OpenAI/status/1", "Mon, 15 Jan 2024 10:30:00 +0000"),
-        ]);
+        let test_rss = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
 
         Mock::given(method("GET"))
             .and(path("/OpenAI/rss"))

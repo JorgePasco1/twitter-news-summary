@@ -1,8 +1,8 @@
+use crate::config::Config;
 use anyhow::{Context, Result};
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use tracing::info;
-use crate::config::Config;
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -37,9 +37,13 @@ pub struct Tweet {
 /// Fetch list members from Twitter API
 #[allow(dead_code)]
 pub async fn fetch_list_members(config: &Config) -> Result<Vec<String>> {
-    let bearer_token = config.twitter_bearer_token.as_ref()
+    let bearer_token = config
+        .twitter_bearer_token
+        .as_ref()
         .context("TWITTER_BEARER_TOKEN not set")?;
-    let list_id = config.twitter_list_id.as_ref()
+    let list_id = config
+        .twitter_list_id
+        .as_ref()
         .context("TWITTER_LIST_ID not set")?;
 
     let client = reqwest::Client::new();
@@ -48,10 +52,7 @@ pub async fn fetch_list_members(config: &Config) -> Result<Vec<String>> {
 
     // Fetch all pages of list members
     loop {
-        let url = format!(
-            "https://api.twitter.com/2/lists/{}/members",
-            list_id
-        );
+        let url = format!("https://api.twitter.com/2/lists/{}/members", list_id);
 
         let mut request = client
             .get(&url)
@@ -69,11 +70,13 @@ pub async fn fetch_list_members(config: &Config) -> Result<Vec<String>> {
 
         // Log rate limit information
         if let Some(remaining) = response.headers().get("x-rate-limit-remaining") {
-            let limit = response.headers()
+            let limit = response
+                .headers()
                 .get("x-rate-limit-limit")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("?");
-            let reset = response.headers()
+            let reset = response
+                .headers()
                 .get("x-rate-limit-reset")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|ts| ts.parse::<i64>().ok())
@@ -114,10 +117,7 @@ pub async fn fetch_list_members(config: &Config) -> Result<Vec<String>> {
     info!("Fetched {} list members from Twitter", all_users.len());
 
     // Extract usernames
-    let usernames: Vec<String> = all_users
-        .iter()
-        .map(|u| u.username.clone())
-        .collect();
+    let usernames: Vec<String> = all_users.iter().map(|u| u.username.clone()).collect();
 
     Ok(usernames)
 }
@@ -140,7 +140,10 @@ mod tests {
         assert_eq!(tweet.id, "123456789");
         assert_eq!(tweet.text, "@user: Hello, World!");
         assert_eq!(tweet.author_id, Some("user123".to_string()));
-        assert_eq!(tweet.created_at, Some("2024-01-15T10:30:00+00:00".to_string()));
+        assert_eq!(
+            tweet.created_at,
+            Some("2024-01-15T10:30:00+00:00".to_string())
+        );
     }
 
     #[test]
@@ -221,7 +224,10 @@ mod tests {
         assert_eq!(tweet.id, "123");
         assert_eq!(tweet.text, "Test tweet");
         assert_eq!(tweet.author_id, Some("author123".to_string()));
-        assert_eq!(tweet.created_at, Some("2024-01-15T10:30:00+00:00".to_string()));
+        assert_eq!(
+            tweet.created_at,
+            Some("2024-01-15T10:30:00+00:00".to_string())
+        );
     }
 
     #[test]
@@ -443,15 +449,18 @@ mod tests {
         }
 
         let users = vec![
-            TestUser { username: "user1".to_string() },
-            TestUser { username: "user2".to_string() },
-            TestUser { username: "user3".to_string() },
+            TestUser {
+                username: "user1".to_string(),
+            },
+            TestUser {
+                username: "user2".to_string(),
+            },
+            TestUser {
+                username: "user3".to_string(),
+            },
         ];
 
-        let usernames: Vec<String> = users
-            .iter()
-            .map(|u| u.username.clone())
-            .collect();
+        let usernames: Vec<String> = users.iter().map(|u| u.username.clone()).collect();
 
         assert_eq!(usernames.len(), 3);
         assert_eq!(usernames[0], "user1");
@@ -471,10 +480,7 @@ mod tests {
     #[test]
     fn test_twitter_api_url_format() {
         let list_id = "123456789";
-        let url = format!(
-            "https://api.twitter.com/2/lists/{}/members",
-            list_id
-        );
+        let url = format!("https://api.twitter.com/2/lists/{}/members", list_id);
 
         assert_eq!(url, "https://api.twitter.com/2/lists/123456789/members");
     }
@@ -516,4 +522,3 @@ mod tests {
         }
     }
 }
-
