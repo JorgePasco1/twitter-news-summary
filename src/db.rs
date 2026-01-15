@@ -1,307 +1,194 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
-use std::sync::{Arc, Mutex};
+use chrono::{DateTime, Utc};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{FromRow, PgPool};
+use std::time::Duration;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FromRow)]
 pub struct Subscriber {
     pub chat_id: String,
     pub username: Option<String>,
-    pub subscribed_at: String,
-    pub first_subscribed_at: String,
+    pub subscribed_at: DateTime<Utc>,
+    pub first_subscribed_at: DateTime<Utc>,
     pub is_active: bool,
     pub received_welcome_summary: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FromRow)]
 pub struct Summary {
     pub id: i64,
     pub content: String,
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Clone)]
 pub struct Database {
-    conn: Arc<Mutex<Connection>>,
+    pool: PgPool,
 }
 
 impl Database {
-    /// Initialize database connection and create tables
-    pub fn new(database_path: &str) -> Result<Self> {
-        let conn = Connection::open(database_path)
-            .context(format!("Failed to open database at {}", database_path))?;
+    /// Initialize database connection pool and run migrations
+    pub async fn new(database_url: &str) -> Result<Self> {
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .acquire_timeout(Duration::from_secs(3))
+            .connect(database_url)
+            .await
+            .context("Failed to connect to PostgreSQL database")?;
 
-        // Check if migration is needed
-        let needs_migration = Self::needs_migration(&conn)?;
+        // Run migrations
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .context("Failed to run database migrations")?;
 
-        if needs_migration {
-            Self::run_migration(&conn)?;
-        } else {
-            // Create tables with new schema (for fresh databases)
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS subscribers (
-                    chat_id TEXT PRIMARY KEY,
-                    username TEXT,
-                    subscribed_at TEXT NOT NULL,
-                    first_subscribed_at TEXT NOT NULL,
-                    is_active INTEGER NOT NULL DEFAULT 1,
-                    received_welcome_summary INTEGER NOT NULL DEFAULT 0
-                )",
-                [],
-            )
-            .context("Failed to create subscribers table")?;
-        }
-
-        // Create summaries table (safe to run always)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS summaries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                content TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )",
-            [],
-        )
-        .context("Failed to create summaries table")?;
-
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
-    }
-
-    /// Check if database migration is needed
-    fn needs_migration(conn: &Connection) -> Result<bool> {
-        // Check if subscribers table exists
-        let table_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='subscribers'",
-            [],
-            |row| row.get::<_, i64>(0).map(|count| count > 0),
-        )?;
-
-        if !table_exists {
-            return Ok(false); // New database, no migration needed
-        }
-
-        // Check if is_active column exists
-        let column_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('subscribers') WHERE name='is_active'",
-            [],
-            |row| row.get::<_, i64>(0).map(|count| count > 0),
-        )?;
-
-        Ok(!column_exists) // Need migration if is_active doesn't exist
-    }
-
-    /// Run database migration from old schema to new schema
-    fn run_migration(conn: &Connection) -> Result<()> {
-        conn.execute("BEGIN TRANSACTION", [])?;
-
-        match Self::run_migration_inner(conn) {
-            Ok(_) => {
-                conn.execute("COMMIT", [])?;
-                Ok(())
-            }
-            Err(e) => {
-                conn.execute("ROLLBACK", [])?;
-                Err(e).context("Migration failed and was rolled back")
-            }
-        }
-    }
-
-    fn run_migration_inner(conn: &Connection) -> Result<()> {
-        // Create new table with all columns
-        conn.execute(
-            "CREATE TABLE subscribers_new (
-                chat_id TEXT PRIMARY KEY,
-                username TEXT,
-                subscribed_at TEXT NOT NULL,
-                first_subscribed_at TEXT NOT NULL,
-                is_active INTEGER NOT NULL DEFAULT 1,
-                received_welcome_summary INTEGER NOT NULL DEFAULT 0
-            )",
-            [],
-        )
-        .context("Failed to create new subscribers table")?;
-
-        // Copy existing data
-        // Existing users: is_active=1, received_welcome_summary=1 (don't send welcome)
-        // first_subscribed_at = subscribed_at
-        conn.execute(
-            "INSERT INTO subscribers_new (chat_id, username, subscribed_at, first_subscribed_at, is_active, received_welcome_summary)
-             SELECT chat_id, username, subscribed_at, subscribed_at, 1, 1
-             FROM subscribers",
-            [],
-        ).context("Failed to copy data to new table")?;
-
-        // Drop old table
-        conn.execute("DROP TABLE subscribers", [])
-            .context("Failed to drop old table")?;
-
-        // Rename new table
-        conn.execute("ALTER TABLE subscribers_new RENAME TO subscribers", [])
-            .context("Failed to rename table")?;
-
-        Ok(())
+        Ok(Self { pool })
     }
 
     /// Add a new subscriber or reactivate an existing one
     /// Returns (is_new_subscription, needs_welcome_summary)
     /// - is_new_subscription: true if this is a subscription (new or reactivation)
     /// - needs_welcome_summary: true if this is first-time subscription (send welcome)
-    pub fn add_subscriber(&self, chat_id: &str, username: Option<&str>) -> Result<(bool, bool)> {
-        let conn = self.conn.lock().unwrap();
-        let now = Utc::now().to_rfc3339();
-
+    pub async fn add_subscriber(
+        &self,
+        chat_id: &str,
+        username: Option<&str>,
+    ) -> Result<(bool, bool)> {
         // Check if user exists
-        let mut stmt = conn.prepare(
-            "SELECT is_active, received_welcome_summary FROM subscribers WHERE chat_id = ?1",
-        )?;
-
-        let existing: Option<(bool, bool)> = stmt
-            .query_row(params![chat_id], |row| {
-                Ok((row.get::<_, i64>(0)? != 0, row.get::<_, i64>(1)? != 0))
-            })
-            .optional()?;
+        let existing: Option<(bool, bool)> = sqlx::query_as(
+            "SELECT is_active, received_welcome_summary FROM subscribers WHERE chat_id = $1",
+        )
+        .bind(chat_id)
+        .fetch_optional(&self.pool)
+        .await?;
 
         match existing {
             Some((is_active, received_welcome)) => {
                 if is_active {
                     // Already subscribed, just update username if changed
-                    conn.execute(
-                        "UPDATE subscribers SET username = ?1 WHERE chat_id = ?2",
-                        params![username, chat_id],
-                    )?;
+                    sqlx::query("UPDATE subscribers SET username = $1 WHERE chat_id = $2")
+                        .bind(username)
+                        .bind(chat_id)
+                        .execute(&self.pool)
+                        .await?;
                     Ok((false, false)) // Not a new subscription, no welcome needed
                 } else {
                     // Reactivating subscription
-                    conn.execute(
-                        "UPDATE subscribers SET is_active = 1, subscribed_at = ?1, username = ?2 WHERE chat_id = ?3",
-                        params![now, username, chat_id],
-                    )?;
+                    sqlx::query(
+                        "UPDATE subscribers SET is_active = TRUE, subscribed_at = NOW(), username = $1 WHERE chat_id = $2",
+                    )
+                    .bind(username)
+                    .bind(chat_id)
+                    .execute(&self.pool)
+                    .await?;
                     // Send welcome only if they never received one
                     Ok((true, !received_welcome))
                 }
             }
             None => {
                 // New subscriber
-                conn.execute(
+                sqlx::query(
                     "INSERT INTO subscribers (chat_id, username, subscribed_at, first_subscribed_at, is_active, received_welcome_summary)
-                     VALUES (?1, ?2, ?3, ?3, 1, 0)",
-                    params![chat_id, username, now],
-                ).context("Failed to add new subscriber")?;
+                     VALUES ($1, $2, NOW(), NOW(), TRUE, FALSE)",
+                )
+                .bind(chat_id)
+                .bind(username)
+                .execute(&self.pool)
+                .await
+                .context("Failed to add new subscriber")?;
                 Ok((true, true)) // New subscription, needs welcome
             }
         }
     }
 
-    /// Remove a subscriber (soft delete - sets is_active to 0)
-    pub fn remove_subscriber(&self, chat_id: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows_affected = conn
-            .execute(
-                "UPDATE subscribers SET is_active = 0 WHERE chat_id = ?1 AND is_active = 1",
-                params![chat_id],
-            )
-            .context("Failed to remove subscriber")?;
+    /// Remove a subscriber (soft delete - sets is_active to false)
+    pub async fn remove_subscriber(&self, chat_id: &str) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE subscribers SET is_active = FALSE WHERE chat_id = $1 AND is_active = TRUE",
+        )
+        .bind(chat_id)
+        .execute(&self.pool)
+        .await
+        .context("Failed to remove subscriber")?;
 
-        Ok(rows_affected > 0)
+        Ok(result.rows_affected() > 0)
     }
 
     /// Check if a chat_id is subscribed (active)
-    pub fn is_subscribed(&self, chat_id: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT COUNT(*) FROM subscribers WHERE chat_id = ?1 AND is_active = 1")?;
-        let count: i64 = stmt.query_row(params![chat_id], |row| row.get(0))?;
-        Ok(count > 0)
+    pub async fn is_subscribed(&self, chat_id: &str) -> Result<bool> {
+        let count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM subscribers WHERE chat_id = $1 AND is_active = TRUE",
+        )
+        .bind(chat_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count.0 > 0)
     }
 
     /// Get all active subscribers
-    pub fn list_subscribers(&self) -> Result<Vec<Subscriber>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+    pub async fn list_subscribers(&self) -> Result<Vec<Subscriber>> {
+        let subscribers = sqlx::query_as::<_, Subscriber>(
             "SELECT chat_id, username, subscribed_at, first_subscribed_at, is_active, received_welcome_summary
              FROM subscribers
-             WHERE is_active = 1
-             ORDER BY subscribed_at DESC"
-        )?;
-
-        let subscribers = stmt
-            .query_map([], |row| {
-                Ok(Subscriber {
-                    chat_id: row.get(0)?,
-                    username: row.get(1)?,
-                    subscribed_at: row.get(2)?,
-                    first_subscribed_at: row.get(3)?,
-                    is_active: row.get::<_, i64>(4)? != 0,
-                    received_welcome_summary: row.get::<_, i64>(5)? != 0,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+             WHERE is_active = TRUE
+             ORDER BY subscribed_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         Ok(subscribers)
     }
 
     /// Get count of active subscribers
-    pub fn subscriber_count(&self) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT COUNT(*) FROM subscribers WHERE is_active = 1")?;
-        let count: i64 = stmt.query_row([], |row| row.get(0))?;
-        Ok(count as usize)
+    pub async fn subscriber_count(&self) -> Result<usize> {
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM subscribers WHERE is_active = TRUE")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(count.0 as usize)
     }
 
     /// Save a summary and cleanup old ones (keep last 10)
-    pub fn save_summary(&self, content: &str) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        let created_at = Utc::now().to_rfc3339();
-
-        conn.execute(
-            "INSERT INTO summaries (content, created_at) VALUES (?1, ?2)",
-            params![content, created_at],
+    pub async fn save_summary(&self, content: &str) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as(
+            "INSERT INTO summaries (content, created_at) VALUES ($1, NOW()) RETURNING id",
         )
+        .bind(content)
+        .fetch_one(&self.pool)
+        .await
         .context("Failed to save summary")?;
 
-        let id = conn.last_insert_rowid();
-
         // Cleanup old summaries (keep last 10)
-        conn.execute(
+        sqlx::query(
             "DELETE FROM summaries WHERE id NOT IN (
                 SELECT id FROM summaries ORDER BY created_at DESC LIMIT 10
             )",
-            [],
         )
+        .execute(&self.pool)
+        .await
         .context("Failed to cleanup old summaries")?;
 
-        Ok(id)
+        Ok(row.0)
     }
 
     /// Get the latest summary
-    pub fn get_latest_summary(&self) -> Result<Option<Summary>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+    pub async fn get_latest_summary(&self) -> Result<Option<Summary>> {
+        let summary = sqlx::query_as::<_, Summary>(
             "SELECT id, content, created_at FROM summaries ORDER BY created_at DESC LIMIT 1",
-        )?;
-
-        let summary = stmt
-            .query_row([], |row| {
-                Ok(Summary {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    created_at: row.get(2)?,
-                })
-            })
-            .optional()?;
+        )
+        .fetch_optional(&self.pool)
+        .await?;
 
         Ok(summary)
     }
 
     /// Mark user as having received welcome summary
-    pub fn mark_welcome_summary_sent(&self, chat_id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE subscribers SET received_welcome_summary = 1 WHERE chat_id = ?1",
-            params![chat_id],
-        )
-        .context("Failed to mark welcome summary as sent")?;
+    pub async fn mark_welcome_summary_sent(&self, chat_id: &str) -> Result<()> {
+        sqlx::query("UPDATE subscribers SET received_welcome_summary = TRUE WHERE chat_id = $1")
+            .bind(chat_id)
+            .execute(&self.pool)
+            .await
+            .context("Failed to mark welcome summary as sent")?;
         Ok(())
     }
 }
@@ -309,259 +196,261 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     // ==================== Helper Functions ====================
 
-    /// Create a temporary database for testing
-    fn create_test_db() -> (Database, TempDir) {
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let db_path = temp_dir.path().join("test_subscribers.db");
-        let db = Database::new(db_path.to_str().unwrap()).expect("Failed to create database");
-        (db, temp_dir)
+    /// Create a test database using sqlx test utilities
+    async fn create_test_db() -> Database {
+        // Use a unique in-memory-like database for each test
+        // In practice, we need a real PostgreSQL for testing
+        // For now, we'll use environment variable or skip tests
+        let database_url =
+            std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL must be set for tests");
+
+        let db = Database::new(&database_url)
+            .await
+            .expect("Failed to create test database");
+
+        // Clean up tables for fresh test state
+        sqlx::query("TRUNCATE TABLE summaries, subscribers RESTART IDENTITY CASCADE")
+            .execute(&db.pool)
+            .await
+            .expect("Failed to truncate tables");
+
+        db
     }
 
     // ==================== Database Initialization Tests ====================
 
-    #[test]
-    fn test_database_creation() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_database_creation() {
+        let db = create_test_db().await;
 
         // Database should be created successfully
-        let count = db.subscriber_count().expect("Should get count");
+        let count = db.subscriber_count().await.expect("Should get count");
         assert_eq!(count, 0);
     }
 
-    #[test]
-    fn test_database_creates_table() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_database_creates_table() {
+        let db = create_test_db().await;
 
         // Table should exist and be empty
-        let subscribers = db.list_subscribers().expect("Should list subscribers");
+        let subscribers = db
+            .list_subscribers()
+            .await
+            .expect("Should list subscribers");
         assert!(subscribers.is_empty());
-    }
-
-    #[test]
-    fn test_database_reopening() {
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let db_path = temp_dir.path().join("test.db");
-        let path_str = db_path.to_str().unwrap();
-
-        // Create database and add subscriber
-        {
-            let db = Database::new(path_str).expect("Failed to create database");
-            db.add_subscriber("123", Some("testuser"))
-                .expect("Should add");
-        }
-
-        // Reopen database
-        {
-            let db = Database::new(path_str).expect("Failed to reopen database");
-            let count = db.subscriber_count().expect("Should get count");
-            assert_eq!(count, 1, "Subscriber should persist");
-        }
-    }
-
-    #[test]
-    fn test_invalid_database_path() {
-        // Try to create database in non-existent directory
-        let result = Database::new("/non/existent/path/db.db");
-        assert!(result.is_err());
     }
 
     // ==================== add_subscriber Tests ====================
 
-    #[test]
-    fn test_add_subscriber_with_username() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_add_subscriber_with_username() {
+        let db = create_test_db().await;
 
         db.add_subscriber("123456789", Some("testuser"))
+            .await
             .expect("Should add subscriber");
 
-        let count = db.subscriber_count().expect("Should get count");
+        let count = db.subscriber_count().await.expect("Should get count");
         assert_eq!(count, 1);
 
-        let subscribers = db.list_subscribers().expect("Should list");
+        let subscribers = db.list_subscribers().await.expect("Should list");
         assert_eq!(subscribers[0].chat_id, "123456789");
         assert_eq!(subscribers[0].username, Some("testuser".to_string()));
     }
 
-    #[test]
-    fn test_add_subscriber_without_username() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_add_subscriber_without_username() {
+        let db = create_test_db().await;
 
         db.add_subscriber("123456789", None)
+            .await
             .expect("Should add subscriber");
 
-        let subscribers = db.list_subscribers().expect("Should list");
+        let subscribers = db.list_subscribers().await.expect("Should list");
         assert_eq!(subscribers[0].chat_id, "123456789");
         assert!(subscribers[0].username.is_none());
     }
 
-    #[test]
-    fn test_add_multiple_subscribers() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_add_multiple_subscribers() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("111", Some("user1")).expect("Should add");
-        db.add_subscriber("222", Some("user2")).expect("Should add");
-        db.add_subscriber("333", Some("user3")).expect("Should add");
+        db.add_subscriber("111", Some("user1"))
+            .await
+            .expect("Should add");
+        db.add_subscriber("222", Some("user2"))
+            .await
+            .expect("Should add");
+        db.add_subscriber("333", Some("user3"))
+            .await
+            .expect("Should add");
 
-        let count = db.subscriber_count().expect("Should get count");
+        let count = db.subscriber_count().await.expect("Should get count");
         assert_eq!(count, 3);
     }
 
-    #[test]
-    fn test_add_subscriber_updates_existing() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_add_subscriber_updates_existing() {
+        let db = create_test_db().await;
 
         // Add initial subscriber
         db.add_subscriber("123", Some("olduser"))
+            .await
             .expect("Should add");
 
         // Update with new username
         db.add_subscriber("123", Some("newuser"))
+            .await
             .expect("Should update");
 
         // Should still be only 1 subscriber
-        let count = db.subscriber_count().expect("Should get count");
+        let count = db.subscriber_count().await.expect("Should get count");
         assert_eq!(count, 1);
 
         // Username should be updated
-        let subscribers = db.list_subscribers().expect("Should list");
+        let subscribers = db.list_subscribers().await.expect("Should list");
         assert_eq!(subscribers[0].username, Some("newuser".to_string()));
     }
 
-    #[test]
-    fn test_add_subscriber_negative_chat_id() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_add_subscriber_negative_chat_id() {
+        let db = create_test_db().await;
 
         // Group chats have negative IDs
         db.add_subscriber("-1001234567890", Some("group"))
+            .await
             .expect("Should add group");
 
-        let subscribers = db.list_subscribers().expect("Should list");
+        let subscribers = db.list_subscribers().await.expect("Should list");
         assert_eq!(subscribers[0].chat_id, "-1001234567890");
     }
 
-    #[test]
-    fn test_add_subscriber_empty_username() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_add_subscriber_empty_username() {
+        let db = create_test_db().await;
 
         db.add_subscriber("123", Some(""))
+            .await
             .expect("Should add with empty username");
 
-        let subscribers = db.list_subscribers().expect("Should list");
+        let subscribers = db.list_subscribers().await.expect("Should list");
         assert_eq!(subscribers[0].username, Some("".to_string()));
     }
 
     // ==================== remove_subscriber Tests ====================
 
-    #[test]
-    fn test_remove_existing_subscriber() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_remove_existing_subscriber() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("123", Some("user")).expect("Should add");
-        assert_eq!(db.subscriber_count().expect("count"), 1);
+        db.add_subscriber("123", Some("user"))
+            .await
+            .expect("Should add");
+        assert_eq!(db.subscriber_count().await.expect("count"), 1);
 
-        let removed = db.remove_subscriber("123").expect("Should remove");
+        let removed = db.remove_subscriber("123").await.expect("Should remove");
         assert!(removed);
-        assert_eq!(db.subscriber_count().expect("count"), 0);
+        assert_eq!(db.subscriber_count().await.expect("count"), 0);
     }
 
-    #[test]
-    fn test_remove_nonexistent_subscriber() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_remove_nonexistent_subscriber() {
+        let db = create_test_db().await;
 
         let removed = db
             .remove_subscriber("nonexistent")
+            .await
             .expect("Should handle gracefully");
         assert!(!removed, "Should return false for nonexistent subscriber");
     }
 
-    #[test]
-    fn test_remove_subscriber_idempotent() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_remove_subscriber_idempotent() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("123", None).expect("Should add");
+        db.add_subscriber("123", None).await.expect("Should add");
 
         // First removal
-        let removed1 = db.remove_subscriber("123").expect("Should remove");
+        let removed1 = db.remove_subscriber("123").await.expect("Should remove");
         assert!(removed1);
 
         // Second removal (already gone)
-        let removed2 = db.remove_subscriber("123").expect("Should handle");
+        let removed2 = db.remove_subscriber("123").await.expect("Should handle");
         assert!(!removed2);
     }
 
-    #[test]
-    fn test_remove_one_of_multiple() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_remove_one_of_multiple() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("111", None).expect("add");
-        db.add_subscriber("222", None).expect("add");
-        db.add_subscriber("333", None).expect("add");
+        db.add_subscriber("111", None).await.expect("add");
+        db.add_subscriber("222", None).await.expect("add");
+        db.add_subscriber("333", None).await.expect("add");
 
-        db.remove_subscriber("222").expect("remove");
+        db.remove_subscriber("222").await.expect("remove");
 
-        assert_eq!(db.subscriber_count().expect("count"), 2);
-        assert!(!db.is_subscribed("222").expect("check"));
-        assert!(db.is_subscribed("111").expect("check"));
-        assert!(db.is_subscribed("333").expect("check"));
+        assert_eq!(db.subscriber_count().await.expect("count"), 2);
+        assert!(!db.is_subscribed("222").await.expect("check"));
+        assert!(db.is_subscribed("111").await.expect("check"));
+        assert!(db.is_subscribed("333").await.expect("check"));
     }
 
     // ==================== is_subscribed Tests ====================
 
-    #[test]
-    fn test_is_subscribed_true() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_is_subscribed_true() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("123", None).expect("add");
+        db.add_subscriber("123", None).await.expect("add");
 
-        let subscribed = db.is_subscribed("123").expect("check");
+        let subscribed = db.is_subscribed("123").await.expect("check");
         assert!(subscribed);
     }
 
-    #[test]
-    fn test_is_subscribed_false() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_is_subscribed_false() {
+        let db = create_test_db().await;
 
-        let subscribed = db.is_subscribed("nonexistent").expect("check");
+        let subscribed = db.is_subscribed("nonexistent").await.expect("check");
         assert!(!subscribed);
     }
 
-    #[test]
-    fn test_is_subscribed_after_removal() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_is_subscribed_after_removal() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("123", None).expect("add");
-        assert!(db.is_subscribed("123").expect("check"));
+        db.add_subscriber("123", None).await.expect("add");
+        assert!(db.is_subscribed("123").await.expect("check"));
 
-        db.remove_subscriber("123").expect("remove");
-        assert!(!db.is_subscribed("123").expect("check"));
+        db.remove_subscriber("123").await.expect("remove");
+        assert!(!db.is_subscribed("123").await.expect("check"));
     }
 
     // ==================== list_subscribers Tests ====================
 
-    #[test]
-    fn test_list_empty_subscribers() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_list_empty_subscribers() {
+        let db = create_test_db().await;
 
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
         assert!(subscribers.is_empty());
     }
 
-    #[test]
-    fn test_list_subscribers_order() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_list_subscribers_order() {
+        let db = create_test_db().await;
 
         // Add subscribers with slight delays to ensure different timestamps
-        db.add_subscriber("111", None).expect("add");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        db.add_subscriber("222", None).expect("add");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        db.add_subscriber("333", None).expect("add");
+        db.add_subscriber("111", None).await.expect("add");
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        db.add_subscriber("222", None).await.expect("add");
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        db.add_subscriber("333", None).await.expect("add");
 
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
 
         // Should be ordered by subscribed_at DESC (newest first)
         assert_eq!(subscribers[0].chat_id, "333");
@@ -569,57 +458,57 @@ mod tests {
         assert_eq!(subscribers[2].chat_id, "111");
     }
 
-    #[test]
-    fn test_list_subscribers_contains_all_fields() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_list_subscribers_contains_all_fields() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("123", Some("testuser")).expect("add");
+        db.add_subscriber("123", Some("testuser"))
+            .await
+            .expect("add");
 
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
         let sub = &subscribers[0];
 
         assert_eq!(sub.chat_id, "123");
         assert_eq!(sub.username, Some("testuser".to_string()));
-        assert!(!sub.subscribed_at.is_empty());
-
-        // Verify subscribed_at is valid RFC3339
-        chrono::DateTime::parse_from_rfc3339(&sub.subscribed_at).expect("Should be valid RFC3339");
+        assert!(sub.is_active);
+        assert!(!sub.received_welcome_summary);
     }
 
     // ==================== subscriber_count Tests ====================
 
-    #[test]
-    fn test_subscriber_count_empty() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_subscriber_count_empty() {
+        let db = create_test_db().await;
 
-        let count = db.subscriber_count().expect("count");
+        let count = db.subscriber_count().await.expect("count");
         assert_eq!(count, 0);
     }
 
-    #[test]
-    fn test_subscriber_count_multiple() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_subscriber_count_multiple() {
+        let db = create_test_db().await;
 
         for i in 1..=100 {
-            db.add_subscriber(&i.to_string(), None).expect("add");
+            db.add_subscriber(&i.to_string(), None).await.expect("add");
         }
 
-        let count = db.subscriber_count().expect("count");
+        let count = db.subscriber_count().await.expect("count");
         assert_eq!(count, 100);
     }
 
-    #[test]
-    fn test_subscriber_count_after_add_remove() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_subscriber_count_after_add_remove() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("1", None).expect("add");
-        assert_eq!(db.subscriber_count().expect("count"), 1);
+        db.add_subscriber("1", None).await.expect("add");
+        assert_eq!(db.subscriber_count().await.expect("count"), 1);
 
-        db.add_subscriber("2", None).expect("add");
-        assert_eq!(db.subscriber_count().expect("count"), 2);
+        db.add_subscriber("2", None).await.expect("add");
+        assert_eq!(db.subscriber_count().await.expect("count"), 2);
 
-        db.remove_subscriber("1").expect("remove");
-        assert_eq!(db.subscriber_count().expect("count"), 1);
+        db.remove_subscriber("1").await.expect("remove");
+        assert_eq!(db.subscriber_count().await.expect("count"), 1);
     }
 
     // ==================== Subscriber Struct Tests ====================
@@ -629,8 +518,8 @@ mod tests {
         let subscriber = Subscriber {
             chat_id: "123".to_string(),
             username: Some("test".to_string()),
-            subscribed_at: "2024-01-15T10:00:00+00:00".to_string(),
-            first_subscribed_at: "2024-01-15T10:00:00+00:00".to_string(),
+            subscribed_at: Utc::now(),
+            first_subscribed_at: Utc::now(),
             is_active: true,
             received_welcome_summary: false,
         };
@@ -653,8 +542,8 @@ mod tests {
         let subscriber = Subscriber {
             chat_id: "123".to_string(),
             username: Some("test".to_string()),
-            subscribed_at: "2024-01-15T10:00:00+00:00".to_string(),
-            first_subscribed_at: "2024-01-15T10:00:00+00:00".to_string(),
+            subscribed_at: Utc::now(),
+            first_subscribed_at: Utc::now(),
             is_active: true,
             received_welcome_summary: false,
         };
@@ -665,85 +554,70 @@ mod tests {
         assert!(debug_str.contains("test"));
     }
 
-    // ==================== Concurrency Tests ====================
-
-    #[test]
-    fn test_database_clone_shares_connection() {
-        let (db, _temp_dir) = create_test_db();
-        let db_clone = db.clone();
-
-        // Add via original
-        db.add_subscriber("123", None).expect("add");
-
-        // Check via clone
-        let subscribed = db_clone.is_subscribed("123").expect("check");
-        assert!(subscribed);
-
-        // Count via clone
-        let count = db_clone.subscriber_count().expect("count");
-        assert_eq!(count, 1);
-    }
-
     // ==================== Edge Case Tests ====================
 
-    #[test]
-    fn test_very_long_chat_id() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_very_long_chat_id() {
+        let db = create_test_db().await;
 
         let long_id = "1".repeat(100);
-        db.add_subscriber(&long_id, None).expect("add");
+        db.add_subscriber(&long_id, None).await.expect("add");
 
-        assert!(db.is_subscribed(&long_id).expect("check"));
+        assert!(db.is_subscribed(&long_id).await.expect("check"));
     }
 
-    #[test]
-    fn test_special_characters_in_username() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_special_characters_in_username() {
+        let db = create_test_db().await;
 
         db.add_subscriber("123", Some("user_with-special.chars"))
+            .await
             .expect("add");
 
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
         assert_eq!(
             subscribers[0].username,
             Some("user_with-special.chars".to_string())
         );
     }
 
-    #[test]
-    fn test_unicode_in_username() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_unicode_in_username() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("123", Some("unicode_user")).expect("add");
+        db.add_subscriber("123", Some("unicode_user"))
+            .await
+            .expect("add");
 
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
         assert!(subscribers[0].username.is_some());
     }
 
-    #[test]
-    fn test_sql_injection_prevention_chat_id() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_sql_injection_prevention_chat_id() {
+        let db = create_test_db().await;
 
         // Attempt SQL injection in chat_id
         let malicious_id = "123'; DROP TABLE subscribers; --";
-        db.add_subscriber(malicious_id, None).expect("add");
+        db.add_subscriber(malicious_id, None).await.expect("add");
 
         // Table should still exist and function
-        let count = db.subscriber_count().expect("count");
+        let count = db.subscriber_count().await.expect("count");
         assert_eq!(count, 1);
     }
 
-    #[test]
-    fn test_sql_injection_prevention_username() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_sql_injection_prevention_username() {
+        let db = create_test_db().await;
 
         // Attempt SQL injection in username
         let malicious_username = "user'; DROP TABLE subscribers; --";
         db.add_subscriber("123", Some(malicious_username))
+            .await
             .expect("add");
 
         // Table should still exist and function
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
         assert_eq!(
             subscribers[0].username,
             Some(malicious_username.to_string())
@@ -752,18 +626,16 @@ mod tests {
 
     // ==================== Timestamp Tests ====================
 
-    #[test]
-    fn test_subscribed_at_is_recent() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_subscribed_at_is_recent() {
+        let db = create_test_db().await;
 
         let before = Utc::now();
-        db.add_subscriber("123", None).expect("add");
+        db.add_subscriber("123", None).await.expect("add");
         let after = Utc::now();
 
-        let subscribers = db.list_subscribers().expect("list");
-        let subscribed_at = chrono::DateTime::parse_from_rfc3339(&subscribers[0].subscribed_at)
-            .expect("parse")
-            .with_timezone(&Utc);
+        let subscribers = db.list_subscribers().await.expect("list");
+        let subscribed_at = subscribers[0].subscribed_at;
 
         assert!(subscribed_at >= before);
         assert!(subscribed_at <= after);
@@ -773,12 +645,13 @@ mod tests {
 
     // ---------- add_subscriber Return Value Tests ----------
 
-    #[test]
-    fn test_add_subscriber_new_user_returns_needs_welcome() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_add_subscriber_new_user_returns_needs_welcome() {
+        let db = create_test_db().await;
 
         let (is_new, needs_welcome) = db
             .add_subscriber("123", Some("newuser"))
+            .await
             .expect("Should add subscriber");
 
         assert!(is_new, "First subscription should be new");
@@ -788,16 +661,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_add_subscriber_already_active_returns_no_welcome() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_add_subscriber_already_active_returns_no_welcome() {
+        let db = create_test_db().await;
 
         // First subscription
-        db.add_subscriber("123", Some("user")).expect("add");
+        db.add_subscriber("123", Some("user")).await.expect("add");
 
         // Second call while already subscribed (just updates username)
         let (is_new, needs_welcome) = db
             .add_subscriber("123", Some("updated_user"))
+            .await
             .expect("Should update subscriber");
 
         assert!(!is_new, "Already subscribed user should not be new");
@@ -807,24 +681,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_add_subscriber_reactivation_returns_no_welcome() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_add_subscriber_reactivation_returns_no_welcome() {
+        let db = create_test_db().await;
 
         // First subscription
-        let (is_new1, needs_welcome1) = db.add_subscriber("123", Some("user")).expect("add");
+        let (is_new1, needs_welcome1) = db.add_subscriber("123", Some("user")).await.expect("add");
         assert!(is_new1, "First subscription should be new");
         assert!(needs_welcome1, "First subscription should need welcome");
 
         // Mark welcome as sent (simulating that they received it)
-        db.mark_welcome_summary_sent("123").expect("mark");
+        db.mark_welcome_summary_sent("123").await.expect("mark");
 
         // Unsubscribe
-        db.remove_subscriber("123").expect("remove");
+        db.remove_subscriber("123").await.expect("remove");
 
         // Resubscribe
         let (is_new2, needs_welcome2) = db
             .add_subscriber("123", Some("user"))
+            .await
             .expect("Should reactivate subscriber");
 
         assert!(
@@ -837,23 +712,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_add_subscriber_reactivation_needs_welcome_if_never_received() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_add_subscriber_reactivation_needs_welcome_if_never_received() {
+        let db = create_test_db().await;
 
         // First subscription
-        let (is_new1, needs_welcome1) = db.add_subscriber("123", Some("user")).expect("add");
+        let (is_new1, needs_welcome1) = db.add_subscriber("123", Some("user")).await.expect("add");
         assert!(is_new1, "First subscription should be new");
         assert!(needs_welcome1, "First subscription should need welcome");
 
         // DON'T mark welcome as sent - simulating user unsubscribed before receiving it
 
         // Unsubscribe
-        db.remove_subscriber("123").expect("remove");
+        db.remove_subscriber("123").await.expect("remove");
 
         // Resubscribe
         let (is_new2, needs_welcome2) = db
             .add_subscriber("123", Some("user"))
+            .await
             .expect("Should reactivate subscriber");
 
         assert!(
@@ -866,29 +742,31 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_add_subscriber_reactivation_preserves_first_subscribed_at() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_add_subscriber_reactivation_preserves_first_subscribed_at() {
+        let db = create_test_db().await;
 
         // First subscription
-        db.add_subscriber("123", Some("user")).expect("add");
+        db.add_subscriber("123", Some("user")).await.expect("add");
 
         // Get the first_subscribed_at
-        let subscribers = db.list_subscribers().expect("list");
-        let original_first_subscribed = subscribers[0].first_subscribed_at.clone();
-        let original_subscribed_at = subscribers[0].subscribed_at.clone();
+        let subscribers = db.list_subscribers().await.expect("list");
+        let original_first_subscribed = subscribers[0].first_subscribed_at;
+        let original_subscribed_at = subscribers[0].subscribed_at;
 
         // Unsubscribe
-        db.remove_subscriber("123").expect("remove");
+        db.remove_subscriber("123").await.expect("remove");
 
         // Wait a bit to ensure timestamp differs
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         // Resubscribe
-        db.add_subscriber("123", Some("user")).expect("reactivate");
+        db.add_subscriber("123", Some("user"))
+            .await
+            .expect("reactivate");
 
         // Check timestamps
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
         let sub = &subscribers[0];
 
         // first_subscribed_at should be preserved
@@ -898,47 +776,47 @@ mod tests {
         );
 
         // subscribed_at should be updated
-        assert_ne!(
-            sub.subscribed_at, original_subscribed_at,
+        assert!(
+            sub.subscribed_at > original_subscribed_at,
             "subscribed_at should be updated on reactivation"
         );
     }
 
     // ---------- Soft Delete Tests ----------
 
-    #[test]
-    fn test_remove_subscriber_soft_delete() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_remove_subscriber_soft_delete() {
+        let db = create_test_db().await;
 
         // Add subscriber
-        db.add_subscriber("123", Some("user")).expect("add");
-        assert_eq!(db.subscriber_count().expect("count"), 1);
+        db.add_subscriber("123", Some("user")).await.expect("add");
+        assert_eq!(db.subscriber_count().await.expect("count"), 1);
 
         // Remove (soft delete)
-        let removed = db.remove_subscriber("123").expect("remove");
+        let removed = db.remove_subscriber("123").await.expect("remove");
         assert!(removed, "Should return true for successful removal");
 
         // Count should be 0 (only counts active)
-        assert_eq!(db.subscriber_count().expect("count"), 0);
+        assert_eq!(db.subscriber_count().await.expect("count"), 0);
 
         // is_subscribed should return false
-        assert!(!db.is_subscribed("123").expect("check"));
+        assert!(!db.is_subscribed("123").await.expect("check"));
     }
 
-    #[test]
-    fn test_list_subscribers_excludes_inactive() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_list_subscribers_excludes_inactive() {
+        let db = create_test_db().await;
 
         // Add multiple subscribers
-        db.add_subscriber("111", Some("user1")).expect("add");
-        db.add_subscriber("222", Some("user2")).expect("add");
-        db.add_subscriber("333", Some("user3")).expect("add");
+        db.add_subscriber("111", Some("user1")).await.expect("add");
+        db.add_subscriber("222", Some("user2")).await.expect("add");
+        db.add_subscriber("333", Some("user3")).await.expect("add");
 
         // Soft delete user2
-        db.remove_subscriber("222").expect("remove");
+        db.remove_subscriber("222").await.expect("remove");
 
         // List should only show active subscribers
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
         assert_eq!(subscribers.len(), 2);
 
         let chat_ids: Vec<&str> = subscribers.iter().map(|s| s.chat_id.as_str()).collect();
@@ -947,135 +825,132 @@ mod tests {
         assert!(chat_ids.contains(&"333"));
     }
 
-    #[test]
-    fn test_subscriber_data_preserved_after_soft_delete() {
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let db_path = temp_dir.path().join("test.db");
-        let path_str = db_path.to_str().unwrap();
+    #[tokio::test]
+    async fn test_subscriber_data_preserved_after_soft_delete() {
+        let db = create_test_db().await;
 
         // Create and add subscriber
-        {
-            let db = Database::new(path_str).expect("create db");
-            db.add_subscriber("123", Some("preserved_user"))
-                .expect("add");
-            // Mark welcome as sent before unsubscribing
-            db.mark_welcome_summary_sent("123").expect("mark");
-            db.remove_subscriber("123").expect("remove");
-        }
+        db.add_subscriber("123", Some("preserved_user"))
+            .await
+            .expect("add");
+        // Mark welcome as sent before unsubscribing
+        db.mark_welcome_summary_sent("123").await.expect("mark");
+        db.remove_subscriber("123").await.expect("remove");
 
-        // Reopen database and verify data is still there (just inactive)
-        {
-            let db = Database::new(path_str).expect("reopen db");
+        // Count should be 0 (active only)
+        assert_eq!(db.subscriber_count().await.expect("count"), 0);
 
-            // Count should be 0 (active only)
-            assert_eq!(db.subscriber_count().expect("count"), 0);
+        // But reactivation should work and not need welcome (already received it)
+        let (is_new, needs_welcome) = db
+            .add_subscriber("123", Some("preserved_user"))
+            .await
+            .expect("reactivate");
 
-            // But reactivation should work and not need welcome (already received it)
-            let (is_new, needs_welcome) = db
-                .add_subscriber("123", Some("preserved_user"))
-                .expect("reactivate");
+        assert!(is_new, "Reactivation counts as new subscription");
+        assert!(
+            !needs_welcome,
+            "Reactivation should not need welcome if already received"
+        );
 
-            assert!(is_new, "Reactivation counts as new subscription");
-            assert!(!needs_welcome, "Reactivation should not need welcome if already received");
-
-            // Verify the user is back
-            let subscribers = db.list_subscribers().expect("list");
-            assert_eq!(subscribers.len(), 1);
-            assert_eq!(subscribers[0].chat_id, "123");
-        }
+        // Verify the user is back
+        let subscribers = db.list_subscribers().await.expect("list");
+        assert_eq!(subscribers.len(), 1);
+        assert_eq!(subscribers[0].chat_id, "123");
     }
 
-    #[test]
-    fn test_double_soft_delete_returns_false() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_double_soft_delete_returns_false() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("123", None).expect("add");
+        db.add_subscriber("123", None).await.expect("add");
 
         // First removal
-        let removed1 = db.remove_subscriber("123").expect("remove");
+        let removed1 = db.remove_subscriber("123").await.expect("remove");
         assert!(removed1);
 
         // Second removal (already inactive)
-        let removed2 = db.remove_subscriber("123").expect("remove again");
+        let removed2 = db.remove_subscriber("123").await.expect("remove again");
         assert!(!removed2, "Second removal should return false");
     }
 
     // ---------- received_welcome_summary Flag Tests ----------
 
-    #[test]
-    fn test_new_subscriber_has_welcome_flag_false() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_new_subscriber_has_welcome_flag_false() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("123", Some("user")).expect("add");
+        db.add_subscriber("123", Some("user")).await.expect("add");
 
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
         assert!(
             !subscribers[0].received_welcome_summary,
             "New subscriber should have received_welcome_summary = false"
         );
     }
 
-    #[test]
-    fn test_mark_welcome_summary_sent() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_mark_welcome_summary_sent() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("123", Some("user")).expect("add");
+        db.add_subscriber("123", Some("user")).await.expect("add");
 
         // Initially false
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
         assert!(!subscribers[0].received_welcome_summary);
 
         // Mark as sent
-        db.mark_welcome_summary_sent("123").expect("mark");
+        db.mark_welcome_summary_sent("123").await.expect("mark");
 
         // Should be true now
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
         assert!(
             subscribers[0].received_welcome_summary,
             "Flag should be true after marking"
         );
     }
 
-    #[test]
-    fn test_mark_welcome_summary_sent_idempotent() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_mark_welcome_summary_sent_idempotent() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("123", Some("user")).expect("add");
+        db.add_subscriber("123", Some("user")).await.expect("add");
 
         // Mark multiple times
-        db.mark_welcome_summary_sent("123").expect("mark1");
-        db.mark_welcome_summary_sent("123").expect("mark2");
-        db.mark_welcome_summary_sent("123").expect("mark3");
+        db.mark_welcome_summary_sent("123").await.expect("mark1");
+        db.mark_welcome_summary_sent("123").await.expect("mark2");
+        db.mark_welcome_summary_sent("123").await.expect("mark3");
 
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
         assert!(subscribers[0].received_welcome_summary);
     }
 
-    #[test]
-    fn test_mark_welcome_summary_sent_nonexistent_user() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_mark_welcome_summary_sent_nonexistent_user() {
+        let db = create_test_db().await;
 
         // Should not error, just affect 0 rows
-        let result = db.mark_welcome_summary_sent("nonexistent");
+        let result = db.mark_welcome_summary_sent("nonexistent").await;
         assert!(result.is_ok(), "Should not error for nonexistent user");
     }
 
-    #[test]
-    fn test_welcome_flag_preserved_across_reactivation() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_welcome_flag_preserved_across_reactivation() {
+        let db = create_test_db().await;
 
         // Subscribe and mark welcome sent
-        db.add_subscriber("123", Some("user")).expect("add");
-        db.mark_welcome_summary_sent("123").expect("mark");
+        db.add_subscriber("123", Some("user")).await.expect("add");
+        db.mark_welcome_summary_sent("123").await.expect("mark");
 
         // Unsubscribe
-        db.remove_subscriber("123").expect("remove");
+        db.remove_subscriber("123").await.expect("remove");
 
         // Resubscribe
-        db.add_subscriber("123", Some("user")).expect("reactivate");
+        db.add_subscriber("123", Some("user"))
+            .await
+            .expect("reactivate");
 
         // Welcome flag should still be true (they already received it)
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
         assert!(
             subscribers[0].received_welcome_summary,
             "Welcome flag should be preserved across reactivation"
@@ -1084,473 +959,110 @@ mod tests {
 
     // ---------- Summary Storage Tests ----------
 
-    #[test]
-    fn test_save_summary_returns_id() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_save_summary_returns_id() {
+        let db = create_test_db().await;
 
-        let id1 = db.save_summary("First summary").expect("save1");
-        let id2 = db.save_summary("Second summary").expect("save2");
+        let id1 = db.save_summary("First summary").await.expect("save1");
+        let id2 = db.save_summary("Second summary").await.expect("save2");
 
         assert!(id1 > 0, "ID should be positive");
         assert!(id2 > id1, "IDs should be incrementing");
     }
 
-    #[test]
-    fn test_get_latest_summary_empty() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_get_latest_summary_empty() {
+        let db = create_test_db().await;
 
-        let summary = db.get_latest_summary().expect("get");
+        let summary = db.get_latest_summary().await.expect("get");
         assert!(
             summary.is_none(),
             "Should return None when no summaries exist"
         );
     }
 
-    #[test]
-    fn test_get_latest_summary_returns_most_recent() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_get_latest_summary_returns_most_recent() {
+        let db = create_test_db().await;
 
-        db.save_summary("Old summary").expect("save1");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        db.save_summary("Middle summary").expect("save2");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        db.save_summary("Latest summary").expect("save3");
+        db.save_summary("Old summary").await.expect("save1");
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        db.save_summary("Middle summary").await.expect("save2");
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        db.save_summary("Latest summary").await.expect("save3");
 
-        let summary = db.get_latest_summary().expect("get");
+        let summary = db.get_latest_summary().await.expect("get");
         assert!(summary.is_some());
         assert_eq!(summary.unwrap().content, "Latest summary");
     }
 
-    #[test]
-    fn test_save_summary_cleanup_keeps_last_10() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_save_summary_cleanup_keeps_last_10() {
+        let db = create_test_db().await;
 
         // Save 15 summaries
         for i in 1..=15 {
-            db.save_summary(&format!("Summary {}", i)).expect("save");
+            db.save_summary(&format!("Summary {}", i))
+                .await
+                .expect("save");
         }
 
         // Only the last 10 should remain
         // We can verify by checking that getting latest returns "Summary 15"
-        let latest = db.get_latest_summary().expect("get").expect("should exist");
+        let latest = db
+            .get_latest_summary()
+            .await
+            .expect("get")
+            .expect("should exist");
         assert_eq!(latest.content, "Summary 15");
-
-        // Note: We can't directly count summaries without exposing a method,
-        // but we can verify cleanup worked by checking oldest is gone after more adds
     }
 
-    #[test]
-    fn test_save_summary_with_special_characters() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_save_summary_with_special_characters() {
+        let db = create_test_db().await;
 
         let content = "Summary with 'quotes', \"double quotes\", and \\ backslash";
-        db.save_summary(content).expect("save");
+        db.save_summary(content).await.expect("save");
 
-        let summary = db.get_latest_summary().expect("get").expect("exists");
+        let summary = db.get_latest_summary().await.expect("get").expect("exists");
         assert_eq!(summary.content, content);
     }
 
-    #[test]
-    fn test_save_summary_with_unicode() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_save_summary_with_unicode() {
+        let db = create_test_db().await;
 
         let content = "Summary with unicode: Japanese text, emojis, and more";
-        db.save_summary(content).expect("save");
+        db.save_summary(content).await.expect("save");
 
-        let summary = db.get_latest_summary().expect("get").expect("exists");
+        let summary = db.get_latest_summary().await.expect("get").expect("exists");
         assert_eq!(summary.content, content);
     }
 
-    #[test]
-    fn test_save_summary_with_newlines() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_save_summary_with_newlines() {
+        let db = create_test_db().await;
 
         let content = "Line 1\nLine 2\nLine 3\n\nWith blank line";
-        db.save_summary(content).expect("save");
+        db.save_summary(content).await.expect("save");
 
-        let summary = db.get_latest_summary().expect("get").expect("exists");
+        let summary = db.get_latest_summary().await.expect("get").expect("exists");
         assert_eq!(summary.content, content);
     }
 
-    #[test]
-    fn test_summary_created_at_is_valid_rfc3339() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_summary_created_at_is_recent() {
+        let db = create_test_db().await;
 
         let before = Utc::now();
-        db.save_summary("Test").expect("save");
+        db.save_summary("Test").await.expect("save");
         let after = Utc::now();
 
-        let summary = db.get_latest_summary().expect("get").expect("exists");
-        let created_at = chrono::DateTime::parse_from_rfc3339(&summary.created_at)
-            .expect("Should be valid RFC3339")
-            .with_timezone(&Utc);
+        let summary = db.get_latest_summary().await.expect("get").expect("exists");
+        let created_at = summary.created_at;
 
         assert!(created_at >= before);
         assert!(created_at <= after);
-    }
-
-    // ---------- Database Migration Tests ----------
-
-    #[test]
-    fn test_migration_from_old_schema() {
-        let temp_dir = TempDir::new().expect("create temp dir");
-        let db_path = temp_dir.path().join("migrate.db");
-        let path_str = db_path.to_str().unwrap();
-
-        // Create database with OLD schema (without new columns)
-        {
-            let conn = Connection::open(path_str).expect("open");
-            conn.execute(
-                "CREATE TABLE subscribers (
-                    chat_id TEXT PRIMARY KEY,
-                    username TEXT,
-                    subscribed_at TEXT NOT NULL
-                )",
-                [],
-            )
-            .expect("create old table");
-
-            // Insert some old data
-            conn.execute(
-                "INSERT INTO subscribers (chat_id, username, subscribed_at) VALUES ('123', 'olduser', '2024-01-01T00:00:00+00:00')",
-                [],
-            ).expect("insert");
-            conn.execute(
-                "INSERT INTO subscribers (chat_id, username, subscribed_at) VALUES ('456', NULL, '2024-01-02T00:00:00+00:00')",
-                [],
-            ).expect("insert");
-        }
-
-        // Reopen with Database::new which should run migration
-        {
-            let db = Database::new(path_str).expect("reopen with migration");
-
-            // Verify subscribers were migrated
-            let count = db.subscriber_count().expect("count");
-            assert_eq!(count, 2, "Both subscribers should be migrated");
-
-            // Verify the data
-            let subscribers = db.list_subscribers().expect("list");
-            assert_eq!(subscribers.len(), 2);
-
-            // Find user 123
-            let user123 = subscribers
-                .iter()
-                .find(|s| s.chat_id == "123")
-                .expect("find 123");
-            assert_eq!(user123.username, Some("olduser".to_string()));
-            assert!(user123.is_active, "Migrated user should be active");
-            assert!(
-                user123.received_welcome_summary,
-                "Migrated user should have welcome flag = true"
-            );
-            assert_eq!(
-                user123.first_subscribed_at, user123.subscribed_at,
-                "Migrated user first_subscribed_at should equal subscribed_at"
-            );
-        }
-    }
-
-    #[test]
-    fn test_fresh_database_uses_new_schema() {
-        let (db, _temp_dir) = create_test_db();
-
-        // Add a new subscriber
-        db.add_subscriber("123", Some("newuser")).expect("add");
-
-        let subscribers = db.list_subscribers().expect("list");
-        let sub = &subscribers[0];
-
-        // Verify all new fields exist and have correct defaults
-        assert!(sub.is_active);
-        assert!(
-            !sub.received_welcome_summary,
-            "New subscriber should have welcome flag = false"
-        );
-        assert_eq!(
-            sub.first_subscribed_at, sub.subscribed_at,
-            "New subscriber first_subscribed_at should equal subscribed_at"
-        );
-    }
-
-    #[test]
-    fn test_migration_does_not_run_on_fresh_db() {
-        // This test ensures needs_migration returns false for fresh databases
-        let temp_dir = TempDir::new().expect("create temp dir");
-        let db_path = temp_dir.path().join("fresh.db");
-        let path_str = db_path.to_str().unwrap();
-
-        // Create fresh database
-        let _db = Database::new(path_str).expect("create fresh db");
-
-        // If migration ran incorrectly, there would be errors
-        // The fact that Database::new succeeds is the test
-    }
-
-    #[test]
-    fn test_migration_already_migrated_database() {
-        let temp_dir = TempDir::new().expect("create temp dir");
-        let db_path = temp_dir.path().join("already_migrated.db");
-        let path_str = db_path.to_str().unwrap();
-
-        // Create database with new schema
-        {
-            let _db = Database::new(path_str).expect("create");
-        }
-
-        // Reopen - should not attempt migration
-        {
-            let db = Database::new(path_str).expect("reopen");
-            // Add subscriber to verify schema is correct
-            db.add_subscriber("123", None).expect("add");
-            assert_eq!(db.subscriber_count().expect("count"), 1);
-        }
-    }
-
-    // ---------- Concurrency Tests ----------
-
-    #[test]
-    fn test_concurrent_save_summary_no_deadlock() {
-        let (db, _temp_dir) = create_test_db();
-
-        // Spawn multiple threads to save summaries concurrently
-        let handles: Vec<_> = (0..10)
-            .map(|i| {
-                let db_clone = db.clone();
-                std::thread::spawn(move || {
-                    for j in 0..5 {
-                        let content = format!("Summary from thread {} iteration {}", i, j);
-                        db_clone
-                            .save_summary(&content)
-                            .expect("save should not deadlock");
-                    }
-                })
-            })
-            .collect();
-
-        // Wait for all threads with timeout
-        for handle in handles {
-            handle
-                .join()
-                .expect("Thread should complete without deadlock");
-        }
-
-        // Verify we can still access the database
-        let summary = db.get_latest_summary().expect("get");
-        assert!(
-            summary.is_some(),
-            "Should have summaries after concurrent writes"
-        );
-    }
-
-    #[test]
-    fn test_concurrent_add_remove_subscribers() {
-        let (db, _temp_dir) = create_test_db();
-
-        // Pre-add some subscribers
-        for i in 0..50 {
-            db.add_subscriber(&format!("{}", i), None).expect("add");
-        }
-
-        // Concurrent add/remove operations
-        let handles: Vec<_> = (0..5)
-            .map(|i| {
-                let db_clone = db.clone();
-                std::thread::spawn(move || {
-                    for j in 0..20 {
-                        let id = format!("{}", i * 100 + j);
-                        db_clone.add_subscriber(&id, Some("user")).expect("add");
-
-                        // Sometimes remove
-                        if j % 3 == 0 {
-                            db_clone.remove_subscriber(&id).expect("remove");
-                        }
-                    }
-                })
-            })
-            .collect();
-
-        for handle in handles {
-            handle.join().expect("Thread should complete");
-        }
-
-        // Database should still be functional
-        let count = db.subscriber_count().expect("count");
-        assert!(count > 0, "Should have some subscribers remaining");
-    }
-
-    #[test]
-    fn test_concurrent_read_write_subscribers() {
-        let (db, _temp_dir) = create_test_db();
-
-        // Add initial subscriber
-        db.add_subscriber("123", Some("initial")).expect("add");
-
-        // Concurrent reads and writes
-        let handles: Vec<_> = (0..10)
-            .map(|i| {
-                let db_clone = db.clone();
-                std::thread::spawn(move || {
-                    for j in 0..10 {
-                        if i % 2 == 0 {
-                            // Reader thread
-                            let _ = db_clone.list_subscribers();
-                            let _ = db_clone.subscriber_count();
-                            let _ = db_clone.is_subscribed("123");
-                        } else {
-                            // Writer thread - use i and j for unique ID
-                            let id = format!("thread{}iter{}", i, j);
-                            let _ = db_clone.add_subscriber(&id, None);
-                        }
-                    }
-                })
-            })
-            .collect();
-
-        for handle in handles {
-            handle.join().expect("Thread should complete");
-        }
-
-        // Verify database integrity
-        assert!(db.is_subscribed("123").expect("check"));
-    }
-
-    #[test]
-    fn test_save_summary_cleanup_is_atomic_with_insert() {
-        let (db, _temp_dir) = create_test_db();
-
-        // Save 15 summaries to trigger cleanup
-        for i in 1..=15 {
-            db.save_summary(&format!("Summary {}", i)).expect("save");
-        }
-
-        // Verify latest is accessible
-        let latest = db.get_latest_summary().expect("get").expect("exists");
-        assert_eq!(latest.content, "Summary 15");
-
-        // Save more and verify cleanup continues to work
-        for i in 16..=25 {
-            db.save_summary(&format!("Summary {}", i)).expect("save");
-        }
-
-        let latest = db.get_latest_summary().expect("get").expect("exists");
-        assert_eq!(latest.content, "Summary 25");
-    }
-
-    // ---------- Edge Cases for Welcome Summary Flow ----------
-
-    #[test]
-    fn test_full_welcome_summary_flow() {
-        let (db, _temp_dir) = create_test_db();
-
-        // Step 1: New user subscribes
-        let (is_new, needs_welcome) = db.add_subscriber("123", Some("newbie")).expect("add");
-        assert!(is_new);
-        assert!(needs_welcome);
-
-        // Step 2: Save a summary (simulating the scheduled job)
-        db.save_summary("Today's news summary").expect("save");
-
-        // Step 3: User gets welcome summary
-        let summary = db.get_latest_summary().expect("get").expect("exists");
-        assert_eq!(summary.content, "Today's news summary");
-
-        // Step 4: Mark welcome as sent
-        db.mark_welcome_summary_sent("123").expect("mark");
-
-        // Verify state
-        let subscribers = db.list_subscribers().expect("list");
-        let sub = &subscribers[0];
-        assert!(sub.is_active);
-        assert!(sub.received_welcome_summary);
-    }
-
-    #[test]
-    fn test_subscribe_before_any_summary_exists() {
-        let (db, _temp_dir) = create_test_db();
-
-        // User subscribes when no summaries exist
-        let (is_new, needs_welcome) = db.add_subscriber("123", Some("early_bird")).expect("add");
-        assert!(is_new);
-        assert!(needs_welcome);
-
-        // Get latest summary - should be None
-        let summary = db.get_latest_summary().expect("get");
-        assert!(summary.is_none(), "No summary should exist yet");
-
-        // Application logic would skip sending welcome in this case
-        // But the flag should still be marked to prevent sending later
-        db.mark_welcome_summary_sent("123").expect("mark");
-
-        let subscribers = db.list_subscribers().expect("list");
-        assert!(subscribers[0].received_welcome_summary);
-    }
-
-    #[test]
-    fn test_unsubscribe_resubscribe_cycle() {
-        let (db, _temp_dir) = create_test_db();
-
-        // First subscription
-        let (is_new1, needs_welcome1) = db.add_subscriber("123", None).expect("sub1");
-        assert!(is_new1 && needs_welcome1, "First sub should need welcome");
-
-        // Mark welcome sent
-        db.mark_welcome_summary_sent("123").expect("mark");
-
-        // Unsubscribe
-        db.remove_subscriber("123").expect("unsub1");
-        assert!(!db.is_subscribed("123").expect("check"));
-
-        // Resubscribe
-        let (is_new2, needs_welcome2) = db.add_subscriber("123", None).expect("sub2");
-        assert!(is_new2, "Resubscription counts as new");
-        assert!(!needs_welcome2, "Resubscription should not need welcome");
-
-        // Unsubscribe again
-        db.remove_subscriber("123").expect("unsub2");
-
-        // Resubscribe again
-        let (is_new3, needs_welcome3) = db.add_subscriber("123", None).expect("sub3");
-        assert!(is_new3);
-        assert!(
-            !needs_welcome3,
-            "Third subscription still shouldn't need welcome"
-        );
-    }
-
-    #[test]
-    fn test_first_subscribed_at_vs_subscribed_at() {
-        let (db, _temp_dir) = create_test_db();
-
-        // First subscription
-        db.add_subscriber("123", None).expect("add");
-        let subs1 = db.list_subscribers().expect("list");
-        let first_subscribed = subs1[0].first_subscribed_at.clone();
-        let subscribed1 = subs1[0].subscribed_at.clone();
-
-        // They should be equal on first subscription
-        assert_eq!(first_subscribed, subscribed1);
-
-        // Unsubscribe and wait
-        db.remove_subscriber("123").expect("remove");
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        // Resubscribe
-        db.add_subscriber("123", None).expect("reactivate");
-        let subs2 = db.list_subscribers().expect("list");
-
-        // first_subscribed_at should be same as before
-        assert_eq!(subs2[0].first_subscribed_at, first_subscribed);
-
-        // subscribed_at should be newer
-        let subscribed2_dt =
-            chrono::DateTime::parse_from_rfc3339(&subs2[0].subscribed_at).expect("parse");
-        let subscribed1_dt = chrono::DateTime::parse_from_rfc3339(&subscribed1).expect("parse");
-
-        assert!(
-            subscribed2_dt > subscribed1_dt,
-            "subscribed_at should be updated on reactivation"
-        );
     }
 
     // ---------- Summary Struct Tests ----------
@@ -1560,7 +1072,7 @@ mod tests {
         let summary = Summary {
             id: 42,
             content: "Test content".to_string(),
-            created_at: "2024-01-15T10:00:00+00:00".to_string(),
+            created_at: Utc::now(),
         };
 
         let cloned = summary.clone();
@@ -1575,7 +1087,7 @@ mod tests {
         let summary = Summary {
             id: 42,
             content: "Test".to_string(),
-            created_at: "2024-01-15T10:00:00+00:00".to_string(),
+            created_at: Utc::now(),
         };
 
         let debug_str = format!("{:?}", summary);
@@ -1586,62 +1098,180 @@ mod tests {
 
     // ---------- Subscriber New Fields Tests ----------
 
-    #[test]
-    fn test_subscriber_is_active_field() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_subscriber_is_active_field() {
+        let db = create_test_db().await;
 
-        db.add_subscriber("123", None).expect("add");
+        db.add_subscriber("123", None).await.expect("add");
 
-        let subscribers = db.list_subscribers().expect("list");
+        let subscribers = db.list_subscribers().await.expect("list");
         assert!(
             subscribers[0].is_active,
             "Active subscriber should have is_active = true"
         );
     }
 
-    #[test]
-    fn test_subscriber_first_subscribed_at_field() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_subscriber_first_subscribed_at_field() {
+        let db = create_test_db().await;
 
         let before = Utc::now();
-        db.add_subscriber("123", None).expect("add");
+        db.add_subscriber("123", None).await.expect("add");
         let after = Utc::now();
 
-        let subscribers = db.list_subscribers().expect("list");
-        let first_subscribed =
-            chrono::DateTime::parse_from_rfc3339(&subscribers[0].first_subscribed_at)
-                .expect("parse")
-                .with_timezone(&Utc);
+        let subscribers = db.list_subscribers().await.expect("list");
+        let first_subscribed = subscribers[0].first_subscribed_at;
 
         assert!(first_subscribed >= before);
         assert!(first_subscribed <= after);
     }
 
+    // ---------- Full Flow Tests ----------
+
+    #[tokio::test]
+    async fn test_full_welcome_summary_flow() {
+        let db = create_test_db().await;
+
+        // Step 1: New user subscribes
+        let (is_new, needs_welcome) = db.add_subscriber("123", Some("newbie")).await.expect("add");
+        assert!(is_new);
+        assert!(needs_welcome);
+
+        // Step 2: Save a summary (simulating the scheduled job)
+        db.save_summary("Today's news summary").await.expect("save");
+
+        // Step 3: User gets welcome summary
+        let summary = db.get_latest_summary().await.expect("get").expect("exists");
+        assert_eq!(summary.content, "Today's news summary");
+
+        // Step 4: Mark welcome as sent
+        db.mark_welcome_summary_sent("123").await.expect("mark");
+
+        // Verify state
+        let subscribers = db.list_subscribers().await.expect("list");
+        let sub = &subscribers[0];
+        assert!(sub.is_active);
+        assert!(sub.received_welcome_summary);
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_before_any_summary_exists() {
+        let db = create_test_db().await;
+
+        // User subscribes when no summaries exist
+        let (is_new, needs_welcome) = db
+            .add_subscriber("123", Some("early_bird"))
+            .await
+            .expect("add");
+        assert!(is_new);
+        assert!(needs_welcome);
+
+        // Get latest summary - should be None
+        let summary = db.get_latest_summary().await.expect("get");
+        assert!(summary.is_none(), "No summary should exist yet");
+
+        // Application logic would skip sending welcome in this case
+        // But the flag should still be marked to prevent sending later
+        db.mark_welcome_summary_sent("123").await.expect("mark");
+
+        let subscribers = db.list_subscribers().await.expect("list");
+        assert!(subscribers[0].received_welcome_summary);
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_resubscribe_cycle() {
+        let db = create_test_db().await;
+
+        // First subscription
+        let (is_new1, needs_welcome1) = db.add_subscriber("123", None).await.expect("sub1");
+        assert!(is_new1 && needs_welcome1, "First sub should need welcome");
+
+        // Mark welcome sent
+        db.mark_welcome_summary_sent("123").await.expect("mark");
+
+        // Unsubscribe
+        db.remove_subscriber("123").await.expect("unsub1");
+        assert!(!db.is_subscribed("123").await.expect("check"));
+
+        // Resubscribe
+        let (is_new2, needs_welcome2) = db.add_subscriber("123", None).await.expect("sub2");
+        assert!(is_new2, "Resubscription counts as new");
+        assert!(!needs_welcome2, "Resubscription should not need welcome");
+
+        // Unsubscribe again
+        db.remove_subscriber("123").await.expect("unsub2");
+
+        // Resubscribe again
+        let (is_new3, needs_welcome3) = db.add_subscriber("123", None).await.expect("sub3");
+        assert!(is_new3);
+        assert!(
+            !needs_welcome3,
+            "Third subscription still shouldn't need welcome"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_first_subscribed_at_vs_subscribed_at() {
+        let db = create_test_db().await;
+
+        // First subscription
+        db.add_subscriber("123", None).await.expect("add");
+        let subs1 = db.list_subscribers().await.expect("list");
+        let first_subscribed = subs1[0].first_subscribed_at;
+        let subscribed1 = subs1[0].subscribed_at;
+
+        // They should be equal on first subscription
+        assert_eq!(first_subscribed, subscribed1);
+
+        // Unsubscribe and wait
+        db.remove_subscriber("123").await.expect("remove");
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Resubscribe
+        db.add_subscriber("123", None).await.expect("reactivate");
+        let subs2 = db.list_subscribers().await.expect("list");
+
+        // first_subscribed_at should be same as before
+        assert_eq!(
+            subs2[0].first_subscribed_at, first_subscribed,
+            "first_subscribed_at should be preserved"
+        );
+
+        // subscribed_at should be newer
+        assert!(
+            subs2[0].subscribed_at > subscribed1,
+            "subscribed_at should be updated on reactivation"
+        );
+    }
+
     // ---------- Error Handling Tests ----------
 
-    #[test]
-    fn test_database_operations_after_many_operations() {
-        let (db, _temp_dir) = create_test_db();
+    #[tokio::test]
+    async fn test_database_operations_after_many_operations() {
+        let db = create_test_db().await;
 
         // Perform many operations
         for i in 0..100 {
             let id = format!("{}", i);
             db.add_subscriber(&id, Some(&format!("user{}", i)))
+                .await
                 .expect("add");
             if i % 2 == 0 {
-                db.remove_subscriber(&id).expect("remove");
+                db.remove_subscriber(&id).await.expect("remove");
             }
         }
 
         for i in 0..50 {
-            db.save_summary(&format!("Summary {}", i)).expect("save");
+            db.save_summary(&format!("Summary {}", i))
+                .await
+                .expect("save");
         }
 
         // Verify database is still functional
-        let count = db.subscriber_count().expect("count");
+        let count = db.subscriber_count().await.expect("count");
         assert_eq!(count, 50, "Should have 50 active subscribers (odd numbers)");
 
-        let summary = db.get_latest_summary().expect("get");
+        let summary = db.get_latest_summary().await.expect("get");
         assert!(summary.is_some());
     }
 }

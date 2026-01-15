@@ -28,7 +28,7 @@ pub struct Config {
 
     // Service (for web server mode)
     pub api_key: Option<String>,
-    pub database_path: String,
+    pub database_url: String,
     pub schedule_times: Vec<String>,
     pub port: u16,
 }
@@ -81,8 +81,8 @@ impl Config {
 
             // Service
             api_key: std::env::var("API_KEY").ok(),
-            database_path: std::env::var("DATABASE_PATH")
-                .unwrap_or_else(|_| "/data/subscribers.db".to_string()),
+            database_url: std::env::var("DATABASE_URL")
+                .context("DATABASE_URL not set - required for PostgreSQL connection")?,
             schedule_times,
             port: std::env::var("PORT")
                 .ok()
@@ -117,7 +117,7 @@ mod tests {
             "NITTER_API_KEY",
             "USERNAMES_FILE",
             "API_KEY",
-            "DATABASE_PATH",
+            "DATABASE_URL",
             "SCHEDULE_TIMES",
             "PORT",
         ];
@@ -132,6 +132,7 @@ mod tests {
         env::set_var("TELEGRAM_BOT_TOKEN", "test-telegram-token");
         env::set_var("TELEGRAM_WEBHOOK_SECRET", "test-webhook-secret");
         env::set_var("NITTER_INSTANCE", "https://nitter.example.com");
+        env::set_var("DATABASE_URL", "postgres://test:test@localhost/test");
     }
 
     // ==================== Required Variables Tests ====================
@@ -217,7 +218,7 @@ mod tests {
         assert_eq!(config.max_tweets, 50);
         assert_eq!(config.hours_lookback, 12);
         assert_eq!(config.usernames_file, "data/usernames.txt");
-        assert_eq!(config.database_path, "/data/subscribers.db");
+        assert_eq!(config.database_url, "postgres://test:test@localhost/test");
         assert_eq!(config.schedule_times, vec!["08:00", "20:00"]);
         assert_eq!(config.port, 8080);
         assert_eq!(config.telegram_chat_id, "");
@@ -498,14 +499,17 @@ mod tests {
     }
 
     #[test]
-    fn test_config_custom_database_path() {
+    fn test_config_custom_database_url() {
         let _lock = ENV_MUTEX.lock().unwrap();
         clear_env_vars();
         set_required_env_vars();
-        env::set_var("DATABASE_PATH", "/custom/db/subscribers.db");
+        env::set_var("DATABASE_URL", "postgres://custom:password@localhost/mydb");
 
         let config = Config::from_env().unwrap();
-        assert_eq!(config.database_path, "/custom/db/subscribers.db");
+        assert_eq!(
+            config.database_url,
+            "postgres://custom:password@localhost/mydb"
+        );
     }
 
     // ==================== Telegram Chat ID Tests ====================

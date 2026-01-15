@@ -73,10 +73,10 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
             send_message(config, &chat_id, welcome).await?;
         }
         "/subscribe" => {
-            if db.is_subscribed(&chat_id)? {
+            if db.is_subscribed(&chat_id).await? {
                 send_message(config, &chat_id, "✅ You're already subscribed!").await?;
             } else {
-                let (_, needs_welcome) = db.add_subscriber(&chat_id, username.as_deref())?;
+                let (_, needs_welcome) = db.add_subscriber(&chat_id, username.as_deref()).await?;
                 info!("New subscriber: {} (username: {:?})", chat_id, username);
                 send_message(
                     config,
@@ -87,7 +87,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 
                 // Send welcome summary for first-time subscribers
                 if needs_welcome {
-                    if let Some(summary) = db.get_latest_summary()? {
+                    if let Some(summary) = db.get_latest_summary().await? {
                         send_welcome_summary(config, db, &chat_id, &summary.content).await?;
                     } else {
                         info!("No summary available to send as welcome message");
@@ -96,7 +96,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
             }
         }
         "/unsubscribe" => {
-            if db.remove_subscriber(&chat_id)? {
+            if db.remove_subscriber(&chat_id).await? {
                 info!("Unsubscribed: {}", chat_id);
                 send_message(
                     config,
@@ -109,7 +109,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
             }
         }
         "/status" => {
-            let is_subscribed = db.is_subscribed(&chat_id)?;
+            let is_subscribed = db.is_subscribed(&chat_id).await?;
 
             // Check if user is admin (only admin sees total subscriber count)
             let is_admin =
@@ -120,7 +120,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                     // Admin sees subscriber count
                     format!(
                         "✅ You are subscribed\n📊 Total subscribers: {}",
-                        db.subscriber_count()?
+                        db.subscriber_count().await?
                     )
                 } else {
                     // Regular users only see their own status
@@ -160,7 +160,7 @@ async fn send_welcome_summary(
     );
 
     send_message(config, chat_id, &message).await?;
-    db.mark_welcome_summary_sent(chat_id)?;
+    db.mark_welcome_summary_sent(chat_id).await?;
     info!("✓ Welcome summary sent to {}", chat_id);
 
     Ok(())
@@ -168,7 +168,7 @@ async fn send_welcome_summary(
 
 /// Send summary to all subscribers
 pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) -> Result<()> {
-    let subscribers = db.list_subscribers()?;
+    let subscribers = db.list_subscribers().await?;
 
     if subscribers.is_empty() {
         info!("No subscribers to send to");
