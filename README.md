@@ -2,6 +2,8 @@
 
 A Rust-based Telegram bot that fetches tweets from Twitter lists via RSS feeds, summarizes them using OpenAI, and delivers personalized summaries to subscribers on a schedule.
 
+**🤖 Try it:** [https://t.me/twitter_news_summary_bot](https://t.me/twitter_news_summary_bot)
+
 **Why This Works:** Twitter's Free API tier is extremely limited (~1 request/month for lists), so this bot uses a smarter approach:
 1. Extract list members once using a browser console script (free, unlimited)
 2. Fetch tweets via self-hosted Nitter RSS feeds (free, unlimited)
