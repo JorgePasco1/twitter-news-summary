@@ -448,7 +448,7 @@ mod tests {
             username: String,
         }
 
-        let users = vec![
+        let users = [
             TestUser {
                 username: "user1".to_string(),
             },
@@ -471,7 +471,7 @@ mod tests {
     #[test]
     fn test_empty_users_list() {
         let users: Vec<String> = vec![];
-        let usernames: Vec<String> = users.iter().cloned().collect();
+        let usernames: Vec<String> = users.to_vec();
         assert!(usernames.is_empty());
     }
 

@@ -274,7 +274,7 @@ mod tests {
         // This test validates the structure but cannot be run against the real API
 
         let config = create_test_config();
-        let tweets = vec![
+        let tweets = [
             create_tweet("1", "@user1: This is a test tweet"),
             create_tweet("2", "@user2: Another test tweet"),
         ];
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn test_prompt_construction_with_tweets() {
-        let tweets = vec![
+        let tweets = [
             create_tweet("1", "@user1: First tweet content"),
             create_tweet("2", "@user2: Second tweet content"),
             create_tweet("3", "@user3: Third tweet content"),
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_user_prompt_format() {
-        let tweets = vec![create_tweet("1", "@user1: Test tweet")];
+        let tweets = [create_tweet("1", "@user1: Test tweet")];
 
         let tweets_text = tweets
             .iter()
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn test_tweet_with_special_characters_in_prompt() {
-        let tweets = vec![
+        let tweets = [
             create_tweet("1", "@user1: Tweet with \"quotes\" and 'apostrophes'"),
             create_tweet("2", "@user2: Tweet with <html> & special chars"),
             create_tweet("3", "@user3: Tweet with unicode"),
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn test_tweet_numbering_starts_at_one() {
-        let tweets = vec![
+        let tweets = [
             create_tweet("1", "First"),
             create_tweet("2", "Second"),
             create_tweet("3", "Third"),
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn test_long_tweet_text_preserved() {
         let long_text = "A".repeat(5000);
-        let tweets = vec![create_tweet("1", &long_text)];
+        let tweets = [create_tweet("1", &long_text)];
 
         let tweets_text = tweets
             .iter()
