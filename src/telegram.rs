@@ -91,8 +91,18 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         }
         "/status" => {
             let is_subscribed = db.is_subscribed(&chat_id)?;
+
+            // Check if user is admin (only admin sees total subscriber count)
+            let is_admin = !config.telegram_chat_id.is_empty() && chat_id == config.telegram_chat_id;
+
             let status_msg = if is_subscribed {
-                format!("✅ You are subscribed\n📊 Total subscribers: {}", db.subscriber_count()?)
+                if is_admin {
+                    // Admin sees subscriber count
+                    format!("✅ You are subscribed\n📊 Total subscribers: {}", db.subscriber_count()?)
+                } else {
+                    // Regular users only see their own status
+                    "✅ You are subscribed".to_string()
+                }
             } else {
                 "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries.".to_string()
             };
@@ -582,17 +592,27 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
     // ==================== Status Message Format Tests ====================
 
     #[test]
-    fn test_subscribed_status_format() {
+    fn test_subscribed_status_format_admin() {
+        // Admin sees subscriber count
         let subscriber_count = 42;
-        let status_msg = format!("You are subscribed\nTotal subscribers: {}", subscriber_count);
+        let status_msg = format!("✅ You are subscribed\n📊 Total subscribers: {}", subscriber_count);
 
         assert!(status_msg.contains("subscribed"));
         assert!(status_msg.contains("42"));
     }
 
     #[test]
+    fn test_subscribed_status_format_regular_user() {
+        // Regular users don't see subscriber count
+        let status_msg = "✅ You are subscribed";
+
+        assert!(status_msg.contains("subscribed"));
+        assert!(!status_msg.contains("Total subscribers"));
+    }
+
+    #[test]
     fn test_unsubscribed_status_format() {
-        let status_msg = "You are not subscribed\n\nUse /subscribe to start receiving summaries.";
+        let status_msg = "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries.";
 
         assert!(status_msg.contains("not subscribed"));
         assert!(status_msg.contains("/subscribe"));
