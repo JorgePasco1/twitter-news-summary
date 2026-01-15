@@ -163,7 +163,7 @@ impl Database {
             .optional()?;
 
         match existing {
-            Some((is_active, _received_welcome)) => {
+            Some((is_active, received_welcome)) => {
                 if is_active {
                     // Already subscribed, just update username if changed
                     conn.execute(
@@ -177,8 +177,8 @@ impl Database {
                         "UPDATE subscribers SET is_active = 1, subscribed_at = ?1, username = ?2 WHERE chat_id = ?3",
                         params![now, username, chat_id],
                     )?;
-                    // It's a resubscription, but they already received welcome before
-                    Ok((true, false))
+                    // Send welcome only if they never received one
+                    Ok((true, !received_welcome))
                 }
             }
             None => {
@@ -816,6 +816,9 @@ mod tests {
         assert!(is_new1, "First subscription should be new");
         assert!(needs_welcome1, "First subscription should need welcome");
 
+        // Mark welcome as sent (simulating that they received it)
+        db.mark_welcome_summary_sent("123").expect("mark");
+
         // Unsubscribe
         db.remove_subscriber("123").expect("remove");
 
@@ -830,7 +833,36 @@ mod tests {
         );
         assert!(
             !needs_welcome2,
-            "Reactivation should NOT need welcome summary"
+            "Reactivation should NOT need welcome if already received"
+        );
+    }
+
+    #[test]
+    fn test_add_subscriber_reactivation_needs_welcome_if_never_received() {
+        let (db, _temp_dir) = create_test_db();
+
+        // First subscription
+        let (is_new1, needs_welcome1) = db.add_subscriber("123", Some("user")).expect("add");
+        assert!(is_new1, "First subscription should be new");
+        assert!(needs_welcome1, "First subscription should need welcome");
+
+        // DON'T mark welcome as sent - simulating user unsubscribed before receiving it
+
+        // Unsubscribe
+        db.remove_subscriber("123").expect("remove");
+
+        // Resubscribe
+        let (is_new2, needs_welcome2) = db
+            .add_subscriber("123", Some("user"))
+            .expect("Should reactivate subscriber");
+
+        assert!(
+            is_new2,
+            "Reactivation should be treated as new subscription"
+        );
+        assert!(
+            needs_welcome2,
+            "Reactivation SHOULD need welcome if never received before"
         );
     }
 
@@ -926,6 +958,8 @@ mod tests {
             let db = Database::new(path_str).expect("create db");
             db.add_subscriber("123", Some("preserved_user"))
                 .expect("add");
+            // Mark welcome as sent before unsubscribing
+            db.mark_welcome_summary_sent("123").expect("mark");
             db.remove_subscriber("123").expect("remove");
         }
 
@@ -936,13 +970,13 @@ mod tests {
             // Count should be 0 (active only)
             assert_eq!(db.subscriber_count().expect("count"), 0);
 
-            // But reactivation should work and not need welcome
+            // But reactivation should work and not need welcome (already received it)
             let (is_new, needs_welcome) = db
                 .add_subscriber("123", Some("preserved_user"))
                 .expect("reactivate");
 
             assert!(is_new, "Reactivation counts as new subscription");
-            assert!(!needs_welcome, "Reactivation should not need welcome");
+            assert!(!needs_welcome, "Reactivation should not need welcome if already received");
 
             // Verify the user is back
             let subscribers = db.list_subscribers().expect("list");
