@@ -155,7 +155,7 @@ async fn send_welcome_summary(
 ) -> Result<()> {
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
     let message = format!(
-        "📰 *Welcome! Here's the latest summary:*\n_{}_\n\n{}",
+        "📰 *Hey! Here's what you missed* 😉\n_{}_\n\n{}",
         timestamp, summary
     );
 
@@ -704,12 +704,12 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 
         // This matches the format in send_welcome_summary
         let message = format!(
-            "\u{1f4f0} *Welcome! Here's the latest summary:*\n_{}_\n\n{}",
+            "\u{1f4f0} *Hey! Here's what you missed* 😉\n_{}_\n\n{}",
             timestamp, summary
         );
 
-        assert!(message.contains("Welcome!"));
-        assert!(message.contains("latest summary"));
+        assert!(message.contains("Hey!"));
+        assert!(message.contains("what you missed"));
         assert!(message.contains("Here is the AI news summary content."));
         assert!(message.contains("UTC"));
     }
@@ -723,7 +723,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 
         // Welcome format
         let welcome_msg = format!(
-            "\u{1f4f0} *Welcome! Here's the latest summary:*\n_{}_\n\n{}",
+            "\u{1f4f0} *Hey! Here's what you missed* 😉\n_{}_\n\n{}",
             timestamp, summary
         );
 
@@ -735,8 +735,8 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 
         // They should be different
         assert_ne!(welcome_msg, regular_msg);
-        assert!(welcome_msg.contains("Welcome!"));
-        assert!(!regular_msg.contains("Welcome!"));
+        assert!(welcome_msg.contains("Hey!"));
+        assert!(!regular_msg.contains("Hey!"));
     }
 
     #[test]
@@ -747,7 +747,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let summary = "Summary with *bold* and _italic_ text";
 
         let message = format!(
-            "\u{1f4f0} *Welcome! Here's the latest summary:*\n_{}_\n\n{}",
+            "\u{1f4f0} *Hey! Here's what you missed* 😉\n_{}_\n\n{}",
             timestamp, summary
         );
 
@@ -764,7 +764,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let summary = "A".repeat(4000); // Telegram limit is 4096
 
         let message = format!(
-            "\u{1f4f0} *Welcome! Here's the latest summary:*\n_{}_\n\n{}",
+            "\u{1f4f0} *Hey! Here's what you missed* 😉\n_{}_\n\n{}",
             timestamp, summary
         );
 
@@ -1152,7 +1152,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
             // 2. User sends /subscribe (first time)
             "\u{2705} Successfully subscribed! You'll receive summaries twice daily.",
             // 3. Welcome summary (if available)
-            "\u{1f4f0} *Welcome! Here's the latest summary:*",
+            "\u{1f4f0} *Hey! Here's what you missed* 😉",
             // 4. User checks /status
             "\u{2705} You are subscribed",
             // 5. User sends /unsubscribe
@@ -1169,7 +1169,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         // Welcome message only appears once (index 2)
         let welcome_count = messages
             .iter()
-            .filter(|m| m.contains("Welcome! Here's the latest"))
+            .filter(|m| m.contains("Hey! Here's what you missed"))
             .count();
         assert_eq!(welcome_count, 1, "Welcome summary should only appear once");
     }
