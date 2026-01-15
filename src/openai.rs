@@ -128,7 +128,7 @@ mod tests {
             nitter_api_key: None,
             usernames_file: "data/usernames.txt".to_string(),
             api_key: None,
-            database_path: "/data/subscribers.db".to_string(),
+            database_url: "postgres://test:test@localhost/test".to_string(),
             schedule_times: vec!["08:00".to_string(), "20:00".to_string()],
             port: 8080,
         }

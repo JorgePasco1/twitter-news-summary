@@ -1274,4 +1274,269 @@ mod tests {
         let summary = db.get_latest_summary().await.expect("get");
         assert!(summary.is_some());
     }
+
+    // ---------- Database Connection Tests ----------
+
+    #[tokio::test]
+    async fn test_database_invalid_url_fails() {
+        let result = Database::new("postgres://invalid:invalid@nonexistent-host-12345/invalid").await;
+        assert!(result.is_err(), "Should fail with invalid database URL");
+    }
+
+    #[tokio::test]
+    async fn test_database_malformed_url_fails() {
+        let result = Database::new("not-a-valid-postgres-url").await;
+        assert!(result.is_err(), "Should fail with malformed database URL");
+    }
+
+    // ---------- Concurrent Operation Tests ----------
+
+    #[tokio::test]
+    async fn test_concurrent_subscriber_adds() {
+        let db = create_test_db().await;
+
+        // Clone the database handle for concurrent operations
+        let db1 = db.clone();
+        let db2 = db.clone();
+        let db3 = db.clone();
+
+        // Spawn concurrent add operations
+        let handle1 = tokio::spawn(async move {
+            db1.add_subscriber("concurrent_1", Some("user1")).await
+        });
+        let handle2 = tokio::spawn(async move {
+            db2.add_subscriber("concurrent_2", Some("user2")).await
+        });
+        let handle3 = tokio::spawn(async move {
+            db3.add_subscriber("concurrent_3", Some("user3")).await
+        });
+
+        // Wait for all operations
+        let (r1, r2, r3) = tokio::join!(handle1, handle2, handle3);
+        assert!(r1.is_ok() && r1.unwrap().is_ok());
+        assert!(r2.is_ok() && r2.unwrap().is_ok());
+        assert!(r3.is_ok() && r3.unwrap().is_ok());
+
+        // Verify all subscribers were added
+        let count = db.subscriber_count().await.expect("count");
+        assert_eq!(count, 3, "All concurrent adds should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_reads_and_writes() {
+        let db = create_test_db().await;
+
+        // Add initial subscriber
+        db.add_subscriber("initial", Some("user")).await.expect("add");
+
+        let db_read = db.clone();
+        let db_write = db.clone();
+
+        // Concurrent read while writing
+        let read_handle = tokio::spawn(async move {
+            for _ in 0..10 {
+                let _ = db_read.subscriber_count().await;
+                let _ = db_read.list_subscribers().await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+            }
+        });
+
+        let write_handle = tokio::spawn(async move {
+            for i in 0..10 {
+                let _ = db_write
+                    .add_subscriber(&format!("user_{}", i), None)
+                    .await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+            }
+        });
+
+        let (r1, r2) = tokio::join!(read_handle, write_handle);
+        assert!(r1.is_ok(), "Concurrent reads should not panic");
+        assert!(r2.is_ok(), "Concurrent writes should not panic");
+
+        // Database should be in consistent state
+        let count = db.subscriber_count().await.expect("count");
+        assert!(count >= 1, "Should have at least the initial subscriber");
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_summary_saves() {
+        let db = create_test_db().await;
+
+        let db1 = db.clone();
+        let db2 = db.clone();
+        let db3 = db.clone();
+
+        // Spawn concurrent save operations
+        let handle1 = tokio::spawn(async move { db1.save_summary("Summary 1").await });
+        let handle2 = tokio::spawn(async move { db2.save_summary("Summary 2").await });
+        let handle3 = tokio::spawn(async move { db3.save_summary("Summary 3").await });
+
+        let (r1, r2, r3) = tokio::join!(handle1, handle2, handle3);
+        assert!(r1.is_ok() && r1.unwrap().is_ok());
+        assert!(r2.is_ok() && r2.unwrap().is_ok());
+        assert!(r3.is_ok() && r3.unwrap().is_ok());
+
+        // One of the summaries should be the latest
+        let latest = db.get_latest_summary().await.expect("get").expect("exists");
+        assert!(
+            latest.content.starts_with("Summary"),
+            "Latest summary should be one of the concurrent saves"
+        );
+    }
+
+    // ---------- Summary Edge Cases ----------
+
+    #[tokio::test]
+    async fn test_save_empty_summary() {
+        let db = create_test_db().await;
+
+        let id = db.save_summary("").await.expect("save empty");
+        assert!(id > 0);
+
+        let summary = db.get_latest_summary().await.expect("get").expect("exists");
+        assert!(summary.content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_save_very_long_summary() {
+        let db = create_test_db().await;
+
+        // Create a very long summary (100KB)
+        let long_content = "A".repeat(100_000);
+        let id = db.save_summary(&long_content).await.expect("save");
+        assert!(id > 0);
+
+        let summary = db.get_latest_summary().await.expect("get").expect("exists");
+        assert_eq!(summary.content.len(), 100_000);
+    }
+
+    #[tokio::test]
+    async fn test_save_summary_with_sql_injection_attempt() {
+        let db = create_test_db().await;
+
+        let malicious_content = "'; DROP TABLE summaries; --";
+        db.save_summary(malicious_content).await.expect("save");
+
+        // Table should still exist and function
+        let summary = db.get_latest_summary().await.expect("get").expect("exists");
+        assert_eq!(summary.content, malicious_content);
+    }
+
+    // ---------- Migration Verification Tests ----------
+
+    #[tokio::test]
+    async fn test_subscribers_table_has_correct_columns() {
+        let db = create_test_db().await;
+
+        // Add a subscriber and verify all fields are populated correctly
+        db.add_subscriber("migration_test", Some("testuser"))
+            .await
+            .expect("add");
+
+        let subscribers = db.list_subscribers().await.expect("list");
+        let sub = &subscribers[0];
+
+        // Verify all expected columns exist
+        assert_eq!(sub.chat_id, "migration_test");
+        assert_eq!(sub.username, Some("testuser".to_string()));
+        assert!(sub.is_active);
+        assert!(!sub.received_welcome_summary);
+        // subscribed_at and first_subscribed_at should be set
+        assert!(sub.subscribed_at <= Utc::now());
+        assert!(sub.first_subscribed_at <= Utc::now());
+    }
+
+    #[tokio::test]
+    async fn test_summaries_table_has_correct_columns() {
+        let db = create_test_db().await;
+
+        let id = db.save_summary("Migration test summary").await.expect("save");
+
+        let summary = db.get_latest_summary().await.expect("get").expect("exists");
+
+        // Verify all expected columns exist
+        assert_eq!(summary.id, id);
+        assert_eq!(summary.content, "Migration test summary");
+        assert!(summary.created_at <= Utc::now());
+    }
+
+    // ---------- Database Clone Tests ----------
+
+    #[tokio::test]
+    async fn test_database_clone_shares_pool() {
+        let db = create_test_db().await;
+
+        // Clone the database
+        let db_clone = db.clone();
+
+        // Add subscriber using original
+        db.add_subscriber("from_original", None).await.expect("add");
+
+        // Should be visible from clone
+        assert!(db_clone.is_subscribed("from_original").await.expect("check"));
+
+        // Add using clone
+        db_clone
+            .add_subscriber("from_clone", None)
+            .await
+            .expect("add");
+
+        // Should be visible from original
+        assert!(db.is_subscribed("from_clone").await.expect("check"));
+
+        // Both should have same count
+        assert_eq!(
+            db.subscriber_count().await.expect("count"),
+            db_clone.subscriber_count().await.expect("count")
+        );
+    }
+
+    // ---------- Boundary Condition Tests ----------
+
+    #[tokio::test]
+    async fn test_subscriber_count_at_various_sizes() {
+        let db = create_test_db().await;
+
+        // Test at 0
+        assert_eq!(db.subscriber_count().await.expect("count"), 0);
+
+        // Test at 1
+        db.add_subscriber("1", None).await.expect("add");
+        assert_eq!(db.subscriber_count().await.expect("count"), 1);
+
+        // Test at 10
+        for i in 2..=10 {
+            db.add_subscriber(&i.to_string(), None).await.expect("add");
+        }
+        assert_eq!(db.subscriber_count().await.expect("count"), 10);
+
+        // Test after removal
+        db.remove_subscriber("5").await.expect("remove");
+        assert_eq!(db.subscriber_count().await.expect("count"), 9);
+    }
+
+    #[tokio::test]
+    async fn test_summary_cleanup_boundary() {
+        let db = create_test_db().await;
+
+        // Add exactly 10 summaries (cleanup threshold)
+        for i in 1..=10 {
+            db.save_summary(&format!("Summary {}", i))
+                .await
+                .expect("save");
+        }
+
+        // All 10 should still exist (cleanup happens on 11th)
+        // We can verify the latest is "Summary 10"
+        let latest = db.get_latest_summary().await.expect("get").expect("exists");
+        assert_eq!(latest.content, "Summary 10");
+
+        // Add 11th, should trigger cleanup
+        db.save_summary("Summary 11").await.expect("save");
+
+        // Latest should now be "Summary 11"
+        let latest = db.get_latest_summary().await.expect("get").expect("exists");
+        assert_eq!(latest.content, "Summary 11");
+    }
 }
