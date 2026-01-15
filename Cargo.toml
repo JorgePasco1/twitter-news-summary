@@ -61,6 +61,19 @@ path = "src/main.rs"
 name = "export"
 path = "src/bin/fetch_list_members.rs"
 
+[dev-dependencies]
+# HTTP mocking for tests
+wiremock = "0.6"
+
+# Temporary files and directories for tests
+tempfile = "3"
+
+# Property-based testing
+proptest = "1"
+
+# Async test utilities
+tokio-test = "0.4"
+
 [profile.release]
 opt-level = "z"
 lto = true
