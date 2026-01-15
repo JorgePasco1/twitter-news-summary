@@ -6,17 +6,44 @@ description = "Summarize Twitter list tweets and send via Telegram"
 default-run = "twitter-news-summary"
 
 [dependencies]
+# Web server
+axum = "0.7"
+tower-http = { version = "0.6", features = ["trace"] }
+
+# Async runtime
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
+
+# Scheduler
+tokio-cron-scheduler = "0.13"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# HTTP client (using rustls for musl compatibility)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# RSS parsing
+rss = "2.0"
+
+# Error handling
 anyhow = "1"
 thiserror = "1"
+
+# Date/time
 chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Environment
 dotenvy = "0.15"
-rss = "2.0"
+
+# Utilities
 futures = "0.3"
 
 [lib]

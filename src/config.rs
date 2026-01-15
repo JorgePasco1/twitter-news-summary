@@ -14,7 +14,7 @@ pub struct Config {
 
     // Telegram
     pub telegram_bot_token: String,
-    pub telegram_chat_id: String,
+    pub telegram_chat_id: String,  // Admin chat ID for notifications
 
     // Filtering
     pub max_tweets: u32,
@@ -24,10 +24,24 @@ pub struct Config {
     pub nitter_instance: String,
     pub nitter_api_key: Option<String>,
     pub usernames_file: String,
+
+    // Service (for web server mode)
+    pub api_key: Option<String>,
+    pub database_path: String,
+    pub schedule_times: Vec<String>,
+    pub port: u16,
 }
 
 impl Config {
     pub fn from_env() -> Result<Self> {
+        // Parse schedule times
+        let schedule_times_str = std::env::var("SCHEDULE_TIMES")
+            .unwrap_or_else(|_| "08:00,20:00".to_string());
+        let schedule_times: Vec<String> = schedule_times_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
+
         Ok(Self {
             // Twitter - Bearer Token (OAuth 2.0 App-Only) - Optional, only for export binary
             twitter_bearer_token: std::env::var("TWITTER_BEARER_TOKEN").ok(),
@@ -43,7 +57,7 @@ impl Config {
             telegram_bot_token: std::env::var("TELEGRAM_BOT_TOKEN")
                 .context("TELEGRAM_BOT_TOKEN not set")?,
             telegram_chat_id: std::env::var("TELEGRAM_CHAT_ID")
-                .context("TELEGRAM_CHAT_ID not set")?,
+                .unwrap_or_else(|_| "".to_string()),  // Optional in service mode
 
             // Filtering
             max_tweets: std::env::var("MAX_TWEETS")
@@ -61,6 +75,16 @@ impl Config {
             nitter_api_key: std::env::var("NITTER_API_KEY").ok(),
             usernames_file: std::env::var("USERNAMES_FILE")
                 .unwrap_or_else(|_| "data/usernames.txt".to_string()),
+
+            // Service
+            api_key: std::env::var("API_KEY").ok(),
+            database_path: std::env::var("DATABASE_PATH")
+                .unwrap_or_else(|_| "/data/subscribers.db".to_string()),
+            schedule_times,
+            port: std::env::var("PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8080),
         })
     }
 }

@@ -1,15 +1,23 @@
-mod config;
-mod openai;
-mod rss;
-mod telegram;
-mod twitter;
-
 use anyhow::Result;
-use tracing::info;
+use axum::{
+    extract::{Json, State},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::{get, post},
+    Router,
+};
+use std::sync::Arc;
+use tracing::{info, warn};
+use twitter_news_summary::{config, db, scheduler, telegram};
+
+struct AppState {
+    config: Arc<config::Config>,
+    db: Arc<db::Database>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load .env file (ignored in production/GitHub Actions)
+    // Load .env file (for local development)
     let _ = dotenvy::dotenv();
 
     // Initialize logging
@@ -20,30 +28,129 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    info!("Starting Twitter news summary job");
+    info!("🚀 Starting Twitter News Summary Service");
 
-    // Load configuration from environment
-    let config = config::Config::from_env()?;
+    // Load configuration
+    let config = Arc::new(config::Config::from_env()?);
+    info!("✓ Configuration loaded");
 
-    // Step 1: Fetch tweets from RSS feeds
-    info!("Fetching tweets from RSS feeds");
-    let tweets = rss::fetch_tweets_from_rss(&config).await?;
-    
-    if tweets.is_empty() {
-        info!("No tweets found in the last period, skipping summary");
-        return Ok(());
+    // Initialize database
+    let db = Arc::new(db::Database::new(&config.database_path)?);
+    info!("✓ Database initialized at {}", config.database_path);
+
+    // Start scheduler
+    let _scheduler = scheduler::start_scheduler(Arc::clone(&config), Arc::clone(&db)).await?;
+    info!("✓ Scheduler started for times: {:?}", config.schedule_times);
+
+    // Create app state
+    let state = Arc::new(AppState {
+        config: Arc::clone(&config),
+        db: Arc::clone(&db),
+    });
+
+    // Build router
+    let app = Router::new()
+        .route("/health", get(health_check))
+        .route("/webhook", post(webhook_handler))
+        .route("/trigger", post(trigger_handler))
+        .route("/subscribers", get(subscribers_handler))
+        .with_state(state);
+
+    // Start server
+    let addr = format!("0.0.0.0:{}", config.port);
+    info!("🌐 Starting server on {}", addr);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+/// Health check endpoint
+async fn health_check() -> impl IntoResponse {
+    "OK"
+}
+
+/// Telegram webhook handler
+async fn webhook_handler(
+    State(state): State<Arc<AppState>>,
+    Json(update): Json<telegram::Update>,
+) -> impl IntoResponse {
+    info!("Received webhook: update_id={}", update.update_id);
+
+    match telegram::handle_webhook(&state.config, &state.db, update).await {
+        Ok(_) => StatusCode::OK,
+        Err(e) => {
+            warn!("Webhook handler error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+/// Manual trigger endpoint (API key protected)
+async fn trigger_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    // Check API key
+    if let Some(api_key) = &state.config.api_key {
+        match headers.get("X-API-Key") {
+            Some(key) if key.to_str().unwrap_or("") == api_key => {
+                // API key valid, proceed
+            }
+            _ => {
+                warn!("Unauthorized trigger attempt");
+                return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+            }
+        }
     }
 
-    info!("Fetched {} tweets", tweets.len());
+    info!("Manual trigger requested");
 
-    // Step 2: Generate summary using OpenAI
-    info!("Generating summary with OpenAI");
-    let summary = openai::summarize_tweets(&config, &tweets).await?;
+    match scheduler::trigger_summary(&state.config, &state.db).await {
+        Ok(_) => {
+            info!("Manual trigger completed successfully");
+            (StatusCode::OK, "Summary sent").into_response()
+        }
+        Err(e) => {
+            warn!("Manual trigger failed: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e)).into_response()
+        }
+    }
+}
 
-    // Step 3: Send summary via Telegram
-    info!("Sending summary via Telegram");
-    telegram::send_message(&config, &summary).await?;
+/// List subscribers endpoint (API key protected, for debugging)
+async fn subscribers_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    // Check API key
+    if let Some(api_key) = &state.config.api_key {
+        match headers.get("X-API-Key") {
+            Some(key) if key.to_str().unwrap_or("") == api_key => {
+                // API key valid, proceed
+            }
+            _ => {
+                return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({
+                    "error": "Unauthorized"
+                }))).into_response();
+            }
+        }
+    }
 
-    info!("Summary sent successfully!");
-    Ok(())
+    match state.db.list_subscribers() {
+        Ok(subscribers) => {
+            let chat_ids: Vec<String> = subscribers.iter().map(|s| s.chat_id.clone()).collect();
+            (StatusCode::OK, Json(serde_json::json!({
+                "subscribers": chat_ids,
+                "count": subscribers.len()
+            }))).into_response()
+        }
+        Err(e) => {
+            warn!("Failed to list subscribers: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": format!("Error: {}", e)
+            }))).into_response()
+        }
+    }
 }

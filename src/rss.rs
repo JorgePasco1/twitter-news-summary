@@ -4,19 +4,9 @@ use tracing::{info, warn};
 use crate::config::Config;
 use crate::twitter::Tweet;
 
-/// Fetch tweets from Nitter RSS feeds
-pub async fn fetch_tweets_from_rss(config: &Config) -> Result<Vec<Tweet>> {
-    // Read usernames from file
-    let usernames_content = std::fs::read_to_string(&config.usernames_file)
-        .context(format!("Failed to read usernames from {}", config.usernames_file))?;
-
-    let usernames: Vec<String> = usernames_content
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    info!("Loaded {} usernames from {}", usernames.len(), config.usernames_file);
+/// Fetch tweets from Nitter RSS feeds for given usernames
+pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Result<Vec<Tweet>> {
+    info!("Fetching RSS feeds for {} users", usernames.len());
 
     // Verify Nitter instance is working
     info!("Testing Nitter instance: {}", config.nitter_instance);

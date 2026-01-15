@@ -5,6 +5,7 @@ Cargo.lock
 # Environment
 .env
 .env.local
+.api_key*
 
 # Data
 /data/*
@@ -23,3 +24,6 @@ Thumbs.db
 
 # Nitter build
 nitter-fly/
+
+# Claude
+.claude/settings.local.json
