@@ -901,9 +901,8 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let has_summary = true;
 
         // This represents the decision tree in handle_webhook
-        if !false
-        /* is_subscribed */
-        {
+        // Simulating: user is not subscribed
+        if true {
             let (new_sub, welcome) = (is_new, needs_welcome);
             assert!(new_sub);
             assert!(welcome);
@@ -924,9 +923,8 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let is_new = true; // Counts as new subscription
         let needs_welcome = false; // But no welcome needed
 
-        if !false
-        /* is_subscribed */
-        {
+        // Simulating: user is not subscribed
+        if true {
             let (_new_sub, welcome) = (is_new, needs_welcome);
 
             // Should NOT send welcome
@@ -946,9 +944,8 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let needs_welcome = true;
         let has_summary = false; // No summary available
 
-        if !false
-        /* is_subscribed */
-        {
+        // Simulating: user is not subscribed
+        if true {
             let (_new_sub, welcome) = (is_new, needs_welcome);
 
             if welcome {
@@ -1076,11 +1073,11 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
     #[test]
     fn test_subscriber_iteration_logic() {
         // Simulate the loop in send_to_subscribers
-        let subscriber_ids = vec!["111", "222", "333"];
+        let subscriber_ids = ["111", "222", "333"];
         let mut success_count = 0;
         let mut fail_count = 0;
 
-        for (_i, _id) in subscriber_ids.iter().enumerate() {
+        for _id in subscriber_ids.iter() {
             // Simulate success for most, failure for one
             let succeeded = true; // In real code, this is the result of send_message
             if succeeded {

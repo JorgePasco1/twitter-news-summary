@@ -176,7 +176,7 @@ async fn test_rss_feed_parsing_integration() {
     // Verify RSS is accessible
     let client = reqwest::Client::new();
     let response = client
-        .get(&format!("{}/testuser/rss", mock_server.uri()))
+        .get(format!("{}/testuser/rss", mock_server.uri()))
         .send()
         .await
         .expect("request");
@@ -206,7 +206,7 @@ async fn test_api_key_header_sent() {
     // Request without API key should fail
     let client = reqwest::Client::new();
     let response = client
-        .get(&format!("{}/testuser/rss", mock_server.uri()))
+        .get(format!("{}/testuser/rss", mock_server.uri()))
         .send()
         .await
         .expect("request");
@@ -215,7 +215,7 @@ async fn test_api_key_header_sent() {
 
     // Request with API key should succeed
     let response = client
-        .get(&format!("{}/testuser/rss", mock_server.uri()))
+        .get(format!("{}/testuser/rss", mock_server.uri()))
         .header("X-API-Key", "my-secret-key")
         .send()
         .await
@@ -253,7 +253,7 @@ async fn test_http_error_handling() {
 
     // Test 404
     let resp = client
-        .get(&format!("{}/404", mock_server.uri()))
+        .get(format!("{}/404", mock_server.uri()))
         .send()
         .await
         .expect("request");
@@ -261,7 +261,7 @@ async fn test_http_error_handling() {
 
     // Test 500
     let resp = client
-        .get(&format!("{}/500", mock_server.uri()))
+        .get(format!("{}/500", mock_server.uri()))
         .send()
         .await
         .expect("request");
@@ -269,7 +269,7 @@ async fn test_http_error_handling() {
 
     // Test 429
     let resp = client
-        .get(&format!("{}/429", mock_server.uri()))
+        .get(format!("{}/429", mock_server.uri()))
         .send()
         .await
         .expect("request");
@@ -297,7 +297,7 @@ fn test_summary_message_formatting() {
 
 #[test]
 fn test_tweet_list_formatting_for_openai() {
-    let tweets = vec![
+    let tweets = [
         Tweet {
             id: "1".to_string(),
             text: "@user1: First tweet".to_string(),
