@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'scripts/generate-secrets.sh'
+      - 'SECURITY.md'
 
 jobs:
   test:
