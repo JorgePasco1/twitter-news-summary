@@ -460,9 +460,7 @@ mod tests {
     async fn test_list_subscribers_contains_all_fields() {
         let db = create_test_db().await.expect("Failed to create test db");
 
-        db.add_subscriber(123, Some("testuser"))
-            .await
-            .expect("add");
+        db.add_subscriber(123, Some("testuser")).await.expect("add");
 
         let subscribers = db.list_subscribers().await.expect("list");
         let sub = &subscribers[0];
@@ -1174,12 +1172,9 @@ mod tests {
         let db3 = db.clone();
 
         // Spawn concurrent add operations
-        let handle1 =
-            tokio::spawn(async move { db1.add_subscriber(1001, Some("user1")).await });
-        let handle2 =
-            tokio::spawn(async move { db2.add_subscriber(1002, Some("user2")).await });
-        let handle3 =
-            tokio::spawn(async move { db3.add_subscriber(1003, Some("user3")).await });
+        let handle1 = tokio::spawn(async move { db1.add_subscriber(1001, Some("user1")).await });
+        let handle2 = tokio::spawn(async move { db2.add_subscriber(1002, Some("user2")).await });
+        let handle3 = tokio::spawn(async move { db3.add_subscriber(1003, Some("user3")).await });
 
         // Wait for all operations
         let (r1, r2, r3) = tokio::join!(handle1, handle2, handle3);
