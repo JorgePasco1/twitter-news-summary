@@ -218,12 +218,12 @@ async fn fetch_user_rss(
 /// Convert RSS item to Tweet struct
 fn rss_item_to_tweet(item: &rss::Item, username: &str) -> Option<Tweet> {
     let text = item.title()?.to_string();
-    let created_at = item.pub_date().map(|d| parse_rss_date(d));
+    let created_at = item.pub_date().map(parse_rss_date);
 
     // Extract tweet ID from link (https://nitter.net/username/status/123456)
     let id = item
         .link()
-        .and_then(|link| link.split('/').last())
+        .and_then(|link| link.split('/').next_back())
         .unwrap_or("unknown")
         .to_string();
 
@@ -280,7 +280,7 @@ mod tests {
             nitter_api_key: None,
             usernames_file: "data/usernames.txt".to_string(),
             api_key: None,
-            database_path: "/data/subscribers.db".to_string(),
+            database_url: "postgres://test:test@localhost/test".to_string(),
             schedule_times: vec!["08:00".to_string(), "20:00".to_string()],
             port: 8080,
         }

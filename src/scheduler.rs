@@ -92,7 +92,7 @@ async fn run_summary_job(config: &Config, db: &Database, usernames: &[String]) -
     let summary = openai::summarize_tweets(config, &tweets).await?;
 
     // Save summary to database
-    db.save_summary(&summary)?;
+    db.save_summary(&summary).await?;
     info!("✓ Summary saved to database");
 
     // Send to all subscribers

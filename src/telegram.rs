@@ -53,7 +53,7 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
         None => return Ok(()), // No text, ignore
     };
 
-    let chat_id = message.chat.id.to_string();
+    let chat_id = message.chat.id;
     let username = message.from.as_ref().and_then(|u| u.username.clone());
 
     info!("Received message from {}: {}", chat_id, text);
@@ -70,25 +70,25 @@ Commands:
 
 Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers."#;
 
-            send_message(config, &chat_id, welcome).await?;
+            send_message(config, chat_id, welcome).await?;
         }
         "/subscribe" => {
-            if db.is_subscribed(&chat_id)? {
-                send_message(config, &chat_id, "✅ You're already subscribed!").await?;
+            if db.is_subscribed(chat_id).await? {
+                send_message(config, chat_id, "✅ You're already subscribed!").await?;
             } else {
-                let (_, needs_welcome) = db.add_subscriber(&chat_id, username.as_deref())?;
+                let (_, needs_welcome) = db.add_subscriber(chat_id, username.as_deref()).await?;
                 info!("New subscriber: {} (username: {:?})", chat_id, username);
                 send_message(
                     config,
-                    &chat_id,
+                    chat_id,
                     "✅ Successfully subscribed! You'll receive summaries twice daily.",
                 )
                 .await?;
 
                 // Send welcome summary for first-time subscribers
                 if needs_welcome {
-                    if let Some(summary) = db.get_latest_summary()? {
-                        send_welcome_summary(config, db, &chat_id, &summary.content).await?;
+                    if let Some(summary) = db.get_latest_summary().await? {
+                        send_welcome_summary(config, db, chat_id, &summary.content).await?;
                     } else {
                         info!("No summary available to send as welcome message");
                     }
@@ -96,31 +96,32 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
             }
         }
         "/unsubscribe" => {
-            if db.remove_subscriber(&chat_id)? {
+            if db.remove_subscriber(chat_id).await? {
                 info!("Unsubscribed: {}", chat_id);
                 send_message(
                     config,
-                    &chat_id,
+                    chat_id,
                     "👋 Successfully unsubscribed. You won't receive any more summaries.",
                 )
                 .await?;
             } else {
-                send_message(config, &chat_id, "You're not currently subscribed.").await?;
+                send_message(config, chat_id, "You're not currently subscribed.").await?;
             }
         }
         "/status" => {
-            let is_subscribed = db.is_subscribed(&chat_id)?;
+            let is_subscribed = db.is_subscribed(chat_id).await?;
 
             // Check if user is admin (only admin sees total subscriber count)
+            let chat_id_str = chat_id.to_string();
             let is_admin =
-                !config.telegram_chat_id.is_empty() && chat_id == config.telegram_chat_id;
+                !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
 
             let status_msg = if is_subscribed {
                 if is_admin {
                     // Admin sees subscriber count
                     format!(
                         "✅ You are subscribed\n📊 Total subscribers: {}",
-                        db.subscriber_count()?
+                        db.subscriber_count().await?
                     )
                 } else {
                     // Regular users only see their own status
@@ -130,13 +131,13 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                 "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries."
                     .to_string()
             };
-            send_message(config, &chat_id, &status_msg).await?;
+            send_message(config, chat_id, &status_msg).await?;
         }
         _ => {
             // Unknown command, send help
             send_message(
                 config,
-                &chat_id,
+                chat_id,
                 "Unknown command. Use /start to see available commands.",
             )
             .await?;
@@ -150,7 +151,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 async fn send_welcome_summary(
     config: &Config,
     db: &Database,
-    chat_id: &str,
+    chat_id: i64,
     summary: &str,
 ) -> Result<()> {
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
@@ -160,7 +161,7 @@ async fn send_welcome_summary(
     );
 
     send_message(config, chat_id, &message).await?;
-    db.mark_welcome_summary_sent(chat_id)?;
+    db.mark_welcome_summary_sent(chat_id).await?;
     info!("✓ Welcome summary sent to {}", chat_id);
 
     Ok(())
@@ -168,7 +169,7 @@ async fn send_welcome_summary(
 
 /// Send summary to all subscribers
 pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) -> Result<()> {
-    let subscribers = db.list_subscribers()?;
+    let subscribers = db.list_subscribers().await?;
 
     if subscribers.is_empty() {
         info!("No subscribers to send to");
@@ -184,7 +185,7 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
     let mut fail_count = 0;
 
     for subscriber in subscribers {
-        match send_message(config, &subscriber.chat_id, &message).await {
+        match send_message(config, subscriber.chat_id, &message).await {
             Ok(_) => {
                 success_count += 1;
                 info!("✓ Sent to {}", subscriber.chat_id);
@@ -206,14 +207,17 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
 
     // Send admin notification if configured
     if !config.telegram_chat_id.is_empty() && fail_count > 0 {
-        let admin_msg = format!(
-            "📊 Summary sent to {}/{} subscribers ({} failed)",
-            success_count,
-            success_count + fail_count,
-            fail_count
-        );
-        if let Err(e) = send_message(config, &config.telegram_chat_id, &admin_msg).await {
-            warn!("Failed to send admin notification: {}", e);
+        // Parse admin chat ID from config string
+        if let Ok(admin_chat_id) = config.telegram_chat_id.parse::<i64>() {
+            let admin_msg = format!(
+                "📊 Summary sent to {}/{} subscribers ({} failed)",
+                success_count,
+                success_count + fail_count,
+                fail_count
+            );
+            if let Err(e) = send_message(config, admin_chat_id, &admin_msg).await {
+                warn!("Failed to send admin notification: {}", e);
+            }
         }
     }
 
@@ -221,7 +225,7 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
 }
 
 /// Send a Telegram message to a specific chat
-async fn send_message(config: &Config, chat_id: &str, text: &str) -> Result<()> {
+async fn send_message(config: &Config, chat_id: i64, text: &str) -> Result<()> {
     let client = reqwest::Client::new();
 
     let url = format!(

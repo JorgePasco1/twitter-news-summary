@@ -42,8 +42,8 @@ async fn main() -> Result<()> {
     }
 
     // Initialize database
-    let db = Arc::new(db::Database::new(&config.database_path)?);
-    info!("✓ Database initialized at {}", config.database_path);
+    let db = Arc::new(db::Database::new(&config.database_url).await?);
+    info!("✓ Database initialized");
 
     // Start scheduler
     let _scheduler = scheduler::start_scheduler(Arc::clone(&config), Arc::clone(&db)).await?;
@@ -181,9 +181,9 @@ async fn subscribers_handler(
         }
     }
 
-    match state.db.list_subscribers() {
+    match state.db.list_subscribers().await {
         Ok(subscribers) => {
-            let chat_ids: Vec<String> = subscribers.iter().map(|s| s.chat_id.clone()).collect();
+            let chat_ids: Vec<i64> = subscribers.iter().map(|s| s.chat_id).collect();
             (
                 StatusCode::OK,
                 Json(serde_json::json!({

@@ -20,9 +20,9 @@ A Rust-based Telegram bot that fetches tweets from Twitter lists via RSS feeds, 
 - 📱 Delivers summaries to all subscribers via Telegram
 - ⏰ Runs automatically twice daily (customizable schedule)
 - 🔒 Secure webhook authentication with secret tokens
-- 💾 SQLite database for subscriber management
+- 💾 PostgreSQL database for subscriber management (hosted on Neon.tech)
 - 🦀 Written in Rust for reliability and performance
-- 🚢 Deployed on Fly.io with persistent storage
+- 🚢 Deployed on Fly.io
 - 🔄 CI/CD pipeline with GitHub Actions
 
 ## Architecture
@@ -37,7 +37,7 @@ A Rust-based Telegram bot that fetches tweets from Twitter lists via RSS feeds, 
 │  │                                           │ │
 │  │  • Telegram Webhook Handler              │ │
 │  │  • Scheduler (8am & 8pm Peru time)       │ │
-│  │  • SQLite Database (subscribers)         │ │
+│  │  • PostgreSQL Database (Neon.tech)        │ │
 │  │  • RSS Fetcher → OpenAI → Telegram       │ │
 │  └───────────────────────────────────────────┘ │
 │                                                 │
@@ -169,9 +169,6 @@ flyctl auth login
 # Create app
 flyctl launch
 
-# Create persistent volume for SQLite database
-flyctl volumes create subscriber_data --size 1 --region sjc --yes
-
 # Generate secrets
 openssl rand -hex 32  # For TELEGRAM_WEBHOOK_SECRET
 openssl rand -hex 32  # For API_KEY
@@ -184,7 +181,8 @@ flyctl secrets set \
   OPENAI_API_KEY=<your_openai_key> \
   NITTER_INSTANCE=https://your-nitter-instance.fly.dev \
   NITTER_API_KEY=<your_nitter_api_key> \
-  API_KEY=<generated_api_key>
+  API_KEY=<generated_api_key> \
+  DATABASE_URL=<your_postgresql_connection_string>
 
 # Deploy
 flyctl deploy
@@ -224,6 +222,7 @@ TELEGRAM_WEBHOOK_SECRET=<generate with: openssl rand -hex 32>
 TELEGRAM_CHAT_ID=<your chat ID for admin notifications>
 OPENAI_API_KEY=<from platform.openai.com>
 NITTER_INSTANCE=https://your-nitter-instance.fly.dev
+DATABASE_URL=<PostgreSQL connection string, e.g., from Neon.tech>
 ```
 
 **Optional:**
@@ -234,7 +233,6 @@ OPENAI_MODEL=gpt-4o-mini
 MAX_TWEETS=50
 HOURS_LOOKBACK=12
 SCHEDULE_TIMES=08:00,20:00  # Peru time (UTC-5)
-DATABASE_PATH=/data/subscribers.db
 PORT=8080
 RUST_LOG=info
 ```
@@ -313,7 +311,7 @@ ngrok http 8080
 ├── src/
 │   ├── main.rs              # Server setup & orchestration
 │   ├── config.rs            # Environment configuration
-│   ├── db.rs                # SQLite database layer
+│   ├── db.rs                # PostgreSQL database layer (async sqlx)
 │   ├── scheduler.rs         # Cron scheduler
 │   ├── telegram.rs          # Webhook handler & messaging
 │   ├── rss.rs               # RSS feed fetcher
@@ -335,7 +333,7 @@ ngrok http 8080
 - 🔒 **Constant-time comparison** for all secrets (prevents timing attacks)
 - 🔒 **API key authentication** for admin endpoints
 - 🔒 **Subscriber privacy** - only admin sees total count
-- 🔒 **Database encryption** on Fly.io volumes
+- 🔒 **Database encryption** via PostgreSQL SSL (Neon.tech)
 
 See [SECURITY.md](./SECURITY.md) for security best practices.
 
@@ -346,8 +344,9 @@ See [SECURITY.md](./SECURITY.md) for security best practices.
 **Cargo.lock not found:**
 - Make sure `Cargo.lock` is committed (not in `.gitignore`)
 
-**Volume mount errors:**
-- Create volume before deploying: `flyctl volumes create subscriber_data`
+**Database connection errors:**
+- Verify `DATABASE_URL` is set correctly in Fly.io secrets
+- Check PostgreSQL host is accessible (Neon.tech status)
 
 ### Bot Not Responding
 
