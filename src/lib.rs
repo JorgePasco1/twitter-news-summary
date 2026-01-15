@@ -5,3 +5,4 @@ pub mod openai;
 pub mod telegram;
 pub mod db;
 pub mod scheduler;
+pub mod security;

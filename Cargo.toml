@@ -46,6 +46,9 @@ dotenvy = "0.15"
 # Utilities
 futures = "0.3"
 
+# Security
+subtle = "2"  # Constant-time comparison
+
 [lib]
 name = "twitter_news_summary"
 path = "src/lib.rs"
