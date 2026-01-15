@@ -1,5 +1,7 @@
 # Twitter News Summary Bot
 
+[![Deploy to Fly.io](https://github.com/JorgePasco1/twitter-news-summary/actions/workflows/deploy.yml/badge.svg)](https://github.com/JorgePasco1/twitter-news-summary/actions/workflows/deploy.yml) [![CI](https://github.com/JorgePasco1/twitter-news-summary/actions/workflows/ci.yml/badge.svg)](https://github.com/JorgePasco1/twitter-news-summary/actions/workflows/ci.yml) [![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org/)
+
 A Rust-based Telegram bot that fetches tweets from Twitter lists via RSS feeds, summarizes them using OpenAI, and delivers personalized summaries to subscribers on a schedule.
 
 **🤖 Try it:** [https://t.me/twitter_news_summary_bot](https://t.me/twitter_news_summary_bot)
