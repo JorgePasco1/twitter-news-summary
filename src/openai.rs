@@ -63,7 +63,7 @@ fn format_relative_time(created_at: &Option<String>) -> String {
     match hours {
         0 => format!("{}m ago", minutes.max(1)),
         1..=23 => format!("{}h ago", hours),
-        _ => tweet_time.format("%b %d, %H:%M").to_string(), // "Jan 15, 10:30"
+        _ => tweet_time.format("%b %d, %H:%M UTC").to_string(), // "Jan 15, 10:30 UTC"
     }
 }
 
