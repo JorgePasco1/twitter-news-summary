@@ -21,6 +21,10 @@ pub struct Config {
     pub max_tweets: u32,
     pub hours_lookback: u32,
 
+    // Summary generation
+    pub summary_max_tokens: u32,
+    pub summary_max_words: u32,
+
     // RSS/Nitter
     pub nitter_instance: String,
     pub nitter_api_key: Option<String>,
@@ -66,11 +70,21 @@ impl Config {
             max_tweets: std::env::var("MAX_TWEETS")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(50),
+                .unwrap_or(100),
             hours_lookback: std::env::var("HOURS_LOOKBACK")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(12),
+
+            // Summary generation
+            summary_max_tokens: std::env::var("SUMMARY_MAX_TOKENS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2500),
+            summary_max_words: std::env::var("SUMMARY_MAX_WORDS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(800),
 
             // RSS/Nitter
             nitter_instance: std::env::var("NITTER_INSTANCE")
@@ -111,8 +125,11 @@ mod tests {
             "OPENAI_MODEL",
             "TELEGRAM_BOT_TOKEN",
             "TELEGRAM_CHAT_ID",
+            "TELEGRAM_WEBHOOK_SECRET",
             "MAX_TWEETS",
             "HOURS_LOOKBACK",
+            "SUMMARY_MAX_TOKENS",
+            "SUMMARY_MAX_WORDS",
             "NITTER_INSTANCE",
             "NITTER_API_KEY",
             "USERNAMES_FILE",
@@ -215,8 +232,10 @@ mod tests {
 
         // Verify default values
         assert_eq!(config.openai_model, "gpt-4o-mini");
-        assert_eq!(config.max_tweets, 50);
+        assert_eq!(config.max_tweets, 100);
         assert_eq!(config.hours_lookback, 12);
+        assert_eq!(config.summary_max_tokens, 2500);
+        assert_eq!(config.summary_max_words, 800);
         assert_eq!(config.usernames_file, "data/usernames.txt");
         assert_eq!(config.database_url, "postgres://test:test@localhost/test");
         assert_eq!(config.schedule_times, vec!["08:00", "20:00"]);
@@ -337,7 +356,7 @@ mod tests {
 
         let config = Config::from_env().unwrap();
         assert_eq!(
-            config.max_tweets, 50,
+            config.max_tweets, 100,
             "Should use default for invalid MAX_TWEETS"
         );
     }
@@ -377,7 +396,7 @@ mod tests {
 
         let config = Config::from_env().unwrap();
         assert_eq!(
-            config.max_tweets, 50,
+            config.max_tweets, 100,
             "Should use default for negative value"
         );
     }
@@ -390,7 +409,7 @@ mod tests {
         env::set_var("MAX_TWEETS", "");
 
         let config = Config::from_env().unwrap();
-        assert_eq!(config.max_tweets, 50, "Should use default for empty string");
+        assert_eq!(config.max_tweets, 100, "Should use default for empty string");
     }
 
     #[test]
