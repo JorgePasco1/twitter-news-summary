@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::twitter::Tweet;
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
@@ -27,31 +28,100 @@ struct Choice {
     message: Message,
 }
 
+/// Build Twitter URL from author_id and tweet_id
+fn build_twitter_url(author_id: &Option<String>, tweet_id: &str) -> String {
+    match author_id {
+        Some(username) if tweet_id != "unknown" => {
+            format!("https://x.com/{}/status/{}", username, tweet_id)
+        }
+        _ => "Link unavailable".to_string(),
+    }
+}
+
+/// Format timestamp as relative time (e.g., "2h ago") or absolute if > 24h
+fn format_relative_time(created_at: &Option<String>) -> String {
+    let Some(timestamp) = created_at else {
+        return "time unknown".to_string();
+    };
+
+    let Ok(dt) = DateTime::parse_from_rfc3339(timestamp) else {
+        return "time unknown".to_string();
+    };
+
+    let now = Utc::now();
+    let tweet_time = dt.with_timezone(&Utc);
+    let duration = now.signed_duration_since(tweet_time);
+
+    let hours = duration.num_hours();
+    let minutes = duration.num_minutes();
+
+    if hours < 0 || minutes < 0 {
+        // Future timestamp (shouldn't happen)
+        return "just now".to_string();
+    }
+
+    match hours {
+        0 => format!("{}m ago", minutes.max(1)),
+        1..=23 => format!("{}h ago", hours),
+        _ => tweet_time.format("%b %d, %H:%M UTC").to_string(), // "Jan 15, 10:30 UTC"
+    }
+}
+
 /// Summarize tweets using OpenAI's API
 pub async fn summarize_tweets(config: &Config, tweets: &[Tweet]) -> Result<String> {
     let client = reqwest::Client::new();
 
-    // Format tweets for the prompt
+    // Format tweets for the prompt with timestamps and links
     let tweets_text = tweets
         .iter()
         .enumerate()
-        .map(|(i, t)| format!("{}. {}", i + 1, t.text))
+        .map(|(i, t)| {
+            format!(
+                "{}. {} [{}]\n   Link: {}",
+                i + 1,
+                t.text,
+                format_relative_time(&t.created_at),
+                build_twitter_url(&t.author_id, &t.id)
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let system_prompt = r#"You are a helpful assistant that summarizes Twitter/X content. 
-Your task is to create a concise, informative summary of the tweets provided.
+    let system_prompt = format!(
+        r#"You are an AI/ML tech news curator summarizing Twitter/X content for Telegram.
 
-Guidelines:
-- Group related topics together
-- Highlight the most important or trending discussions
-- Keep the summary scannable with bullet points
-- Include key insights or interesting takes
-- Keep the total summary under 500 words
-- Use emojis sparingly to make it visually appealing for WhatsApp"#;
+Your task is to create an informative, well-organized summary of the tweets provided.
+
+## Guidelines
+
+### Content Organization
+- Group related topics into clear sections with headers (e.g., "🔬 AI Research", "🏢 Industry News", "🚀 Product Launches")
+- Highlight the most important or trending discussions first
+- Include 2-3 key tweet links per section for readers who want to dive deeper
+
+### Formatting
+- Use bullet points for scannable reading
+- Include brief context or insights where helpful
+- Use emojis sparingly for section headers to make them visually distinct
+- Keep the total summary under {} words
+
+### Link Integration
+- Include direct links to the most significant/impactful tweets in each section
+- Format links naturally: "According to @username (link)..." or "Read more: link"
+- Prioritize linking to: announcements, breaking news, insightful threads, and notable opinions
+
+### Focus Areas
+This list covers AI/ML researchers, tech leaders, and industry figures. Prioritize:
+- Model releases and research papers
+- Company announcements and product launches
+- Industry trends and debates
+- Technical insights and tutorials
+- Notable opinions from thought leaders"#,
+        config.summary_max_words
+    );
 
     let user_prompt = format!(
-        "Please summarize these {} tweets from my Twitter list:\n\n{}",
+        "Please summarize these {} recent tweets from my Twitter list. Include links to the most noteworthy tweets:\n\n{}",
         tweets.len(),
         tweets_text
     );
@@ -61,14 +131,14 @@ Guidelines:
         messages: vec![
             Message {
                 role: "system".to_string(),
-                content: system_prompt.to_string(),
+                content: system_prompt,
             },
             Message {
                 role: "user".to_string(),
                 content: user_prompt,
             },
         ],
-        max_tokens: 1000,
+        max_tokens: config.summary_max_tokens,
         temperature: 0.7,
     };
 
@@ -122,8 +192,10 @@ mod tests {
             telegram_bot_token: "test-token".to_string(),
             telegram_chat_id: "".to_string(),
             telegram_webhook_secret: "test-webhook-secret".to_string(),
-            max_tweets: 50,
+            max_tweets: 100,
             hours_lookback: 12,
+            summary_max_tokens: 2500,
+            summary_max_words: 800,
             nitter_instance: "https://nitter.example.com".to_string(),
             nitter_api_key: None,
             usernames_file: "data/usernames.txt".to_string(),
@@ -474,12 +546,178 @@ Guidelines:
         let request = ChatRequest {
             model: "gpt-4o-mini".to_string(),
             messages: vec![],
-            max_tokens: 1000,
+            max_tokens: 2500,
             temperature: 0.7,
         };
 
-        // Verify expected parameters
-        assert_eq!(request.max_tokens, 1000);
+        // Verify expected parameters (2500 is the new default for summary_max_tokens)
+        assert_eq!(request.max_tokens, 2500);
         assert!((request.temperature - 0.7).abs() < f32::EPSILON);
+    }
+
+    // ==================== Helper Function Tests ====================
+
+    #[test]
+    fn test_build_twitter_url_with_valid_data() {
+        let url = build_twitter_url(&Some("testuser".to_string()), "123456789");
+        assert_eq!(url, "https://x.com/testuser/status/123456789");
+    }
+
+    #[test]
+    fn test_build_twitter_url_with_unknown_id() {
+        let url = build_twitter_url(&Some("testuser".to_string()), "unknown");
+        assert_eq!(url, "Link unavailable");
+    }
+
+    #[test]
+    fn test_build_twitter_url_without_author() {
+        let url = build_twitter_url(&None, "123456789");
+        assert_eq!(url, "Link unavailable");
+    }
+
+    #[test]
+    fn test_build_twitter_url_without_author_and_unknown_id() {
+        let url = build_twitter_url(&None, "unknown");
+        assert_eq!(url, "Link unavailable");
+    }
+
+    #[test]
+    fn test_format_relative_time_minutes() {
+        let now = Utc::now();
+        let timestamp = (now - chrono::Duration::minutes(30)).to_rfc3339();
+        let result = format_relative_time(&Some(timestamp));
+        assert_eq!(result, "30m ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_one_minute() {
+        let now = Utc::now();
+        let timestamp = (now - chrono::Duration::seconds(30)).to_rfc3339();
+        let result = format_relative_time(&Some(timestamp));
+        // Should be at least 1m, not 0m
+        assert_eq!(result, "1m ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_hours() {
+        let now = Utc::now();
+        let timestamp = (now - chrono::Duration::hours(5)).to_rfc3339();
+        let result = format_relative_time(&Some(timestamp));
+        assert_eq!(result, "5h ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_23_hours() {
+        let now = Utc::now();
+        let timestamp = (now - chrono::Duration::hours(23)).to_rfc3339();
+        let result = format_relative_time(&Some(timestamp));
+        assert_eq!(result, "23h ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_over_24h() {
+        let now = Utc::now();
+        let timestamp = (now - chrono::Duration::hours(48)).to_rfc3339();
+        let result = format_relative_time(&Some(timestamp));
+        // Should return absolute format like "Jan 14, 10:30"
+        assert!(
+            result.contains(","),
+            "Expected absolute date format, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_format_relative_time_none() {
+        let result = format_relative_time(&None);
+        assert_eq!(result, "time unknown");
+    }
+
+    #[test]
+    fn test_format_relative_time_invalid_timestamp() {
+        let result = format_relative_time(&Some("invalid-timestamp".to_string()));
+        assert_eq!(result, "time unknown");
+    }
+
+    #[test]
+    fn test_prompt_includes_links_and_timestamps() {
+        let now = Utc::now();
+        let timestamp = (now - chrono::Duration::hours(2)).to_rfc3339();
+
+        let tweets = [Tweet {
+            id: "123456".to_string(),
+            text: "@user: Test tweet".to_string(),
+            author_id: Some("user".to_string()),
+            created_at: Some(timestamp),
+        }];
+
+        let tweets_text = tweets
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                format!(
+                    "{}. {} [{}]\n   Link: {}",
+                    i + 1,
+                    t.text,
+                    format_relative_time(&t.created_at),
+                    build_twitter_url(&t.author_id, &t.id)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        assert!(tweets_text.contains("https://x.com/user/status/123456"));
+        assert!(tweets_text.contains("@user: Test tweet"));
+        assert!(tweets_text.contains("2h ago"));
+    }
+
+    #[test]
+    fn test_system_prompt_contains_telegram_not_whatsapp() {
+        let config = create_test_config();
+        let system_prompt = format!(
+            r#"You are an AI/ML tech news curator summarizing Twitter/X content for Telegram.
+
+Your task is to create an informative, well-organized summary of the tweets provided.
+
+## Guidelines
+
+### Content Organization
+- Group related topics into clear sections with headers (e.g., "🔬 AI Research", "🏢 Industry News", "🚀 Product Launches")
+- Highlight the most important or trending discussions first
+- Include 2-3 key tweet links per section for readers who want to dive deeper
+
+### Formatting
+- Use bullet points for scannable reading
+- Include brief context or insights where helpful
+- Use emojis sparingly for section headers to make them visually distinct
+- Keep the total summary under {} words
+
+### Link Integration
+- Include direct links to the most significant/impactful tweets in each section
+- Format links naturally: "According to @username (link)..." or "Read more: link"
+- Prioritize linking to: announcements, breaking news, insightful threads, and notable opinions
+
+### Focus Areas
+This list covers AI/ML researchers, tech leaders, and industry figures. Prioritize:
+- Model releases and research papers
+- Company announcements and product launches
+- Industry trends and debates
+- Technical insights and tutorials
+- Notable opinions from thought leaders"#,
+            config.summary_max_words
+        );
+
+        assert!(system_prompt.contains("Telegram"));
+        assert!(!system_prompt.contains("WhatsApp"));
+        assert!(system_prompt.contains("AI/ML"));
+        assert!(system_prompt.contains("800"));
+        assert!(system_prompt.contains("tweet links"));
+    }
+
+    #[test]
+    fn test_config_summary_values_used() {
+        let config = create_test_config();
+        assert_eq!(config.summary_max_tokens, 2500);
+        assert_eq!(config.summary_max_words, 800);
     }
 }
