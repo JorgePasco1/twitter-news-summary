@@ -271,6 +271,7 @@ mod tests {
             twitter_list_id: None,
             openai_api_key: "test-key".to_string(),
             openai_model: "gpt-4o-mini".to_string(),
+            openai_api_url: "https://api.openai.com/v1/chat/completions".to_string(),
             telegram_bot_token: "test-token".to_string(),
             telegram_chat_id: "".to_string(),
             telegram_webhook_secret: "test-webhook-secret".to_string(),

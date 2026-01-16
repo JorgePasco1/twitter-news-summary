@@ -4,18 +4,20 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize)]
-struct ChatRequest {
-    model: String,
-    messages: Vec<Message>,
-    max_tokens: u32,
-    temperature: f32,
+/// OpenAI Chat Completion request structure
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatRequest {
+    pub model: String,
+    pub messages: Vec<Message>,
+    pub max_tokens: u32,
+    pub temperature: f32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Message {
-    role: String,
-    content: String,
+/// A message in the OpenAI chat format
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct Message {
+    pub role: String,
+    pub content: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,27 +69,9 @@ fn format_relative_time(created_at: &Option<String>) -> String {
     }
 }
 
-/// Summarize tweets using OpenAI's API
-pub async fn summarize_tweets(config: &Config, tweets: &[Tweet]) -> Result<String> {
-    let client = reqwest::Client::new();
-
-    // Format tweets for the prompt with timestamps and links
-    let tweets_text = tweets
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            format!(
-                "{}. {} [{}]\n   Link: {}",
-                i + 1,
-                t.text,
-                format_relative_time(&t.created_at),
-                build_twitter_url(&t.author_id, &t.id)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-
-    let system_prompt = format!(
+/// Build the system prompt for tweet summarization (pure function)
+pub fn build_system_prompt(max_words: u32) -> String {
+    format!(
         r#"You are an AI/ML tech news curator summarizing Twitter/X content for Telegram.
 
 Your task is to create an informative, well-organized summary of the tweets provided.
@@ -117,8 +101,32 @@ This list covers AI/ML researchers, tech leaders, and industry figures. Prioriti
 - Industry trends and debates
 - Technical insights and tutorials
 - Notable opinions from thought leaders"#,
-        config.summary_max_words
-    );
+        max_words
+    )
+}
+
+/// Format tweets for the user prompt with timestamps and links (pure function)
+pub fn format_tweets_for_prompt(tweets: &[Tweet]) -> String {
+    tweets
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            format!(
+                "{}. {} [{}]\n   Link: {}",
+                i + 1,
+                t.text,
+                format_relative_time(&t.created_at),
+                build_twitter_url(&t.author_id, &t.id)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Build a complete ChatRequest for summarization (pure function)
+pub fn build_chat_request(config: &Config, tweets: &[Tweet]) -> ChatRequest {
+    let tweets_text = format_tweets_for_prompt(tweets);
+    let system_prompt = build_system_prompt(config.summary_max_words);
 
     let user_prompt = format!(
         "Please summarize these {} recent tweets from my Twitter list. Include links to the most noteworthy tweets:\n\n{}",
@@ -126,7 +134,7 @@ This list covers AI/ML researchers, tech leaders, and industry figures. Prioriti
         tweets_text
     );
 
-    let request = ChatRequest {
+    ChatRequest {
         model: config.openai_model.clone(),
         messages: vec![
             Message {
@@ -140,10 +148,24 @@ This list covers AI/ML researchers, tech leaders, and industry figures. Prioriti
         ],
         max_tokens: config.summary_max_tokens,
         temperature: 0.7,
-    };
+    }
+}
+
+/// Summarize tweets using OpenAI's API
+///
+/// # Arguments
+/// * `client` - The HTTP client to use for the request
+/// * `config` - Application configuration containing API key and model settings
+/// * `tweets` - The tweets to summarize
+pub async fn summarize_tweets(
+    client: &reqwest::Client,
+    config: &Config,
+    tweets: &[Tweet],
+) -> Result<String> {
+    let request = build_chat_request(config, tweets);
 
     let response = client
-        .post("https://api.openai.com/v1/chat/completions")
+        .post(&config.openai_api_url)
         .header("Authorization", format!("Bearer {}", config.openai_api_key))
         .header("Content-Type", "application/json")
         .json(&request)
@@ -189,6 +211,7 @@ mod tests {
             twitter_list_id: None,
             openai_api_key: "test-openai-key".to_string(),
             openai_model: "gpt-4o-mini".to_string(),
+            openai_api_url: "https://api.openai.com/v1/chat/completions".to_string(),
             telegram_bot_token: "test-token".to_string(),
             telegram_chat_id: "".to_string(),
             telegram_webhook_secret: "test-webhook-secret".to_string(),
@@ -204,6 +227,13 @@ mod tests {
             schedule_times: vec!["08:00".to_string(), "20:00".to_string()],
             port: 8080,
         }
+    }
+
+    /// Create a test config with a custom API URL (for wiremock testing)
+    fn create_test_config_with_url(url: &str) -> Config {
+        let mut config = create_test_config();
+        config.openai_api_url = url.to_string();
+        config
     }
 
     /// Create a sample tweet for testing
@@ -341,218 +371,182 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        // We need to test with the actual OpenAI API endpoint
-        // Since the function hardcodes the URL, we cannot easily mock it
-        // This test validates the structure but cannot be run against the real API
-
-        let config = create_test_config();
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
         let tweets = [
             create_tweet("1", "@user1: This is a test tweet"),
             create_tweet("2", "@user2: Another test tweet"),
         ];
 
-        // Note: This test will fail in CI without a real API key
-        // The following is a structural test showing what we would verify
-        assert!(tweets.len() == 2);
-        assert_eq!(config.openai_api_key, "test-openai-key");
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "Here is your summary of the tweets.");
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_api_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("401") || err.contains("Unauthorized"));
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_empty_choices() {
+        let mock_server = MockServer::start().await;
+
+        let response_body = serde_json::json!({
+            "choices": []
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "No summary generated");
+    }
+
+    // ==================== Pure Function Tests ====================
+
+    #[test]
+    fn test_build_system_prompt_is_deterministic() {
+        let prompt1 = build_system_prompt(800);
+        let prompt2 = build_system_prompt(800);
+
+        assert_eq!(prompt1, prompt2, "System prompt should be deterministic");
     }
 
     #[test]
-    fn test_prompt_construction_with_tweets() {
-        let tweets = [
-            create_tweet("1", "@user1: First tweet content"),
-            create_tweet("2", "@user2: Second tweet content"),
-            create_tweet("3", "@user3: Third tweet content"),
-        ];
+    fn test_build_system_prompt_is_not_empty() {
+        let prompt = build_system_prompt(800);
 
-        // Test the prompt construction logic
-        let tweets_text = tweets
-            .iter()
-            .enumerate()
-            .map(|(i, t)| format!("{}. {}", i + 1, t.text))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        assert!(tweets_text.contains("1. @user1: First tweet content"));
-        assert!(tweets_text.contains("2. @user2: Second tweet content"));
-        assert!(tweets_text.contains("3. @user3: Third tweet content"));
+        assert!(!prompt.is_empty(), "System prompt should not be empty");
+        assert!(prompt.len() > 100, "System prompt should be substantial");
     }
 
     #[test]
-    fn test_prompt_construction_empty_tweets() {
-        let tweets: Vec<Tweet> = vec![];
-
-        let tweets_text = tweets
-            .iter()
-            .enumerate()
-            .map(|(i, t)| format!("{}. {}", i + 1, t.text))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        assert!(tweets_text.is_empty());
-    }
-
-    #[test]
-    fn test_user_prompt_format() {
-        let tweets = [create_tweet("1", "@user1: Test tweet")];
-
-        let tweets_text = tweets
-            .iter()
-            .enumerate()
-            .map(|(i, t)| format!("{}. {}", i + 1, t.text))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        let user_prompt = format!(
-            "Please summarize these {} tweets from my Twitter list:\n\n{}",
-            tweets.len(),
-            tweets_text
+    fn test_build_system_prompt_contains_word_limit() {
+        let prompt = build_system_prompt(500);
+        assert!(
+            prompt.contains("500"),
+            "Prompt should contain the word limit"
         );
 
-        assert!(user_prompt.contains("Please summarize these 1 tweets"));
-        assert!(user_prompt.contains("@user1: Test tweet"));
+        let prompt2 = build_system_prompt(1000);
+        assert!(
+            prompt2.contains("1000"),
+            "Prompt should contain the word limit"
+        );
     }
 
-    // ==================== Error Handling Tests ====================
-
     #[test]
-    fn test_empty_choices_returns_default_message() {
-        let response = ChatResponse { choices: vec![] };
+    fn test_build_system_prompt_contains_all_guidelines() {
+        let prompt = build_system_prompt(800);
 
-        let summary = response
-            .choices
-            .first()
-            .map(|c| c.message.content.clone())
-            .unwrap_or_else(|| "No summary generated".to_string());
-
-        assert_eq!(summary, "No summary generated");
-    }
-
-    // ==================== Edge Case Tests ====================
-
-    #[test]
-    fn test_tweet_with_special_characters_in_prompt() {
-        let tweets = [
-            create_tweet("1", "@user1: Tweet with \"quotes\" and 'apostrophes'"),
-            create_tweet("2", "@user2: Tweet with <html> & special chars"),
-            create_tweet("3", "@user3: Tweet with unicode"),
+        // Verify all key guidelines are present
+        let required_elements = [
+            "Telegram",
+            "AI/ML",
+            "Group related topics",
+            "bullet points",
+            "insights",
+            "tweet links",
         ];
 
-        let tweets_text = tweets
-            .iter()
-            .enumerate()
-            .map(|(i, t)| format!("{}. {}", i + 1, t.text))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        // Verify special characters are preserved
-        assert!(tweets_text.contains("\"quotes\""));
-        assert!(tweets_text.contains("<html>"));
-        assert!(tweets_text.contains("unicode"));
+        for element in required_elements {
+            assert!(
+                prompt.contains(element),
+                "System prompt should contain '{}', but got: {}",
+                element,
+                prompt
+            );
+        }
     }
 
     #[test]
-    fn test_tweet_numbering_starts_at_one() {
-        let tweets = [
-            create_tweet("1", "First"),
-            create_tweet("2", "Second"),
-            create_tweet("3", "Third"),
-        ];
+    fn test_build_chat_request() {
+        let config = create_test_config();
+        let tweets = [create_tweet("1", "@user1: Test tweet")];
 
-        let tweets_text = tweets
-            .iter()
-            .enumerate()
-            .map(|(i, t)| format!("{}. {}", i + 1, t.text))
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let request = build_chat_request(&config, &tweets);
 
-        // Verify numbering starts at 1, not 0
-        assert!(tweets_text.starts_with("1. First"));
-        assert!(tweets_text.contains("2. Second"));
-        assert!(tweets_text.contains("3. Third"));
-        assert!(!tweets_text.contains("0. "));
+        assert_eq!(request.model, "gpt-4o-mini");
+        assert_eq!(request.messages.len(), 2);
+        assert_eq!(request.messages[0].role, "system");
+        assert_eq!(request.messages[1].role, "user");
+        assert!(request.messages[1].content.contains("1 recent tweets"));
+        assert_eq!(request.max_tokens, 2500);
+        assert!((request.temperature - 0.7).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn test_many_tweets_prompt_construction() {
-        let tweets: Vec<Tweet> = (1..=100)
+    fn test_build_chat_request_uses_config_model() {
+        let mut config = create_test_config();
+        config.openai_model = "gpt-4-turbo".to_string();
+        let tweets = [create_tweet("1", "Test")];
+
+        let request = build_chat_request(&config, &tweets);
+
+        assert_eq!(request.model, "gpt-4-turbo");
+    }
+
+    #[test]
+    fn test_build_chat_request_with_empty_tweets() {
+        let config = create_test_config();
+        let tweets: Vec<Tweet> = vec![];
+
+        let request = build_chat_request(&config, &tweets);
+
+        assert_eq!(request.messages.len(), 2);
+        assert!(request.messages[1].content.contains("0 recent tweets"));
+    }
+
+    #[test]
+    fn test_build_chat_request_system_prompt_is_first() {
+        let config = create_test_config();
+        let tweets = [create_tweet("1", "Test")];
+
+        let request = build_chat_request(&config, &tweets);
+
+        assert_eq!(request.messages[0].role, "system");
+        assert!(request.messages[0].content.contains("AI/ML"));
+    }
+
+    #[test]
+    fn test_build_chat_request_with_many_tweets() {
+        let config = create_test_config();
+        let tweets: Vec<Tweet> = (1..=50)
             .map(|i| create_tweet(&i.to_string(), &format!("Tweet number {}", i)))
             .collect();
 
-        let tweets_text = tweets
-            .iter()
-            .enumerate()
-            .map(|(i, t)| format!("{}. {}", i + 1, t.text))
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let request = build_chat_request(&config, &tweets);
 
-        // Verify all tweets are included
-        assert!(tweets_text.contains("1. Tweet number 1"));
-        assert!(tweets_text.contains("50. Tweet number 50"));
-        assert!(tweets_text.contains("100. Tweet number 100"));
-    }
-
-    #[test]
-    fn test_long_tweet_text_preserved() {
-        let long_text = "A".repeat(5000);
-        let tweets = [create_tweet("1", &long_text)];
-
-        let tweets_text = tweets
-            .iter()
-            .enumerate()
-            .map(|(i, t)| format!("{}. {}", i + 1, t.text))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        // Long text should be preserved
-        assert!(tweets_text.len() > 5000);
-    }
-
-    // ==================== System Prompt Tests ====================
-
-    #[test]
-    fn test_system_prompt_content() {
-        let system_prompt = r#"You are a helpful assistant that summarizes Twitter/X content.
-Your task is to create a concise, informative summary of the tweets provided.
-
-Guidelines:
-- Group related topics together
-- Highlight the most important or trending discussions
-- Keep the summary scannable with bullet points
-- Include key insights or interesting takes
-- Keep the total summary under 500 words
-- Use emojis sparingly to make it visually appealing for WhatsApp"#;
-
-        // Verify key instructions are present
-        assert!(system_prompt.contains("summarizes Twitter"));
-        assert!(system_prompt.contains("Group related topics"));
-        assert!(system_prompt.contains("bullet points"));
-        assert!(system_prompt.contains("500 words"));
-        assert!(system_prompt.contains("emojis sparingly"));
-    }
-
-    // ==================== Config Tests ====================
-
-    #[test]
-    fn test_custom_model_in_config() {
-        let mut config = create_test_config();
-        config.openai_model = "gpt-4-turbo".to_string();
-
-        assert_eq!(config.openai_model, "gpt-4-turbo");
-    }
-
-    #[test]
-    fn test_request_parameters() {
-        let request = ChatRequest {
-            model: "gpt-4o-mini".to_string(),
-            messages: vec![],
-            max_tokens: 2500,
-            temperature: 0.7,
-        };
-
-        // Verify expected parameters (2500 is the new default for summary_max_tokens)
-        assert_eq!(request.max_tokens, 2500);
-        assert!((request.temperature - 0.7).abs() < f32::EPSILON);
+        assert!(request.messages[1].content.contains("50 recent tweets"));
+        assert!(request.messages[1].content.contains("1. Tweet number 1"));
+        assert!(request.messages[1].content.contains("50. Tweet number 50"));
     }
 
     // ==================== Helper Function Tests ====================
@@ -619,10 +613,10 @@ Guidelines:
         let now = Utc::now();
         let timestamp = (now - chrono::Duration::hours(48)).to_rfc3339();
         let result = format_relative_time(&Some(timestamp));
-        // Should return absolute format like "Jan 14, 10:30"
+        // Should return absolute format like "Jan 14, 10:30 UTC"
         assert!(
-            result.contains(","),
-            "Expected absolute date format, got: {}",
+            result.contains(",") && result.contains("UTC"),
+            "Expected absolute date format with UTC, got: {}",
             result
         );
     }
@@ -640,7 +634,7 @@ Guidelines:
     }
 
     #[test]
-    fn test_prompt_includes_links_and_timestamps() {
+    fn test_format_tweets_for_prompt_includes_links() {
         let now = Utc::now();
         let timestamp = (now - chrono::Duration::hours(2)).to_rfc3339();
 
@@ -651,20 +645,7 @@ Guidelines:
             created_at: Some(timestamp),
         }];
 
-        let tweets_text = tweets
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                format!(
-                    "{}. {} [{}]\n   Link: {}",
-                    i + 1,
-                    t.text,
-                    format_relative_time(&t.created_at),
-                    build_twitter_url(&t.author_id, &t.id)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let tweets_text = format_tweets_for_prompt(&tweets);
 
         assert!(tweets_text.contains("https://x.com/user/status/123456"));
         assert!(tweets_text.contains("@user: Test tweet"));
@@ -672,46 +653,108 @@ Guidelines:
     }
 
     #[test]
-    fn test_system_prompt_contains_telegram_not_whatsapp() {
+    fn test_format_tweets_for_prompt_empty() {
+        let tweets: Vec<Tweet> = vec![];
+        let tweets_text = format_tweets_for_prompt(&tweets);
+        assert!(tweets_text.is_empty());
+    }
+
+    #[test]
+    fn test_format_tweets_for_prompt_multiple() {
+        let tweets = [
+            create_tweet("1", "First tweet"),
+            create_tweet("2", "Second tweet"),
+        ];
+
+        let tweets_text = format_tweets_for_prompt(&tweets);
+
+        assert!(tweets_text.contains("1. First tweet"));
+        assert!(tweets_text.contains("2. Second tweet"));
+        // Should have double newline between tweets
+        assert!(tweets_text.contains("\n\n"));
+    }
+
+    // ==================== Error Handling Tests ====================
+
+    #[test]
+    fn test_empty_choices_returns_default_message() {
+        let response = ChatResponse { choices: vec![] };
+
+        let summary = response
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .unwrap_or_else(|| "No summary generated".to_string());
+
+        assert_eq!(summary, "No summary generated");
+    }
+
+    // ==================== Edge Case Tests ====================
+
+    #[test]
+    fn test_format_tweets_special_characters() {
+        let tweets = [
+            create_tweet("1", "@user1: Tweet with \"quotes\" and 'apostrophes'"),
+            create_tweet("2", "@user2: Tweet with <html> & special chars"),
+        ];
+
+        let tweets_text = format_tweets_for_prompt(&tweets);
+
+        // Verify special characters are preserved
+        assert!(tweets_text.contains("\"quotes\""));
+        assert!(tweets_text.contains("<html>"));
+    }
+
+    #[test]
+    fn test_format_tweets_numbering_starts_at_one() {
+        let tweets = [
+            create_tweet("1", "First"),
+            create_tweet("2", "Second"),
+            create_tweet("3", "Third"),
+        ];
+
+        let tweets_text = format_tweets_for_prompt(&tweets);
+
+        // Verify numbering starts at 1, not 0
+        assert!(tweets_text.contains("1. First"));
+        assert!(tweets_text.contains("2. Second"));
+        assert!(tweets_text.contains("3. Third"));
+        assert!(!tweets_text.contains("0. "));
+    }
+
+    #[test]
+    fn test_format_tweets_many_tweets() {
+        let tweets: Vec<Tweet> = (1..=100)
+            .map(|i| create_tweet(&i.to_string(), &format!("Tweet number {}", i)))
+            .collect();
+
+        let tweets_text = format_tweets_for_prompt(&tweets);
+
+        // Verify all tweets are included
+        assert!(tweets_text.contains("1. Tweet number 1"));
+        assert!(tweets_text.contains("50. Tweet number 50"));
+        assert!(tweets_text.contains("100. Tweet number 100"));
+    }
+
+    // ==================== Config Tests ====================
+
+    #[test]
+    fn test_custom_model_in_config() {
+        let mut config = create_test_config();
+        config.openai_model = "gpt-4-turbo".to_string();
+
+        assert_eq!(config.openai_model, "gpt-4-turbo");
+    }
+
+    #[test]
+    fn test_request_parameters() {
         let config = create_test_config();
-        let system_prompt = format!(
-            r#"You are an AI/ML tech news curator summarizing Twitter/X content for Telegram.
+        let tweets = [create_tweet("1", "Test")];
+        let request = build_chat_request(&config, &tweets);
 
-Your task is to create an informative, well-organized summary of the tweets provided.
-
-## Guidelines
-
-### Content Organization
-- Group related topics into clear sections with headers (e.g., "🔬 AI Research", "🏢 Industry News", "🚀 Product Launches")
-- Highlight the most important or trending discussions first
-- Include 2-3 key tweet links per section for readers who want to dive deeper
-
-### Formatting
-- Use bullet points for scannable reading
-- Include brief context or insights where helpful
-- Use emojis sparingly for section headers to make them visually distinct
-- Keep the total summary under {} words
-
-### Link Integration
-- Include direct links to the most significant/impactful tweets in each section
-- Format links naturally: "According to @username (link)..." or "Read more: link"
-- Prioritize linking to: announcements, breaking news, insightful threads, and notable opinions
-
-### Focus Areas
-This list covers AI/ML researchers, tech leaders, and industry figures. Prioritize:
-- Model releases and research papers
-- Company announcements and product launches
-- Industry trends and debates
-- Technical insights and tutorials
-- Notable opinions from thought leaders"#,
-            config.summary_max_words
-        );
-
-        assert!(system_prompt.contains("Telegram"));
-        assert!(!system_prompt.contains("WhatsApp"));
-        assert!(system_prompt.contains("AI/ML"));
-        assert!(system_prompt.contains("800"));
-        assert!(system_prompt.contains("tweet links"));
+        // Verify expected parameters (2500 is the default for summary_max_tokens)
+        assert_eq!(request.max_tokens, 2500);
+        assert!((request.temperature - 0.7).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -719,5 +762,240 @@ This list covers AI/ML researchers, tech leaders, and industry figures. Prioriti
         let config = create_test_config();
         assert_eq!(config.summary_max_tokens, 2500);
         assert_eq!(config.summary_max_words, 800);
+    }
+
+    // ==================== Additional Wiremock Tests ====================
+
+    #[tokio::test]
+    async fn test_summarize_tweets_rate_limit_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .set_body_string(r#"{"error": {"message": "Rate limit exceeded"}}"#),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("429") || err.contains("Rate limit"));
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_malformed_json_response() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not valid json"))
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("parse") || err.contains("Failed"),
+            "Error should indicate parsing failure: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_internal_server_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_string(r#"{"error": {"message": "Internal server error"}}"#),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("500"));
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_with_empty_tweet_list() {
+        let mock_server = MockServer::start().await;
+
+        let response_body = create_openai_response("No tweets to summarize.");
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets: Vec<Tweet> = vec![];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "No tweets to summarize.");
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_verifies_request_body() {
+        let mock_server = MockServer::start().await;
+
+        let response_body = create_openai_response("Summary");
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("Authorization", "Bearer test-openai-key"))
+            .and(header("Content-Type", "application/json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_uses_custom_api_url() {
+        let mock_server = MockServer::start().await;
+
+        let response_body = create_openai_response("Custom endpoint summary");
+
+        // Mount on a custom path to verify the URL is used correctly
+        Mock::given(method("POST"))
+            .and(path("/custom/chat/endpoint"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/custom/chat/endpoint", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "Custom endpoint summary");
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_handles_service_unavailable() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(503).set_body_string("Service temporarily unavailable"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("503"));
+    }
+
+    // ==================== Message and ChatRequest Equality Tests ====================
+
+    #[test]
+    fn test_message_equality() {
+        let msg1 = Message {
+            role: "user".to_string(),
+            content: "Hello".to_string(),
+        };
+        let msg2 = Message {
+            role: "user".to_string(),
+            content: "Hello".to_string(),
+        };
+        let msg3 = Message {
+            role: "assistant".to_string(),
+            content: "Hello".to_string(),
+        };
+
+        assert_eq!(msg1, msg2);
+        assert_ne!(msg1, msg3);
+    }
+
+    #[test]
+    fn test_chat_request_equality() {
+        let req1 = ChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            max_tokens: 1000,
+            temperature: 0.7,
+        };
+        let req2 = ChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            max_tokens: 1000,
+            temperature: 0.7,
+        };
+
+        assert_eq!(req1, req2);
+    }
+
+    #[test]
+    fn test_chat_request_clone() {
+        let original = ChatRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: "Test".to_string(),
+            }],
+            max_tokens: 1000,
+            temperature: 0.7,
+        };
+
+        let cloned = original.clone();
+
+        assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_message_clone() {
+        let original = Message {
+            role: "system".to_string(),
+            content: "You are a helpful assistant.".to_string(),
+        };
+
+        let cloned = original.clone();
+
+        assert_eq!(original, cloned);
     }
 }

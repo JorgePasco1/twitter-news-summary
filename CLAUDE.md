@@ -36,6 +36,12 @@ cargo fmt                  # Format code
 cargo clippy               # Run linter
 ```
 
+### Git Hooks Setup
+```bash
+# Configure git to use the project's hooks (runs fmt, clippy, tests before push)
+git config core.hooksPath .githooks
+```
+
 ### Environment Setup
 ```bash
 # Copy environment template and fill in credentials
