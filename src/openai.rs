@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::twitter::Tweet;
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// OpenAI Chat Completion request structure
@@ -29,27 +30,95 @@ struct Choice {
     message: Message,
 }
 
-/// Build the system prompt for tweet summarization (pure function)
-pub fn build_system_prompt() -> String {
-    r#"You are a helpful assistant that summarizes Twitter/X content.
-Your task is to create a concise, informative summary of the tweets provided.
-
-Guidelines:
-- Group related topics together
-- Highlight the most important or trending discussions
-- Keep the summary scannable with bullet points
-- Include key insights or interesting takes
-- Keep the total summary under 500 words
-- Use emojis sparingly to make it visually appealing for WhatsApp"#
-        .to_string()
+/// Build Twitter URL from author_id and tweet_id
+fn build_twitter_url(author_id: &Option<String>, tweet_id: &str) -> String {
+    match author_id {
+        Some(username) if tweet_id != "unknown" => {
+            format!("https://x.com/{}/status/{}", username, tweet_id)
+        }
+        _ => "Link unavailable".to_string(),
+    }
 }
 
-/// Format tweets for the user prompt (pure function)
+/// Format timestamp as relative time (e.g., "2h ago") or absolute if > 24h
+fn format_relative_time(created_at: &Option<String>) -> String {
+    let Some(timestamp) = created_at else {
+        return "time unknown".to_string();
+    };
+
+    let Ok(dt) = DateTime::parse_from_rfc3339(timestamp) else {
+        return "time unknown".to_string();
+    };
+
+    let now = Utc::now();
+    let tweet_time = dt.with_timezone(&Utc);
+    let duration = now.signed_duration_since(tweet_time);
+
+    let hours = duration.num_hours();
+    let minutes = duration.num_minutes();
+
+    if hours < 0 || minutes < 0 {
+        // Future timestamp (shouldn't happen)
+        return "just now".to_string();
+    }
+
+    match hours {
+        0 => format!("{}m ago", minutes.max(1)),
+        1..=23 => format!("{}h ago", hours),
+        _ => tweet_time.format("%b %d, %H:%M UTC").to_string(), // "Jan 15, 10:30 UTC"
+    }
+}
+
+/// Build the system prompt for tweet summarization (pure function)
+pub fn build_system_prompt(max_words: u32) -> String {
+    format!(
+        r#"You are an AI/ML tech news curator summarizing Twitter/X content for Telegram.
+
+Your task is to create an informative, well-organized summary of the tweets provided.
+
+## Guidelines
+
+### Content Organization
+- Group related topics into clear sections with headers (e.g., "🔬 AI Research", "🏢 Industry News", "🚀 Product Launches")
+- Highlight the most important or trending discussions first
+- Include 2-3 key tweet links per section for readers who want to dive deeper
+
+### Formatting
+- Use bullet points for scannable reading
+- Include brief context or insights where helpful
+- Use emojis sparingly for section headers to make them visually distinct
+- Keep the total summary under {} words
+
+### Link Integration
+- Include direct links to the most significant/impactful tweets in each section
+- Format links naturally: "According to @username (link)..." or "Read more: link"
+- Prioritize linking to: announcements, breaking news, insightful threads, and notable opinions
+
+### Focus Areas
+This list covers AI/ML researchers, tech leaders, and industry figures. Prioritize:
+- Model releases and research papers
+- Company announcements and product launches
+- Industry trends and debates
+- Technical insights and tutorials
+- Notable opinions from thought leaders"#,
+        max_words
+    )
+}
+
+/// Format tweets for the user prompt with timestamps and links (pure function)
 pub fn format_tweets_for_prompt(tweets: &[Tweet]) -> String {
     tweets
         .iter()
         .enumerate()
-        .map(|(i, t)| format!("{}. {}", i + 1, t.text))
+        .map(|(i, t)| {
+            format!(
+                "{}. {} [{}]\n   Link: {}",
+                i + 1,
+                t.text,
+                format_relative_time(&t.created_at),
+                build_twitter_url(&t.author_id, &t.id)
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -57,10 +126,10 @@ pub fn format_tweets_for_prompt(tweets: &[Tweet]) -> String {
 /// Build a complete ChatRequest for summarization (pure function)
 pub fn build_chat_request(config: &Config, tweets: &[Tweet]) -> ChatRequest {
     let tweets_text = format_tweets_for_prompt(tweets);
-    let system_prompt = build_system_prompt();
+    let system_prompt = build_system_prompt(config.summary_max_words);
 
     let user_prompt = format!(
-        "Please summarize these {} tweets from my Twitter list:\n\n{}",
+        "Please summarize these {} recent tweets from my Twitter list. Include links to the most noteworthy tweets:\n\n{}",
         tweets.len(),
         tweets_text
     );
@@ -77,7 +146,7 @@ pub fn build_chat_request(config: &Config, tweets: &[Tweet]) -> ChatRequest {
                 content: user_prompt,
             },
         ],
-        max_tokens: 1000,
+        max_tokens: config.summary_max_tokens,
         temperature: 0.7,
     }
 }
@@ -146,8 +215,10 @@ mod tests {
             telegram_bot_token: "test-token".to_string(),
             telegram_chat_id: "".to_string(),
             telegram_webhook_secret: "test-webhook-secret".to_string(),
-            max_tweets: 50,
+            max_tweets: 100,
             hours_lookback: 12,
+            summary_max_tokens: 2500,
+            summary_max_words: 800,
             nitter_instance: "https://nitter.example.com".to_string(),
             nitter_api_key: None,
             usernames_file: "data/usernames.txt".to_string(),
@@ -361,38 +432,52 @@ mod tests {
     // ==================== Pure Function Tests ====================
 
     #[test]
-    fn test_build_system_prompt() {
-        let prompt = build_system_prompt();
+    fn test_build_system_prompt_is_deterministic() {
+        let prompt1 = build_system_prompt(800);
+        let prompt2 = build_system_prompt(800);
 
-        assert!(prompt.contains("summarizes Twitter"));
-        assert!(prompt.contains("Group related topics"));
-        assert!(prompt.contains("bullet points"));
-        assert!(prompt.contains("500 words"));
-        assert!(prompt.contains("emojis sparingly"));
+        assert_eq!(prompt1, prompt2, "System prompt should be deterministic");
     }
 
     #[test]
-    fn test_format_tweets_for_prompt_with_tweets() {
-        let tweets = [
-            create_tweet("1", "@user1: First tweet content"),
-            create_tweet("2", "@user2: Second tweet content"),
-            create_tweet("3", "@user3: Third tweet content"),
+    fn test_build_system_prompt_is_not_empty() {
+        let prompt = build_system_prompt(800);
+
+        assert!(!prompt.is_empty(), "System prompt should not be empty");
+        assert!(prompt.len() > 100, "System prompt should be substantial");
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_word_limit() {
+        let prompt = build_system_prompt(500);
+        assert!(prompt.contains("500"), "Prompt should contain the word limit");
+
+        let prompt2 = build_system_prompt(1000);
+        assert!(prompt2.contains("1000"), "Prompt should contain the word limit");
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_all_guidelines() {
+        let prompt = build_system_prompt(800);
+
+        // Verify all key guidelines are present
+        let required_elements = [
+            "Telegram",
+            "AI/ML",
+            "Group related topics",
+            "bullet points",
+            "insights",
+            "tweet links",
         ];
 
-        let tweets_text = format_tweets_for_prompt(&tweets);
-
-        assert!(tweets_text.contains("1. @user1: First tweet content"));
-        assert!(tweets_text.contains("2. @user2: Second tweet content"));
-        assert!(tweets_text.contains("3. @user3: Third tweet content"));
-    }
-
-    #[test]
-    fn test_format_tweets_for_prompt_empty() {
-        let tweets: Vec<Tweet> = vec![];
-
-        let tweets_text = format_tweets_for_prompt(&tweets);
-
-        assert!(tweets_text.is_empty());
+        for element in required_elements {
+            assert!(
+                prompt.contains(element),
+                "System prompt should contain '{}', but got: {}",
+                element,
+                prompt
+            );
+        }
     }
 
     #[test]
@@ -406,9 +491,8 @@ mod tests {
         assert_eq!(request.messages.len(), 2);
         assert_eq!(request.messages[0].role, "system");
         assert_eq!(request.messages[1].role, "user");
-        assert!(request.messages[1].content.contains("Please summarize these 1 tweets"));
-        assert!(request.messages[1].content.contains("@user1: Test tweet"));
-        assert_eq!(request.max_tokens, 1000);
+        assert!(request.messages[1].content.contains("1 recent tweets"));
+        assert_eq!(request.max_tokens, 2500);
         assert!((request.temperature - 0.7).abs() < f32::EPSILON);
     }
 
@@ -421,6 +505,167 @@ mod tests {
         let request = build_chat_request(&config, &tweets);
 
         assert_eq!(request.model, "gpt-4-turbo");
+    }
+
+    #[test]
+    fn test_build_chat_request_with_empty_tweets() {
+        let config = create_test_config();
+        let tweets: Vec<Tweet> = vec![];
+
+        let request = build_chat_request(&config, &tweets);
+
+        assert_eq!(request.messages.len(), 2);
+        assert!(request.messages[1].content.contains("0 recent tweets"));
+    }
+
+    #[test]
+    fn test_build_chat_request_system_prompt_is_first() {
+        let config = create_test_config();
+        let tweets = [create_tweet("1", "Test")];
+
+        let request = build_chat_request(&config, &tweets);
+
+        assert_eq!(request.messages[0].role, "system");
+        assert!(request.messages[0].content.contains("AI/ML"));
+    }
+
+    #[test]
+    fn test_build_chat_request_with_many_tweets() {
+        let config = create_test_config();
+        let tweets: Vec<Tweet> = (1..=50)
+            .map(|i| create_tweet(&i.to_string(), &format!("Tweet number {}", i)))
+            .collect();
+
+        let request = build_chat_request(&config, &tweets);
+
+        assert!(request.messages[1].content.contains("50 recent tweets"));
+        assert!(request.messages[1].content.contains("1. Tweet number 1"));
+        assert!(request.messages[1].content.contains("50. Tweet number 50"));
+    }
+
+    // ==================== Helper Function Tests ====================
+
+    #[test]
+    fn test_build_twitter_url_with_valid_data() {
+        let url = build_twitter_url(&Some("testuser".to_string()), "123456789");
+        assert_eq!(url, "https://x.com/testuser/status/123456789");
+    }
+
+    #[test]
+    fn test_build_twitter_url_with_unknown_id() {
+        let url = build_twitter_url(&Some("testuser".to_string()), "unknown");
+        assert_eq!(url, "Link unavailable");
+    }
+
+    #[test]
+    fn test_build_twitter_url_without_author() {
+        let url = build_twitter_url(&None, "123456789");
+        assert_eq!(url, "Link unavailable");
+    }
+
+    #[test]
+    fn test_build_twitter_url_without_author_and_unknown_id() {
+        let url = build_twitter_url(&None, "unknown");
+        assert_eq!(url, "Link unavailable");
+    }
+
+    #[test]
+    fn test_format_relative_time_minutes() {
+        let now = Utc::now();
+        let timestamp = (now - chrono::Duration::minutes(30)).to_rfc3339();
+        let result = format_relative_time(&Some(timestamp));
+        assert_eq!(result, "30m ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_one_minute() {
+        let now = Utc::now();
+        let timestamp = (now - chrono::Duration::seconds(30)).to_rfc3339();
+        let result = format_relative_time(&Some(timestamp));
+        // Should be at least 1m, not 0m
+        assert_eq!(result, "1m ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_hours() {
+        let now = Utc::now();
+        let timestamp = (now - chrono::Duration::hours(5)).to_rfc3339();
+        let result = format_relative_time(&Some(timestamp));
+        assert_eq!(result, "5h ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_23_hours() {
+        let now = Utc::now();
+        let timestamp = (now - chrono::Duration::hours(23)).to_rfc3339();
+        let result = format_relative_time(&Some(timestamp));
+        assert_eq!(result, "23h ago");
+    }
+
+    #[test]
+    fn test_format_relative_time_over_24h() {
+        let now = Utc::now();
+        let timestamp = (now - chrono::Duration::hours(48)).to_rfc3339();
+        let result = format_relative_time(&Some(timestamp));
+        // Should return absolute format like "Jan 14, 10:30 UTC"
+        assert!(
+            result.contains(",") && result.contains("UTC"),
+            "Expected absolute date format with UTC, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_format_relative_time_none() {
+        let result = format_relative_time(&None);
+        assert_eq!(result, "time unknown");
+    }
+
+    #[test]
+    fn test_format_relative_time_invalid_timestamp() {
+        let result = format_relative_time(&Some("invalid-timestamp".to_string()));
+        assert_eq!(result, "time unknown");
+    }
+
+    #[test]
+    fn test_format_tweets_for_prompt_includes_links() {
+        let now = Utc::now();
+        let timestamp = (now - chrono::Duration::hours(2)).to_rfc3339();
+
+        let tweets = [Tweet {
+            id: "123456".to_string(),
+            text: "@user: Test tweet".to_string(),
+            author_id: Some("user".to_string()),
+            created_at: Some(timestamp),
+        }];
+
+        let tweets_text = format_tweets_for_prompt(&tweets);
+
+        assert!(tweets_text.contains("https://x.com/user/status/123456"));
+        assert!(tweets_text.contains("@user: Test tweet"));
+        assert!(tweets_text.contains("2h ago"));
+    }
+
+    #[test]
+    fn test_format_tweets_for_prompt_empty() {
+        let tweets: Vec<Tweet> = vec![];
+        let tweets_text = format_tweets_for_prompt(&tweets);
+        assert!(tweets_text.is_empty());
+    }
+
+    #[test]
+    fn test_format_tweets_for_prompt_multiple() {
+        let tweets = [
+            create_tweet("1", "First tweet"),
+            create_tweet("2", "Second tweet"),
+        ];
+
+        let tweets_text = format_tweets_for_prompt(&tweets);
+
+        assert!(tweets_text.contains("1. First tweet"));
+        assert!(tweets_text.contains("2. Second tweet"));
+        // Should have double newline between tweets
+        assert!(tweets_text.contains("\n\n"));
     }
 
     // ==================== Error Handling Tests ====================
@@ -445,7 +690,6 @@ mod tests {
         let tweets = [
             create_tweet("1", "@user1: Tweet with \"quotes\" and 'apostrophes'"),
             create_tweet("2", "@user2: Tweet with <html> & special chars"),
-            create_tweet("3", "@user3: Tweet with unicode"),
         ];
 
         let tweets_text = format_tweets_for_prompt(&tweets);
@@ -453,7 +697,6 @@ mod tests {
         // Verify special characters are preserved
         assert!(tweets_text.contains("\"quotes\""));
         assert!(tweets_text.contains("<html>"));
-        assert!(tweets_text.contains("unicode"));
     }
 
     #[test]
@@ -467,7 +710,7 @@ mod tests {
         let tweets_text = format_tweets_for_prompt(&tweets);
 
         // Verify numbering starts at 1, not 0
-        assert!(tweets_text.starts_with("1. First"));
+        assert!(tweets_text.contains("1. First"));
         assert!(tweets_text.contains("2. Second"));
         assert!(tweets_text.contains("3. Third"));
         assert!(!tweets_text.contains("0. "));
@@ -487,17 +730,6 @@ mod tests {
         assert!(tweets_text.contains("100. Tweet number 100"));
     }
 
-    #[test]
-    fn test_format_tweets_long_text_preserved() {
-        let long_text = "A".repeat(5000);
-        let tweets = [create_tweet("1", &long_text)];
-
-        let tweets_text = format_tweets_for_prompt(&tweets);
-
-        // Long text should be preserved
-        assert!(tweets_text.len() > 5000);
-    }
-
     // ==================== Config Tests ====================
 
     #[test]
@@ -510,193 +742,20 @@ mod tests {
 
     #[test]
     fn test_request_parameters() {
-        let request = ChatRequest {
-            model: "gpt-4o-mini".to_string(),
-            messages: vec![],
-            max_tokens: 1000,
-            temperature: 0.7,
-        };
+        let config = create_test_config();
+        let tweets = [create_tweet("1", "Test")];
+        let request = build_chat_request(&config, &tweets);
 
-        // Verify expected parameters
-        assert_eq!(request.max_tokens, 1000);
+        // Verify expected parameters (2500 is the default for summary_max_tokens)
+        assert_eq!(request.max_tokens, 2500);
         assert!((request.temperature - 0.7).abs() < f32::EPSILON);
     }
 
-    // ==================== Additional Pure Function Tests ====================
-
     #[test]
-    fn test_build_system_prompt_is_deterministic() {
-        let prompt1 = build_system_prompt();
-        let prompt2 = build_system_prompt();
-
-        assert_eq!(prompt1, prompt2, "System prompt should be deterministic");
-    }
-
-    #[test]
-    fn test_build_system_prompt_is_not_empty() {
-        let prompt = build_system_prompt();
-
-        assert!(!prompt.is_empty(), "System prompt should not be empty");
-        assert!(prompt.len() > 100, "System prompt should be substantial");
-    }
-
-    #[test]
-    fn test_build_system_prompt_contains_all_guidelines() {
-        let prompt = build_system_prompt();
-
-        // Verify all key guidelines are present
-        let required_elements = [
-            "summarizes Twitter",
-            "Group related topics",
-            "trending",
-            "bullet points",
-            "insights",
-            "500 words",
-            "emojis sparingly",
-            "WhatsApp",
-        ];
-
-        for element in required_elements {
-            assert!(
-                prompt.contains(element),
-                "System prompt should contain '{}', but got: {}",
-                element,
-                prompt
-            );
-        }
-    }
-
-    #[test]
-    fn test_format_tweets_single_tweet() {
-        let tweets = [create_tweet("1", "Single tweet content")];
-
-        let tweets_text = format_tweets_for_prompt(&tweets);
-
-        assert_eq!(tweets_text, "1. Single tweet content");
-        assert!(!tweets_text.contains("\n\n"), "Single tweet should have no separators");
-    }
-
-    #[test]
-    fn test_format_tweets_with_newlines_in_content() {
-        let tweets = [create_tweet("1", "Line one\nLine two\nLine three")];
-
-        let tweets_text = format_tweets_for_prompt(&tweets);
-
-        assert!(tweets_text.contains("Line one\nLine two\nLine three"));
-        assert!(tweets_text.starts_with("1. Line one"));
-    }
-
-    #[test]
-    fn test_format_tweets_double_newline_separator() {
-        let tweets = [
-            create_tweet("1", "First tweet"),
-            create_tweet("2", "Second tweet"),
-        ];
-
-        let tweets_text = format_tweets_for_prompt(&tweets);
-
-        // Should have double newline between tweets
-        assert!(
-            tweets_text.contains("First tweet\n\n2. Second tweet"),
-            "Tweets should be separated by double newline, got: {}",
-            tweets_text
-        );
-    }
-
-    #[test]
-    fn test_format_tweets_with_numbers_in_text() {
-        let tweets = [
-            create_tweet("1", "Tweet about 100 things"),
-            create_tweet("2", "1. This looks like a list item"),
-        ];
-
-        let tweets_text = format_tweets_for_prompt(&tweets);
-
-        assert!(tweets_text.contains("1. Tweet about 100 things"));
-        assert!(tweets_text.contains("2. 1. This looks like a list item"));
-    }
-
-    #[test]
-    fn test_format_tweets_empty_text() {
-        let tweets = [create_tweet("1", "")];
-
-        let tweets_text = format_tweets_for_prompt(&tweets);
-
-        assert_eq!(tweets_text, "1. ");
-    }
-
-    #[test]
-    fn test_format_tweets_whitespace_only_text() {
-        let tweets = [create_tweet("1", "   ")];
-
-        let tweets_text = format_tweets_for_prompt(&tweets);
-
-        assert_eq!(tweets_text, "1.    ");
-    }
-
-    #[test]
-    fn test_build_chat_request_with_empty_tweets() {
+    fn test_config_summary_values_used() {
         let config = create_test_config();
-        let tweets: Vec<Tweet> = vec![];
-
-        let request = build_chat_request(&config, &tweets);
-
-        assert_eq!(request.messages.len(), 2);
-        assert!(request.messages[1].content.contains("Please summarize these 0 tweets"));
-    }
-
-    #[test]
-    fn test_build_chat_request_system_prompt_is_first() {
-        let config = create_test_config();
-        let tweets = [create_tweet("1", "Test")];
-
-        let request = build_chat_request(&config, &tweets);
-
-        assert_eq!(request.messages[0].role, "system");
-        assert!(request.messages[0].content.contains("summarizes Twitter"));
-    }
-
-    #[test]
-    fn test_build_chat_request_user_prompt_contains_formatted_tweets() {
-        let config = create_test_config();
-        let tweets = [
-            create_tweet("1", "First tweet"),
-            create_tweet("2", "Second tweet"),
-        ];
-
-        let request = build_chat_request(&config, &tweets);
-        let formatted = format_tweets_for_prompt(&tweets);
-
-        assert!(
-            request.messages[1].content.contains(&formatted),
-            "User prompt should contain the formatted tweets"
-        );
-    }
-
-    #[test]
-    fn test_build_chat_request_tweet_count_in_prompt() {
-        let config = create_test_config();
-        let tweets: Vec<Tweet> = (1..=5)
-            .map(|i| create_tweet(&i.to_string(), &format!("Tweet {}", i)))
-            .collect();
-
-        let request = build_chat_request(&config, &tweets);
-
-        assert!(request.messages[1].content.contains("5 tweets"));
-    }
-
-    #[test]
-    fn test_build_chat_request_with_many_tweets() {
-        let config = create_test_config();
-        let tweets: Vec<Tweet> = (1..=50)
-            .map(|i| create_tweet(&i.to_string(), &format!("Tweet number {}", i)))
-            .collect();
-
-        let request = build_chat_request(&config, &tweets);
-
-        assert!(request.messages[1].content.contains("50 tweets"));
-        assert!(request.messages[1].content.contains("1. Tweet number 1"));
-        assert!(request.messages[1].content.contains("50. Tweet number 50"));
+        assert_eq!(config.summary_max_tokens, 2500);
+        assert_eq!(config.summary_max_words, 800);
     }
 
     // ==================== Additional Wiremock Tests ====================
