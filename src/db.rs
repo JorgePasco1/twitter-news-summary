@@ -271,10 +271,12 @@ mod tests {
             .context("Failed to create test database")?;
 
         // Clean up tables for fresh test state
-        sqlx::query("TRUNCATE TABLE summaries, subscribers, delivery_failures RESTART IDENTITY CASCADE")
-            .execute(&db.pool)
-            .await
-            .context("Failed to truncate tables")?;
+        sqlx::query(
+            "TRUNCATE TABLE summaries, subscribers, delivery_failures RESTART IDENTITY CASCADE",
+        )
+        .execute(&db.pool)
+        .await
+        .context("Failed to truncate tables")?;
 
         Ok(db)
     }
