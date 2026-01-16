@@ -89,7 +89,8 @@ async fn run_summary_job(config: &Config, db: &Database, usernames: &[String]) -
 
     // Generate summary
     info!("Generating summary with OpenAI");
-    let summary = openai::summarize_tweets(config, &tweets).await?;
+    let client = reqwest::Client::new();
+    let summary = openai::summarize_tweets(&client, config, &tweets).await?;
 
     // Save summary to database
     db.save_summary(&summary).await?;

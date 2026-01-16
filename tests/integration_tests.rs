@@ -30,6 +30,7 @@ fn create_test_config(nitter_url: &str, temp_dir: &TempDir) -> Config {
         twitter_list_id: None,
         openai_api_key: "test-openai-key".to_string(),
         openai_model: "gpt-4o-mini".to_string(),
+        openai_api_url: "https://api.openai.com/v1/chat/completions".to_string(),
         telegram_bot_token: "test-telegram-token".to_string(),
         telegram_chat_id: "123456789".to_string(),
         telegram_webhook_secret: "test-webhook-secret".to_string(),

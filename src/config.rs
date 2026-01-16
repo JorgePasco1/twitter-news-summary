@@ -11,6 +11,7 @@ pub struct Config {
     // OpenAI
     pub openai_api_key: String,
     pub openai_model: String,
+    pub openai_api_url: String,
 
     // Telegram
     pub telegram_bot_token: String,
@@ -53,6 +54,8 @@ impl Config {
                 .context("OPENAI_API_KEY not set")?,
             openai_model: std::env::var("OPENAI_MODEL")
                 .unwrap_or_else(|_| "gpt-4o-mini".to_string()),
+            openai_api_url: std::env::var("OPENAI_API_URL")
+                .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string()),
 
             // Telegram
             telegram_bot_token: std::env::var("TELEGRAM_BOT_TOKEN")
@@ -109,6 +112,7 @@ mod tests {
             "TWITTER_LIST_ID",
             "OPENAI_API_KEY",
             "OPENAI_MODEL",
+            "OPENAI_API_URL",
             "TELEGRAM_BOT_TOKEN",
             "TELEGRAM_CHAT_ID",
             "MAX_TWEETS",
@@ -120,6 +124,7 @@ mod tests {
             "DATABASE_URL",
             "SCHEDULE_TIMES",
             "PORT",
+            "TELEGRAM_WEBHOOK_SECRET",
         ];
         for var in vars {
             env::remove_var(var);
@@ -174,7 +179,8 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         clear_env_vars();
         env::set_var("OPENAI_API_KEY", "test-openai-key");
-        env::set_var("NITTER_INSTANCE", "https://nitter.example.com");
+        // Note: Don't set TELEGRAM_BOT_TOKEN - that's what we're testing
+        // TELEGRAM_WEBHOOK_SECRET and NITTER_INSTANCE come after, so they're not needed
 
         let result = Config::from_env();
         assert!(result.is_err());
@@ -187,11 +193,51 @@ mod tests {
     }
 
     #[test]
+    fn test_config_missing_telegram_webhook_secret() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        clear_env_vars();
+        env::set_var("OPENAI_API_KEY", "test-openai-key");
+        env::set_var("TELEGRAM_BOT_TOKEN", "test-telegram-token");
+        // Note: Don't set TELEGRAM_WEBHOOK_SECRET - that's what we're testing
+
+        let result = Config::from_env();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("TELEGRAM_WEBHOOK_SECRET"),
+            "Error should mention TELEGRAM_WEBHOOK_SECRET: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_config_missing_database_url() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        clear_env_vars();
+        env::set_var("OPENAI_API_KEY", "test-openai-key");
+        env::set_var("TELEGRAM_BOT_TOKEN", "test-telegram-token");
+        env::set_var("TELEGRAM_WEBHOOK_SECRET", "test-webhook-secret");
+        env::set_var("NITTER_INSTANCE", "https://nitter.example.com");
+        // Note: Don't set DATABASE_URL - that's what we're testing
+
+        let result = Config::from_env();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("DATABASE_URL"),
+            "Error should mention DATABASE_URL: {}",
+            err
+        );
+    }
+
+    #[test]
     fn test_config_missing_nitter_instance() {
         let _lock = ENV_MUTEX.lock().unwrap();
         clear_env_vars();
         env::set_var("OPENAI_API_KEY", "test-openai-key");
         env::set_var("TELEGRAM_BOT_TOKEN", "test-telegram-token");
+        env::set_var("TELEGRAM_WEBHOOK_SECRET", "test-webhook-secret");
+        env::set_var("DATABASE_URL", "postgres://test:test@localhost/test");
 
         let result = Config::from_env();
         assert!(result.is_err());
@@ -215,6 +261,10 @@ mod tests {
 
         // Verify default values
         assert_eq!(config.openai_model, "gpt-4o-mini");
+        assert_eq!(
+            config.openai_api_url,
+            "https://api.openai.com/v1/chat/completions"
+        );
         assert_eq!(config.max_tweets, 50);
         assert_eq!(config.hours_lookback, 12);
         assert_eq!(config.usernames_file, "data/usernames.txt");
