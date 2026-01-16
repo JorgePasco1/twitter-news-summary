@@ -71,7 +71,8 @@ When the user runs this command with a PR number:
      - Full comment body from the thread
      - Whether it's outdated or collapsed
 
-6. Ask the user if they want you to fix these issues
+6. Evaluate the comments and give a justified decision on wether we should fix each one or not.
+7. Ask the user to confirm which ones they want to fix.
 
 ## Example Output
 
