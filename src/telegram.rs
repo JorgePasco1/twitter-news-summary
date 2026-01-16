@@ -192,7 +192,16 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
             }
             Err(e) => {
                 fail_count += 1;
-                warn!("✗ Failed to send to {}: {}", subscriber.chat_id, e);
+                let error_msg = e.to_string();
+                warn!("✗ Failed to send to {}: {}", subscriber.chat_id, error_msg);
+
+                // Log failure to database
+                if let Err(log_err) = db
+                    .log_delivery_failure(subscriber.chat_id, &error_msg)
+                    .await
+                {
+                    warn!("Failed to log delivery failure: {}", log_err);
+                }
             }
         }
 

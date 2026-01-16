@@ -21,6 +21,14 @@ pub struct Summary {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub struct DeliveryFailure {
+    pub id: i64,
+    pub chat_id: i64,
+    pub error_message: String,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Clone)]
 pub struct Database {
     pool: PgPool,
@@ -191,6 +199,48 @@ impl Database {
             .context("Failed to mark welcome summary as sent")?;
         Ok(())
     }
+
+    /// Log a delivery failure
+    pub async fn log_delivery_failure(&self, chat_id: i64, error_message: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO delivery_failures (chat_id, error_message, created_at) VALUES ($1, $2, NOW())",
+        )
+        .bind(chat_id)
+        .bind(error_message)
+        .execute(&self.pool)
+        .await
+        .context("Failed to log delivery failure")?;
+        Ok(())
+    }
+
+    /// Get recent delivery failures (last N entries)
+    pub async fn get_recent_failures(&self, limit: i64) -> Result<Vec<DeliveryFailure>> {
+        let failures = sqlx::query_as::<_, DeliveryFailure>(
+            "SELECT id, chat_id, error_message, created_at
+             FROM delivery_failures
+             ORDER BY created_at DESC
+             LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(failures)
+    }
+
+    /// Get failure counts grouped by chat_id
+    pub async fn get_failure_counts(&self) -> Result<Vec<(i64, i64)>> {
+        let counts: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT chat_id, COUNT(*) as count
+             FROM delivery_failures
+             GROUP BY chat_id
+             ORDER BY count DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(counts)
+    }
 }
 
 #[cfg(test)]
@@ -210,7 +260,7 @@ mod tests {
             .context("Failed to create test database")?;
 
         // Clean up tables for fresh test state
-        sqlx::query("TRUNCATE TABLE summaries, subscribers RESTART IDENTITY CASCADE")
+        sqlx::query("TRUNCATE TABLE summaries, subscribers, delivery_failures RESTART IDENTITY CASCADE")
             .execute(&db.pool)
             .await
             .context("Failed to truncate tables")?;
@@ -1249,5 +1299,101 @@ mod tests {
         // Table should still exist and function
         let summary = db.get_latest_summary().await.expect("get").expect("exists");
         assert_eq!(summary.content, malicious_content);
+    }
+
+    // ==================== Delivery Failures Tests ====================
+
+    #[tokio::test]
+    async fn test_log_delivery_failure() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.log_delivery_failure(123456789, "Telegram API error (403 Forbidden)")
+            .await
+            .expect("log failure");
+
+        let failures = db.get_recent_failures(10).await.expect("get failures");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].chat_id, 123456789);
+        assert!(failures[0].error_message.contains("403 Forbidden"));
+    }
+
+    #[tokio::test]
+    async fn test_log_multiple_failures() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.log_delivery_failure(111, "Error 1").await.expect("log1");
+        db.log_delivery_failure(222, "Error 2").await.expect("log2");
+        db.log_delivery_failure(111, "Error 3").await.expect("log3");
+
+        let failures = db.get_recent_failures(10).await.expect("get failures");
+        assert_eq!(failures.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_failures_limit() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        for i in 1..=10 {
+            db.log_delivery_failure(i, &format!("Error {}", i))
+                .await
+                .expect("log");
+        }
+
+        let failures = db.get_recent_failures(5).await.expect("get failures");
+        assert_eq!(failures.len(), 5);
+
+        // Should be most recent first
+        assert!(failures[0].created_at >= failures[4].created_at);
+    }
+
+    #[tokio::test]
+    async fn test_get_failure_counts() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // User 111 fails 3 times
+        db.log_delivery_failure(111, "Error").await.expect("log");
+        db.log_delivery_failure(111, "Error").await.expect("log");
+        db.log_delivery_failure(111, "Error").await.expect("log");
+
+        // User 222 fails 1 time
+        db.log_delivery_failure(222, "Error").await.expect("log");
+
+        let counts = db.get_failure_counts().await.expect("get counts");
+        assert_eq!(counts.len(), 2);
+
+        // Should be ordered by count DESC
+        assert_eq!(counts[0].0, 111); // chat_id
+        assert_eq!(counts[0].1, 3); // count
+        assert_eq!(counts[1].0, 222);
+        assert_eq!(counts[1].1, 1);
+    }
+
+    #[tokio::test]
+    async fn test_delivery_failure_struct_clone() {
+        let failure = DeliveryFailure {
+            id: 1,
+            chat_id: 123,
+            error_message: "Test error".to_string(),
+            created_at: Utc::now(),
+        };
+
+        let cloned = failure.clone();
+
+        assert_eq!(failure.id, cloned.id);
+        assert_eq!(failure.chat_id, cloned.chat_id);
+        assert_eq!(failure.error_message, cloned.error_message);
+    }
+
+    #[tokio::test]
+    async fn test_delivery_failure_with_long_error_message() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let long_error = "A".repeat(5000);
+        db.log_delivery_failure(123, &long_error)
+            .await
+            .expect("log");
+
+        let failures = db.get_recent_failures(1).await.expect("get");
+        assert_eq!(failures[0].error_message.len(), 5000);
     }
 }
