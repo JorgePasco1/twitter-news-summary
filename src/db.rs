@@ -1409,4 +1409,809 @@ mod tests {
         let failures = db.get_recent_failures(1).await.expect("get");
         assert_eq!(failures[0].error_message.len(), 5000);
     }
+
+    // ==================== Additional Delivery Failures Tests ====================
+
+    // ---------- log_delivery_failure Edge Cases ----------
+
+    #[tokio::test]
+    async fn test_log_delivery_failure_negative_chat_id() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Group chats have negative IDs (Telegram supergroups start with -100)
+        db.log_delivery_failure(-1001234567890, "Group delivery failed")
+            .await
+            .expect("log failure for group");
+
+        let failures = db.get_recent_failures(10).await.expect("get failures");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].chat_id, -1001234567890);
+    }
+
+    #[tokio::test]
+    async fn test_log_delivery_failure_max_i64_chat_id() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.log_delivery_failure(i64::MAX, "Max chat_id test")
+            .await
+            .expect("log failure");
+
+        let failures = db.get_recent_failures(10).await.expect("get failures");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].chat_id, i64::MAX);
+    }
+
+    #[tokio::test]
+    async fn test_log_delivery_failure_min_i64_chat_id() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.log_delivery_failure(i64::MIN, "Min chat_id test")
+            .await
+            .expect("log failure");
+
+        let failures = db.get_recent_failures(10).await.expect("get failures");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].chat_id, i64::MIN);
+    }
+
+    #[tokio::test]
+    async fn test_log_delivery_failure_zero_chat_id() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.log_delivery_failure(0, "Zero chat_id test")
+            .await
+            .expect("log failure");
+
+        let failures = db.get_recent_failures(10).await.expect("get failures");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].chat_id, 0);
+    }
+
+    #[tokio::test]
+    async fn test_log_delivery_failure_empty_error_message() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.log_delivery_failure(123, "").await.expect("log failure");
+
+        let failures = db.get_recent_failures(10).await.expect("get failures");
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].error_message.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_log_delivery_failure_special_characters() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let error_with_quotes = "Error: 'single quotes' and \"double quotes\"";
+        db.log_delivery_failure(123, error_with_quotes)
+            .await
+            .expect("log");
+
+        let failures = db.get_recent_failures(1).await.expect("get");
+        assert_eq!(failures[0].error_message, error_with_quotes);
+    }
+
+    #[tokio::test]
+    async fn test_log_delivery_failure_backslashes_and_newlines() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let error_msg = "Error:\n\tLine 1\\nLine 2\r\nWindows line\0Null char";
+        db.log_delivery_failure(123, error_msg)
+            .await
+            .expect("log");
+
+        let failures = db.get_recent_failures(1).await.expect("get");
+        assert_eq!(failures[0].error_message, error_msg);
+    }
+
+    #[tokio::test]
+    async fn test_log_delivery_failure_unicode_characters() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let unicode_error = "Error with unicode: Test test Test";
+        db.log_delivery_failure(123, unicode_error)
+            .await
+            .expect("log");
+
+        let failures = db.get_recent_failures(1).await.expect("get");
+        assert_eq!(failures[0].error_message, unicode_error);
+    }
+
+    #[tokio::test]
+    async fn test_log_delivery_failure_sql_injection_prevention() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Attempt SQL injection in error message
+        let malicious_error = "'; DROP TABLE delivery_failures; --";
+        db.log_delivery_failure(123, malicious_error)
+            .await
+            .expect("log");
+
+        // Table should still exist and function
+        let failures = db.get_recent_failures(10).await.expect("get failures");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].error_message, malicious_error);
+
+        // Additional SQL injection attempt
+        let another_injection = "test'); DELETE FROM delivery_failures WHERE ('1'='1";
+        db.log_delivery_failure(456, another_injection)
+            .await
+            .expect("log");
+
+        let failures = db.get_recent_failures(10).await.expect("get failures");
+        assert_eq!(failures.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_log_delivery_failure_very_long_error_100kb() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Create a very long error message (100KB)
+        let long_error = "E".repeat(100_000);
+        db.log_delivery_failure(123, &long_error)
+            .await
+            .expect("log");
+
+        let failures = db.get_recent_failures(1).await.expect("get");
+        assert_eq!(failures[0].error_message.len(), 100_000);
+    }
+
+    #[tokio::test]
+    async fn test_log_delivery_failure_concurrent() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let db1 = db.clone();
+        let db2 = db.clone();
+        let db3 = db.clone();
+        let db4 = db.clone();
+        let db5 = db.clone();
+
+        // Spawn concurrent log operations
+        let handle1 =
+            tokio::spawn(async move { db1.log_delivery_failure(1001, "Error 1").await });
+        let handle2 =
+            tokio::spawn(async move { db2.log_delivery_failure(1002, "Error 2").await });
+        let handle3 =
+            tokio::spawn(async move { db3.log_delivery_failure(1003, "Error 3").await });
+        let handle4 =
+            tokio::spawn(async move { db4.log_delivery_failure(1001, "Error 4").await });
+        let handle5 =
+            tokio::spawn(async move { db5.log_delivery_failure(1002, "Error 5").await });
+
+        let (r1, r2, r3, r4, r5) = tokio::join!(handle1, handle2, handle3, handle4, handle5);
+        assert!(r1.is_ok() && r1.unwrap().is_ok());
+        assert!(r2.is_ok() && r2.unwrap().is_ok());
+        assert!(r3.is_ok() && r3.unwrap().is_ok());
+        assert!(r4.is_ok() && r4.unwrap().is_ok());
+        assert!(r5.is_ok() && r5.unwrap().is_ok());
+
+        // Verify all failures were logged
+        let failures = db.get_recent_failures(10).await.expect("get");
+        assert_eq!(failures.len(), 5, "All concurrent logs should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_log_delivery_failure_same_chat_id_multiple_errors() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Same user can have multiple failures with different error messages
+        db.log_delivery_failure(123, "Error A")
+            .await
+            .expect("log1");
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        db.log_delivery_failure(123, "Error B")
+            .await
+            .expect("log2");
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        db.log_delivery_failure(123, "Error C")
+            .await
+            .expect("log3");
+
+        let failures = db.get_recent_failures(10).await.expect("get");
+        assert_eq!(failures.len(), 3);
+
+        // All should be for the same chat_id
+        for failure in &failures {
+            assert_eq!(failure.chat_id, 123);
+        }
+
+        // Should be ordered newest first
+        assert_eq!(failures[0].error_message, "Error C");
+        assert_eq!(failures[1].error_message, "Error B");
+        assert_eq!(failures[2].error_message, "Error A");
+    }
+
+    // ---------- Cleanup Mechanism Tests ----------
+
+    #[tokio::test]
+    async fn test_delivery_failure_cleanup_keeps_last_1000() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Insert 1005 failures
+        for i in 1..=1005 {
+            db.log_delivery_failure(i, &format!("Error {}", i))
+                .await
+                .expect("log");
+        }
+
+        // After cleanup, only 1000 should remain
+        let failures = db.get_recent_failures(2000).await.expect("get");
+        assert_eq!(
+            failures.len(),
+            1000,
+            "Should keep exactly 1000 entries after cleanup"
+        );
+
+        // The newest entries should be kept (1006 through 1005)
+        // Actually, chat_ids 6..=1005 should remain (newest 1000)
+        let chat_ids: Vec<i64> = failures.iter().map(|f| f.chat_id).collect();
+
+        // Oldest 5 entries (chat_ids 1-5) should be removed
+        assert!(
+            !chat_ids.contains(&1),
+            "Oldest entry (chat_id 1) should be removed"
+        );
+        assert!(
+            !chat_ids.contains(&2),
+            "Second oldest entry should be removed"
+        );
+        assert!(
+            !chat_ids.contains(&3),
+            "Third oldest entry should be removed"
+        );
+        assert!(
+            !chat_ids.contains(&4),
+            "Fourth oldest entry should be removed"
+        );
+        assert!(
+            !chat_ids.contains(&5),
+            "Fifth oldest entry should be removed"
+        );
+
+        // Newest entries should still be there
+        assert!(
+            chat_ids.contains(&1005),
+            "Newest entry should be kept"
+        );
+        assert!(chat_ids.contains(&1004), "Second newest should be kept");
+    }
+
+    #[tokio::test]
+    async fn test_delivery_failure_cleanup_oldest_removed() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Insert exactly 1000 failures first
+        for i in 1..=1000 {
+            db.log_delivery_failure(i, &format!("Error {}", i))
+                .await
+                .expect("log");
+        }
+
+        // Verify all 1000 are present
+        let failures_before = db.get_recent_failures(1500).await.expect("get");
+        assert_eq!(failures_before.len(), 1000);
+
+        // Now add one more - this should trigger cleanup
+        db.log_delivery_failure(9999, "The newest error")
+            .await
+            .expect("log");
+
+        let failures_after = db.get_recent_failures(1500).await.expect("get");
+        assert_eq!(
+            failures_after.len(),
+            1000,
+            "Should still be exactly 1000 after cleanup"
+        );
+
+        // The oldest entry (chat_id 1) should be removed
+        let chat_ids: Vec<i64> = failures_after.iter().map(|f| f.chat_id).collect();
+        assert!(
+            !chat_ids.contains(&1),
+            "Oldest entry should be removed"
+        );
+
+        // The newest entry should be present
+        assert!(
+            chat_ids.contains(&9999),
+            "Newest entry should be present"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delivery_failure_no_cleanup_when_under_limit() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Insert fewer than 1000 failures
+        for i in 1..=50 {
+            db.log_delivery_failure(i, &format!("Error {}", i))
+                .await
+                .expect("log");
+        }
+
+        let failures = db.get_recent_failures(100).await.expect("get");
+        assert_eq!(
+            failures.len(),
+            50,
+            "All 50 entries should be preserved when under limit"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delivery_failure_cleanup_concurrent() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // First, insert 998 failures
+        for i in 1..=998 {
+            db.log_delivery_failure(i, &format!("Error {}", i))
+                .await
+                .expect("log");
+        }
+
+        // Now trigger concurrent operations that may cause cleanup
+        let db1 = db.clone();
+        let db2 = db.clone();
+        let db3 = db.clone();
+        let db4 = db.clone();
+        let db5 = db.clone();
+
+        let handle1 =
+            tokio::spawn(async move { db1.log_delivery_failure(10001, "Concurrent 1").await });
+        let handle2 =
+            tokio::spawn(async move { db2.log_delivery_failure(10002, "Concurrent 2").await });
+        let handle3 =
+            tokio::spawn(async move { db3.log_delivery_failure(10003, "Concurrent 3").await });
+        let handle4 =
+            tokio::spawn(async move { db4.log_delivery_failure(10004, "Concurrent 4").await });
+        let handle5 =
+            tokio::spawn(async move { db5.log_delivery_failure(10005, "Concurrent 5").await });
+
+        let (r1, r2, r3, r4, r5) = tokio::join!(handle1, handle2, handle3, handle4, handle5);
+        assert!(r1.unwrap().is_ok());
+        assert!(r2.unwrap().is_ok());
+        assert!(r3.unwrap().is_ok());
+        assert!(r4.unwrap().is_ok());
+        assert!(r5.unwrap().is_ok());
+
+        // Total should be 1003, but cleanup should bring it to <= 1000
+        let failures = db.get_recent_failures(1500).await.expect("get");
+        assert!(
+            failures.len() <= 1000,
+            "Concurrent cleanup should keep entries at or below 1000"
+        );
+    }
+
+    // ---------- get_recent_failures Edge Cases ----------
+
+    #[tokio::test]
+    async fn test_get_recent_failures_empty_table() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let failures = db.get_recent_failures(10).await.expect("get failures");
+        assert!(failures.is_empty(), "Should return empty vec when no failures");
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_failures_limit_zero() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.log_delivery_failure(123, "Error").await.expect("log");
+
+        let failures = db.get_recent_failures(0).await.expect("get failures");
+        assert!(failures.is_empty(), "Limit 0 should return empty vec");
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_failures_limit_negative() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.log_delivery_failure(123, "Error").await.expect("log");
+
+        // Negative limit - behavior depends on DB, but should not panic
+        let failures = db.get_recent_failures(-1).await.expect("get failures");
+        // In PostgreSQL, negative LIMIT returns 0 rows
+        assert!(
+            failures.is_empty(),
+            "Negative limit should return empty vec"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_failures_limit_larger_than_available() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Insert only 5 failures
+        for i in 1..=5 {
+            db.log_delivery_failure(i, &format!("Error {}", i))
+                .await
+                .expect("log");
+        }
+
+        // Request 100 - should return only 5
+        let failures = db.get_recent_failures(100).await.expect("get failures");
+        assert_eq!(
+            failures.len(),
+            5,
+            "Should return all available when limit exceeds count"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_failures_ordering_newest_first() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Insert with delays to ensure distinct timestamps
+        db.log_delivery_failure(1, "First").await.expect("log");
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+        db.log_delivery_failure(2, "Second").await.expect("log");
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+        db.log_delivery_failure(3, "Third").await.expect("log");
+
+        let failures = db.get_recent_failures(10).await.expect("get failures");
+
+        // Should be ordered newest first (Third, Second, First)
+        assert_eq!(failures[0].error_message, "Third");
+        assert_eq!(failures[1].error_message, "Second");
+        assert_eq!(failures[2].error_message, "First");
+
+        // Verify timestamps are in descending order
+        assert!(failures[0].created_at >= failures[1].created_at);
+        assert!(failures[1].created_at >= failures[2].created_at);
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_failures_all_fields_populated() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let before = Utc::now();
+        db.log_delivery_failure(123456, "Test error message")
+            .await
+            .expect("log");
+        let after = Utc::now();
+
+        let failures = db.get_recent_failures(1).await.expect("get");
+        let failure = &failures[0];
+
+        // Verify all fields
+        assert!(failure.id > 0, "ID should be positive");
+        assert_eq!(failure.chat_id, 123456);
+        assert_eq!(failure.error_message, "Test error message");
+        assert!(
+            failure.created_at >= before,
+            "created_at should be >= before"
+        );
+        assert!(failure.created_at <= after, "created_at should be <= after");
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_failures_exact_limit() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Insert exactly 10 failures
+        for i in 1..=10 {
+            db.log_delivery_failure(i, &format!("Error {}", i))
+                .await
+                .expect("log");
+        }
+
+        // Request exactly 10
+        let failures = db.get_recent_failures(10).await.expect("get failures");
+        assert_eq!(failures.len(), 10);
+    }
+
+    // ---------- get_failure_counts Edge Cases ----------
+
+    #[tokio::test]
+    async fn test_get_failure_counts_empty_table() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let counts = db.get_failure_counts().await.expect("get counts");
+        assert!(
+            counts.is_empty(),
+            "Should return empty vec when no failures"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_failure_counts_single_user_multiple_failures() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Same user fails 5 times
+        for i in 1..=5 {
+            db.log_delivery_failure(999, &format!("Error {}", i))
+                .await
+                .expect("log");
+        }
+
+        let counts = db.get_failure_counts().await.expect("get counts");
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0].0, 999); // chat_id
+        assert_eq!(counts[0].1, 5); // count
+    }
+
+    #[tokio::test]
+    async fn test_get_failure_counts_multiple_users_same_count() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Three users, each with exactly 3 failures
+        for chat_id in [100, 200, 300] {
+            for i in 1..=3 {
+                db.log_delivery_failure(chat_id, &format!("Error {}", i))
+                    .await
+                    .expect("log");
+            }
+        }
+
+        let counts = db.get_failure_counts().await.expect("get counts");
+        assert_eq!(counts.len(), 3);
+
+        // All should have count of 3
+        for (_, count) in &counts {
+            assert_eq!(*count, 3);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_failure_counts_ordering_by_count_desc() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // User 100: 1 failure
+        db.log_delivery_failure(100, "Error").await.expect("log");
+
+        // User 200: 5 failures
+        for _ in 1..=5 {
+            db.log_delivery_failure(200, "Error").await.expect("log");
+        }
+
+        // User 300: 3 failures
+        for _ in 1..=3 {
+            db.log_delivery_failure(300, "Error").await.expect("log");
+        }
+
+        // User 400: 10 failures
+        for _ in 1..=10 {
+            db.log_delivery_failure(400, "Error").await.expect("log");
+        }
+
+        let counts = db.get_failure_counts().await.expect("get counts");
+        assert_eq!(counts.len(), 4);
+
+        // Should be ordered: 400(10), 200(5), 300(3), 100(1)
+        assert_eq!(counts[0], (400, 10));
+        assert_eq!(counts[1], (200, 5));
+        assert_eq!(counts[2], (300, 3));
+        assert_eq!(counts[3], (100, 1));
+    }
+
+    #[tokio::test]
+    async fn test_get_failure_counts_with_negative_chat_ids() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Mix of positive and negative chat_ids
+        db.log_delivery_failure(123, "User error")
+            .await
+            .expect("log");
+        db.log_delivery_failure(-100123, "Group error 1")
+            .await
+            .expect("log");
+        db.log_delivery_failure(-100123, "Group error 2")
+            .await
+            .expect("log");
+
+        let counts = db.get_failure_counts().await.expect("get counts");
+        assert_eq!(counts.len(), 2);
+
+        // Group (-100123) has 2 failures, user (123) has 1
+        assert_eq!(counts[0].0, -100123);
+        assert_eq!(counts[0].1, 2);
+        assert_eq!(counts[1].0, 123);
+        assert_eq!(counts[1].1, 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_failure_counts_many_users() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // 100 different users, each with a random number of failures
+        for chat_id in 1..=100i64 {
+            let num_failures = (chat_id % 5) + 1; // 1-5 failures each
+            for _ in 0..num_failures {
+                db.log_delivery_failure(chat_id, "Error")
+                    .await
+                    .expect("log");
+            }
+        }
+
+        let counts = db.get_failure_counts().await.expect("get counts");
+        assert_eq!(counts.len(), 100);
+
+        // Verify ordering - each subsequent count should be <= previous
+        for i in 1..counts.len() {
+            assert!(
+                counts[i - 1].1 >= counts[i].1,
+                "Counts should be in descending order"
+            );
+        }
+    }
+
+    // ---------- Integration/Full Flow Tests ----------
+
+    #[tokio::test]
+    async fn test_delivery_failures_full_flow() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Step 1: Log failures for multiple users
+        db.log_delivery_failure(111, "403 Forbidden")
+            .await
+            .expect("log");
+        db.log_delivery_failure(111, "403 Forbidden")
+            .await
+            .expect("log");
+        db.log_delivery_failure(222, "400 Bad Request")
+            .await
+            .expect("log");
+        db.log_delivery_failure(333, "429 Too Many Requests")
+            .await
+            .expect("log");
+        db.log_delivery_failure(333, "500 Internal Server Error")
+            .await
+            .expect("log");
+        db.log_delivery_failure(333, "503 Service Unavailable")
+            .await
+            .expect("log");
+
+        // Step 2: Verify recent failures
+        let recent = db.get_recent_failures(10).await.expect("get recent");
+        assert_eq!(recent.len(), 6);
+
+        // Most recent should be 333's last failure
+        assert_eq!(recent[0].chat_id, 333);
+        assert_eq!(recent[0].error_message, "503 Service Unavailable");
+
+        // Step 3: Verify counts
+        let counts = db.get_failure_counts().await.expect("get counts");
+        assert_eq!(counts.len(), 3);
+
+        // 333 has most failures (3)
+        assert_eq!(counts[0], (333, 3));
+        // 111 has 2 failures
+        assert_eq!(counts[1], (111, 2));
+        // 222 has 1 failure
+        assert_eq!(counts[2], (222, 1));
+    }
+
+    #[tokio::test]
+    async fn test_delivery_failure_timestamp_is_recent() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let before = Utc::now();
+        db.log_delivery_failure(123, "Test error")
+            .await
+            .expect("log");
+        let after = Utc::now();
+
+        let failures = db.get_recent_failures(1).await.expect("get");
+        let created_at = failures[0].created_at;
+
+        assert!(
+            created_at >= before,
+            "created_at ({}) should be >= before ({})",
+            created_at,
+            before
+        );
+        assert!(
+            created_at <= after,
+            "created_at ({}) should be <= after ({})",
+            created_at,
+            after
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delivery_failure_ids_are_unique_and_incrementing() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.log_delivery_failure(1, "Error 1").await.expect("log");
+        db.log_delivery_failure(2, "Error 2").await.expect("log");
+        db.log_delivery_failure(3, "Error 3").await.expect("log");
+
+        let failures = db.get_recent_failures(10).await.expect("get");
+
+        // Collect IDs (order is newest first, so IDs will be descending)
+        let ids: Vec<i64> = failures.iter().map(|f| f.id).collect();
+
+        // All IDs should be unique
+        let unique_ids: std::collections::HashSet<i64> = ids.iter().cloned().collect();
+        assert_eq!(
+            ids.len(),
+            unique_ids.len(),
+            "All IDs should be unique"
+        );
+
+        // IDs should be positive
+        for id in &ids {
+            assert!(*id > 0, "IDs should be positive");
+        }
+    }
+
+    // ---------- DeliveryFailure Struct Tests ----------
+
+    #[test]
+    fn test_delivery_failure_debug() {
+        let failure = DeliveryFailure {
+            id: 42,
+            chat_id: 123456,
+            error_message: "Test error".to_string(),
+            created_at: Utc::now(),
+        };
+
+        let debug_str = format!("{:?}", failure);
+        assert!(debug_str.contains("DeliveryFailure"));
+        assert!(debug_str.contains("42"));
+        assert!(debug_str.contains("123456"));
+        assert!(debug_str.contains("Test error"));
+    }
+
+    #[test]
+    fn test_delivery_failure_clone_equality() {
+        let now = Utc::now();
+        let failure = DeliveryFailure {
+            id: 1,
+            chat_id: 12345,
+            error_message: "Original error".to_string(),
+            created_at: now,
+        };
+
+        let cloned = failure.clone();
+
+        // Verify all fields match
+        assert_eq!(failure.id, cloned.id);
+        assert_eq!(failure.chat_id, cloned.chat_id);
+        assert_eq!(failure.error_message, cloned.error_message);
+        assert_eq!(failure.created_at, cloned.created_at);
+    }
+
+    // ---------- Interaction with Other Tables Tests ----------
+
+    #[tokio::test]
+    async fn test_delivery_failures_independent_of_subscribers() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Log failure for a chat_id that is NOT a subscriber
+        db.log_delivery_failure(999999, "Delivery to non-subscriber failed")
+            .await
+            .expect("log");
+
+        // Should succeed - no foreign key constraint
+        let failures = db.get_recent_failures(10).await.expect("get");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].chat_id, 999999);
+
+        // Also add a subscriber and verify they coexist
+        db.add_subscriber(111, Some("subscriber"))
+            .await
+            .expect("add");
+        db.log_delivery_failure(111, "Subscriber delivery failed")
+            .await
+            .expect("log");
+
+        let failures = db.get_recent_failures(10).await.expect("get");
+        assert_eq!(failures.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_delivery_failures_persist_after_subscriber_removal() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Add subscriber, log failure, then remove subscriber
+        db.add_subscriber(123, Some("user")).await.expect("add");
+        db.log_delivery_failure(123, "Delivery failed")
+            .await
+            .expect("log");
+        db.remove_subscriber(123).await.expect("remove");
+
+        // Failure should still be present
+        let failures = db.get_recent_failures(10).await.expect("get");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].chat_id, 123);
+    }
 }

@@ -546,12 +546,12 @@ Guidelines:
         let request = ChatRequest {
             model: "gpt-4o-mini".to_string(),
             messages: vec![],
-            max_tokens: 1000,
+            max_tokens: 2500,
             temperature: 0.7,
         };
 
-        // Verify expected parameters
-        assert_eq!(request.max_tokens, 1000);
+        // Verify expected parameters (2500 is the new default for summary_max_tokens)
+        assert_eq!(request.max_tokens, 2500);
         assert!((request.temperature - 0.7).abs() < f32::EPSILON);
     }
 
