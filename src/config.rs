@@ -191,7 +191,9 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         clear_env_vars();
         env::set_var("OPENAI_API_KEY", "test-openai-key");
-        env::set_var("NITTER_INSTANCE", "https://nitter.example.com");
+        // Don't set TELEGRAM_BOT_TOKEN - that's what we're testing
+        // But set other required vars that are checked after it
+        // Note: TELEGRAM_BOT_TOKEN is checked before TELEGRAM_WEBHOOK_SECRET
 
         let result = Config::from_env();
         assert!(result.is_err());
@@ -209,6 +211,9 @@ mod tests {
         clear_env_vars();
         env::set_var("OPENAI_API_KEY", "test-openai-key");
         env::set_var("TELEGRAM_BOT_TOKEN", "test-telegram-token");
+        env::set_var("TELEGRAM_WEBHOOK_SECRET", "test-webhook-secret");
+        env::set_var("DATABASE_URL", "postgres://test:test@localhost/test");
+        // Don't set NITTER_INSTANCE - that's what we're testing
 
         let result = Config::from_env();
         assert!(result.is_err());
@@ -409,7 +414,10 @@ mod tests {
         env::set_var("MAX_TWEETS", "");
 
         let config = Config::from_env().unwrap();
-        assert_eq!(config.max_tweets, 100, "Should use default for empty string");
+        assert_eq!(
+            config.max_tweets, 100,
+            "Should use default for empty string"
+        );
     }
 
     #[test]

@@ -1495,10 +1495,10 @@ mod tests {
     async fn test_log_delivery_failure_backslashes_and_newlines() {
         let db = create_test_db().await.expect("Failed to create test db");
 
-        let error_msg = "Error:\n\tLine 1\\nLine 2\r\nWindows line\0Null char";
-        db.log_delivery_failure(123, error_msg)
-            .await
-            .expect("log");
+        // Note: PostgreSQL TEXT columns don't support null bytes (\0), so we test
+        // other special characters instead
+        let error_msg = "Error:\n\tLine 1\\nLine 2\r\nWindows line ending";
+        db.log_delivery_failure(123, error_msg).await.expect("log");
 
         let failures = db.get_recent_failures(1).await.expect("get");
         assert_eq!(failures[0].error_message, error_msg);
@@ -1567,16 +1567,11 @@ mod tests {
         let db5 = db.clone();
 
         // Spawn concurrent log operations
-        let handle1 =
-            tokio::spawn(async move { db1.log_delivery_failure(1001, "Error 1").await });
-        let handle2 =
-            tokio::spawn(async move { db2.log_delivery_failure(1002, "Error 2").await });
-        let handle3 =
-            tokio::spawn(async move { db3.log_delivery_failure(1003, "Error 3").await });
-        let handle4 =
-            tokio::spawn(async move { db4.log_delivery_failure(1001, "Error 4").await });
-        let handle5 =
-            tokio::spawn(async move { db5.log_delivery_failure(1002, "Error 5").await });
+        let handle1 = tokio::spawn(async move { db1.log_delivery_failure(1001, "Error 1").await });
+        let handle2 = tokio::spawn(async move { db2.log_delivery_failure(1002, "Error 2").await });
+        let handle3 = tokio::spawn(async move { db3.log_delivery_failure(1003, "Error 3").await });
+        let handle4 = tokio::spawn(async move { db4.log_delivery_failure(1001, "Error 4").await });
+        let handle5 = tokio::spawn(async move { db5.log_delivery_failure(1002, "Error 5").await });
 
         let (r1, r2, r3, r4, r5) = tokio::join!(handle1, handle2, handle3, handle4, handle5);
         assert!(r1.is_ok() && r1.unwrap().is_ok());
@@ -1595,17 +1590,11 @@ mod tests {
         let db = create_test_db().await.expect("Failed to create test db");
 
         // Same user can have multiple failures with different error messages
-        db.log_delivery_failure(123, "Error A")
-            .await
-            .expect("log1");
+        db.log_delivery_failure(123, "Error A").await.expect("log1");
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        db.log_delivery_failure(123, "Error B")
-            .await
-            .expect("log2");
+        db.log_delivery_failure(123, "Error B").await.expect("log2");
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        db.log_delivery_failure(123, "Error C")
-            .await
-            .expect("log3");
+        db.log_delivery_failure(123, "Error C").await.expect("log3");
 
         let failures = db.get_recent_failures(10).await.expect("get");
         assert_eq!(failures.len(), 3);
@@ -1669,10 +1658,7 @@ mod tests {
         );
 
         // Newest entries should still be there
-        assert!(
-            chat_ids.contains(&1005),
-            "Newest entry should be kept"
-        );
+        assert!(chat_ids.contains(&1005), "Newest entry should be kept");
         assert!(chat_ids.contains(&1004), "Second newest should be kept");
     }
 
@@ -1705,16 +1691,10 @@ mod tests {
 
         // The oldest entry (chat_id 1) should be removed
         let chat_ids: Vec<i64> = failures_after.iter().map(|f| f.chat_id).collect();
-        assert!(
-            !chat_ids.contains(&1),
-            "Oldest entry should be removed"
-        );
+        assert!(!chat_ids.contains(&1), "Oldest entry should be removed");
 
         // The newest entry should be present
-        assert!(
-            chat_ids.contains(&9999),
-            "Newest entry should be present"
-        );
+        assert!(chat_ids.contains(&9999), "Newest entry should be present");
     }
 
     #[tokio::test]
@@ -1787,7 +1767,10 @@ mod tests {
         let db = create_test_db().await.expect("Failed to create test db");
 
         let failures = db.get_recent_failures(10).await.expect("get failures");
-        assert!(failures.is_empty(), "Should return empty vec when no failures");
+        assert!(
+            failures.is_empty(),
+            "Should return empty vec when no failures"
+        );
     }
 
     #[tokio::test]
@@ -1806,12 +1789,12 @@ mod tests {
 
         db.log_delivery_failure(123, "Error").await.expect("log");
 
-        // Negative limit - behavior depends on DB, but should not panic
-        let failures = db.get_recent_failures(-1).await.expect("get failures");
-        // In PostgreSQL, negative LIMIT returns 0 rows
+        // Negative limit causes PostgreSQL to return an error (LIMIT must not be negative)
+        // This is expected behavior - the function should propagate the error
+        let result = db.get_recent_failures(-1).await;
         assert!(
-            failures.is_empty(),
-            "Negative limit should return empty vec"
+            result.is_err(),
+            "Negative limit should return an error in PostgreSQL"
         );
     }
 
@@ -2121,11 +2104,7 @@ mod tests {
 
         // All IDs should be unique
         let unique_ids: std::collections::HashSet<i64> = ids.iter().cloned().collect();
-        assert_eq!(
-            ids.len(),
-            unique_ids.len(),
-            "All IDs should be unique"
-        );
+        assert_eq!(ids.len(), unique_ids.len(), "All IDs should be unique");
 
         // IDs should be positive
         for id in &ids {

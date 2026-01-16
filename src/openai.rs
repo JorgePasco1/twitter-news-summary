@@ -620,7 +620,11 @@ Guidelines:
         let timestamp = (now - chrono::Duration::hours(48)).to_rfc3339();
         let result = format_relative_time(&Some(timestamp));
         // Should return absolute format like "Jan 14, 10:30"
-        assert!(result.contains(","), "Expected absolute date format, got: {}", result);
+        assert!(
+            result.contains(","),
+            "Expected absolute date format, got: {}",
+            result
+        );
     }
 
     #[test]
