@@ -450,10 +450,16 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_word_limit() {
         let prompt = build_system_prompt(500);
-        assert!(prompt.contains("500"), "Prompt should contain the word limit");
+        assert!(
+            prompt.contains("500"),
+            "Prompt should contain the word limit"
+        );
 
         let prompt2 = build_system_prompt(1000);
-        assert!(prompt2.contains("1000"), "Prompt should contain the word limit");
+        assert!(
+            prompt2.contains("1000"),
+            "Prompt should contain the word limit"
+        );
     }
 
     #[test]
