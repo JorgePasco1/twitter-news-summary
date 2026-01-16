@@ -1,6 +1,6 @@
 -- Create table for tracking delivery failures
 CREATE TABLE IF NOT EXISTS delivery_failures (
-    id SERIAL PRIMARY KEY,
+    id BIGSERIAL PRIMARY KEY,
     chat_id BIGINT NOT NULL,
     error_message TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

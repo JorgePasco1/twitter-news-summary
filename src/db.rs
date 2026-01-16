@@ -200,16 +200,25 @@ impl Database {
         Ok(())
     }
 
-    /// Log a delivery failure
+    /// Log a delivery failure and cleanup old entries (keep last 1000)
     pub async fn log_delivery_failure(&self, chat_id: i64, error_message: &str) -> Result<()> {
+        sqlx::query("INSERT INTO delivery_failures (chat_id, error_message) VALUES ($1, $2)")
+            .bind(chat_id)
+            .bind(error_message)
+            .execute(&self.pool)
+            .await
+            .context("Failed to log delivery failure")?;
+
+        // Cleanup old failures (keep last 1000)
         sqlx::query(
-            "INSERT INTO delivery_failures (chat_id, error_message, created_at) VALUES ($1, $2, NOW())",
+            "DELETE FROM delivery_failures WHERE id NOT IN (
+                SELECT id FROM delivery_failures ORDER BY created_at DESC LIMIT 1000
+            )",
         )
-        .bind(chat_id)
-        .bind(error_message)
         .execute(&self.pool)
         .await
-        .context("Failed to log delivery failure")?;
+        .context("Failed to cleanup old delivery failures")?;
+
         Ok(())
     }
 
@@ -223,7 +232,8 @@ impl Database {
         )
         .bind(limit)
         .fetch_all(&self.pool)
-        .await?;
+        .await
+        .context("Failed to fetch recent delivery failures")?;
 
         Ok(failures)
     }
@@ -237,7 +247,8 @@ impl Database {
              ORDER BY count DESC",
         )
         .fetch_all(&self.pool)
-        .await?;
+        .await
+        .context("Failed to fetch delivery failure counts")?;
 
         Ok(counts)
     }
