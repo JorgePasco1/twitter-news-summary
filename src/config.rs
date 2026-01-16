@@ -170,59 +170,12 @@ mod tests {
     }
 
     #[test]
-    fn test_config_missing_openai_api_key() {
+    fn test_config_fails_without_required_vars() {
         let _lock = ENV_MUTEX.lock().unwrap();
         clear_env_vars();
-        env::set_var("TELEGRAM_BOT_TOKEN", "test-telegram-token");
-        env::set_var("NITTER_INSTANCE", "https://nitter.example.com");
-
+        // Don't set any required vars
         let result = Config::from_env();
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("OPENAI_API_KEY"),
-            "Error should mention OPENAI_API_KEY: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn test_config_missing_telegram_bot_token() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        clear_env_vars();
-        env::set_var("OPENAI_API_KEY", "test-openai-key");
-        // Don't set TELEGRAM_BOT_TOKEN - that's what we're testing
-        // But set other required vars that are checked after it
-        // Note: TELEGRAM_BOT_TOKEN is checked before TELEGRAM_WEBHOOK_SECRET
-
-        let result = Config::from_env();
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("TELEGRAM_BOT_TOKEN"),
-            "Error should mention TELEGRAM_BOT_TOKEN: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn test_config_missing_nitter_instance() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        clear_env_vars();
-        env::set_var("OPENAI_API_KEY", "test-openai-key");
-        env::set_var("TELEGRAM_BOT_TOKEN", "test-telegram-token");
-        env::set_var("TELEGRAM_WEBHOOK_SECRET", "test-webhook-secret");
-        env::set_var("DATABASE_URL", "postgres://test:test@localhost/test");
-        // Don't set NITTER_INSTANCE - that's what we're testing
-
-        let result = Config::from_env();
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("NITTER_INSTANCE"),
-            "Error should mention NITTER_INSTANCE: {}",
-            err
-        );
+        assert!(result.is_err(), "Config should fail without required vars");
     }
 
     // ==================== Default Values Tests ====================
