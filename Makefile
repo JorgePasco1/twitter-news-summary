@@ -1,4 +1,4 @@
-.PHONY: help export run preview build check test clean trigger
+.PHONY: help export run preview preview-cached preview-send preview-cached-send test-send build check test clean trigger
 
 # Default target - show help
 help:
@@ -97,6 +97,10 @@ test-send:
 		if [ -f .env ]; then \
 			export $$(grep "^API_KEY=" .env | xargs) && \
 			export $$(grep "^TEST_CHAT_ID=" .env | xargs) && \
+			if [ -z "$$TEST_CHAT_ID" ]; then \
+				echo "❌ Error: TEST_CHAT_ID not found in environment or .env file"; \
+				exit 1; \
+			fi && \
 			curl -X POST "https://twitter-summary-bot.fly.dev/test?chat_id=$$TEST_CHAT_ID" \
 				-H "X-API-Key: $$API_KEY" \
 				-w "\n" || echo "❌ Failed to send test message"; \
@@ -105,7 +109,13 @@ test-send:
 			exit 1; \
 		fi \
 	else \
-		export $$(grep "^TEST_CHAT_ID=" .env | xargs) && \
+		if [ -z "$$TEST_CHAT_ID" ] && [ -f .env ]; then \
+			export $$(grep "^TEST_CHAT_ID=" .env | xargs); \
+		fi; \
+		if [ -z "$$TEST_CHAT_ID" ]; then \
+			echo "❌ Error: TEST_CHAT_ID not found in environment or .env file"; \
+			exit 1; \
+		fi; \
 		curl -X POST "https://twitter-summary-bot.fly.dev/test?chat_id=$$TEST_CHAT_ID" \
 			-H "X-API-Key: $$API_KEY" \
 			-w "\n" || echo "❌ Failed to send test message"; \

@@ -71,8 +71,48 @@ When the user runs this command with a PR number:
      - Full comment body from the thread
      - Whether it's outdated or collapsed
 
-6. Evaluate the comments and give a justified decision on wether we should fix each one or not.
+6. Evaluate the comments and give a justified decision on whether we should fix each one or not.
 7. Ask the user to confirm which ones they want to fix.
+
+## After Fixing/Skipping Comments
+
+After the user confirms which comments to fix and you've completed the work:
+
+1. **Reply to each comment** using the GitHub API:
+   ```bash
+   gh api repos/{owner}/{repo}/pulls/{pr_number}/comments \
+     -f body="Fixed! <brief description of what was done>" \
+     -F in_reply_to={comment_id} \
+     -X POST
+   ```
+
+2. **React to comments** to indicate status:
+   - For comments being fixed: Add a 👍 reaction
+     ```bash
+     gh api repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions \
+       -f content="+1" -X POST
+     ```
+   - For comments being skipped: Add a 👎 reaction and explain why in the reply
+     ```bash
+     gh api repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions \
+       -f content="-1" -X POST
+     ```
+
+3. **Resolve threads** using the GraphQL API (for comments that were addressed):
+   ```bash
+   gh api graphql -f query='
+   mutation {
+     resolveReviewThread(input: {threadId: "{thread_node_id}"}) {
+       thread { isResolved }
+     }
+   }'
+   ```
+   Note: The thread node ID can be obtained from the initial GraphQL query (the `id` field in `reviewThreads.nodes`).
+
+4. **Leave threads unresolved** if:
+   - The comment was intentionally skipped with a justification
+   - The issue needs further discussion
+   - You're waiting for the reviewer to verify the fix
 
 ## Example Output
 

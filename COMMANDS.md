@@ -266,7 +266,7 @@ make preview-send
 6. Caches tweets for future use
 
 **Output**:
-```
+```text
 👀 Generating summary and sending to test user...
 ...
 📤 Sending to Telegram...
@@ -361,7 +361,7 @@ API_KEY=your_key_here make test-send
 5. Returns success confirmation
 
 **Expected output**:
-```
+```text
 🧪 Sending test message to your Telegram...
 Test message sent to 123456789
 ```

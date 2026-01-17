@@ -27,7 +27,7 @@ use chrono::Utc;
 use std::fs;
 use std::path::Path;
 use tracing::info;
-use twitter_news_summary::{openai, rss, twitter::Tweet};
+use twitter_news_summary::{openai, rss, telegram, twitter::Tweet};
 
 /// Minimal config for preview (no Telegram/DB required)
 struct PreviewConfig {
@@ -98,21 +98,6 @@ impl PreviewConfig {
             port: 8080,
         }
     }
-}
-
-/// Escape special characters for Telegram's MarkdownV2 parse mode
-fn escape_markdownv2(text: &str) -> String {
-    let special_chars = [
-        '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!',
-    ];
-    let mut result = String::with_capacity(text.len() * 2);
-    for c in text.chars() {
-        if special_chars.contains(&c) {
-            result.push('\\');
-        }
-        result.push(c);
-    }
-    result
 }
 
 /// Save tweets to cache file
@@ -231,11 +216,12 @@ async fn main() -> Result<()> {
     let summary = openai::summarize_tweets(&client, &config, &tweets).await?;
 
     // Format the message exactly as Telegram would receive it (MarkdownV2)
-    let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
+    let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
+    let escaped_timestamp = telegram::escape_markdownv2(&timestamp);
     let formatted_message = format!(
         "📰 *Twitter Summary*\n_{}_\n\n{}",
-        timestamp,
-        escape_markdownv2(&summary)
+        escaped_timestamp,
+        telegram::escape_markdownv2(&summary)
     );
 
     // Save to run-history/

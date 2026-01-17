@@ -183,6 +183,15 @@ async fn test_handler(
         .or_else(|| std::env::var("TEST_CHAT_ID").ok())
         .unwrap_or_else(|| state.config.telegram_chat_id.clone());
 
+    // Guard against empty chat_id
+    if chat_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "chat_id is required (query param or TEST_CHAT_ID env var)",
+        )
+            .into_response();
+    }
+
     info!("Test message requested for chat_id: {}", chat_id);
 
     // Get or generate summary

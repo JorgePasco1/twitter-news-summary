@@ -53,7 +53,7 @@ struct SendMessageRequest {
 /// - URL: only ) and \ need escaping (per Telegram docs)
 ///
 /// Reference: https://core.telegram.org/bots/api#markdownv2-style
-fn escape_markdownv2(text: &str) -> String {
+pub fn escape_markdownv2(text: &str) -> String {
     // Regex to match markdown links: [text](url)
     // Note: we use lazy_static pattern via once_cell or just create it (regex crate caches)
     let link_regex = regex::Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
@@ -258,10 +258,11 @@ async fn send_welcome_summary(
     chat_id: i64,
     summary: &str,
 ) -> Result<()> {
-    let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
+    let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
+    let escaped_timestamp = escape_markdownv2(&timestamp);
     let message = format!(
-        "📰 *Hey! Here's what you missed* 😉\n_{}_\n\n{}",
-        timestamp,
+        "📰 *Hey\\! Here's what you missed* 😉\n_{}_\n\n{}",
+        escaped_timestamp,
         escape_markdownv2(summary)
     );
 
@@ -283,10 +284,11 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
 
     info!("Sending summary to {} subscribers", subscribers.len());
 
-    let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
+    let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
+    let escaped_timestamp = escape_markdownv2(&timestamp);
     let message = format!(
         "📰 *Twitter Summary*\n_{}_\n\n{}",
-        timestamp,
+        escaped_timestamp,
         escape_markdownv2(summary)
     );
 

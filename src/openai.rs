@@ -83,8 +83,7 @@ You MUST format your response using standard Markdown syntax compatible with Tel
 - Use _text_ for italic
 - Use `code` for inline code
 - Use bullet points with - (hyphen followed by space)
-- Do NOT use these characters unless necessary: # + = | {{ }} . !
-- If you must use special characters, they will be escaped automatically
+- Special characters will be escaped automatically, so use natural punctuation
 
 ## Guidelines
 
@@ -115,9 +114,7 @@ This list covers AI/ML researchers, tech leaders, and industry figures. Prioriti
 - Notable opinions from thought leaders
 
 ### What to Avoid
-- Do NOT use parentheses () outside of markdown links and URLs
-- Do NOT use periods in headers or at the end of headers
-- Avoid unnecessary special characters: # + = | {{ }} !
+- Do NOT use periods at the end of section headers
 - Use simple, clean formatting"#,
         max_words
     )
