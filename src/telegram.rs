@@ -194,9 +194,18 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
                 fail_count += 1;
                 let error_msg = e.to_string();
 
-                // Auto-remove subscribers who blocked the bot
-                if error_msg.contains("403") && error_msg.contains("blocked by the user") {
-                    warn!("✗ Auto-removing blocked subscriber {}", subscriber.chat_id);
+                // Auto-remove subscribers who blocked the bot or deleted their account
+                // Check for 403 status AND specific descriptions (case-insensitive for robustness)
+                let error_lower = error_msg.to_lowercase();
+                let is_blocked = error_msg.contains("403")
+                    && (error_lower.contains("blocked by the user")
+                        || error_lower.contains("user is deactivated"));
+
+                if is_blocked {
+                    warn!(
+                        "✗ Auto-removing blocked/deactivated subscriber {}: {}",
+                        subscriber.chat_id, error_msg
+                    );
                     if let Err(remove_err) = db.remove_subscriber(subscriber.chat_id).await {
                         warn!("Failed to remove blocked subscriber: {}", remove_err);
                     }
@@ -1213,7 +1222,10 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
     /// Helper function that mirrors the detection logic in send_to_subscribers
     /// This allows us to test the detection logic in isolation without database dependencies
     fn should_auto_remove_blocked_subscriber(error_msg: &str) -> bool {
-        error_msg.contains("403") && error_msg.contains("blocked by the user")
+        let error_lower = error_msg.to_lowercase();
+        error_msg.contains("403")
+            && (error_lower.contains("blocked by the user")
+                || error_lower.contains("user is deactivated"))
     }
 
     // ---------- Positive Cases: Should Trigger Auto-Removal ----------
@@ -1275,14 +1287,13 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
     }
 
     #[test]
-    fn test_blocked_user_detection_different_case_preserved() {
-        // Note: Current implementation is case-sensitive
-        // This test documents the current behavior
+    fn test_blocked_user_detection_standard_case() {
+        // Standard lowercase format from Telegram API
         let error_msg = "Telegram API error (403 Forbidden): blocked by the user";
 
         assert!(
             should_auto_remove_blocked_subscriber(error_msg),
-            "Should detect with exact case match"
+            "Should detect standard lowercase format"
         );
     }
 
@@ -1411,13 +1422,29 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
     }
 
     #[test]
-    fn test_no_auto_remove_for_user_deactivated() {
-        // User deactivated their account
+    fn test_auto_remove_for_user_deactivated() {
+        // User deactivated their account - this is permanent, should auto-remove
         let error_msg = r#"Telegram API error (403 Forbidden): {"ok":false,"error_code":403,"description":"Forbidden: user is deactivated"}"#;
 
         assert!(
-            !should_auto_remove_blocked_subscriber(error_msg),
-            "User deactivated should NOT trigger auto-removal (different scenario)"
+            should_auto_remove_blocked_subscriber(error_msg),
+            "User deactivated SHOULD trigger auto-removal (account deleted permanently)"
+        );
+    }
+
+    #[test]
+    fn test_auto_remove_for_user_deactivated_case_insensitive() {
+        // "user is deactivated" should match regardless of case
+        let error_msg_upper = "Telegram API error (403 Forbidden): USER IS DEACTIVATED";
+        let error_msg_mixed = "Telegram API error (403 Forbidden): User Is Deactivated";
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg_upper),
+            "Should match uppercase 'USER IS DEACTIVATED'"
+        );
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg_mixed),
+            "Should match mixed case 'User Is Deactivated'"
         );
     }
 
@@ -1497,24 +1524,24 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
     }
 
     #[test]
-    fn test_blocked_detection_case_sensitivity() {
-        // Test that the detection is case-sensitive
+    fn test_blocked_detection_case_insensitivity() {
+        // Test that the detection is case-insensitive for robustness
         let error_msg_upper = "Telegram API error (403 Forbidden): BLOCKED BY THE USER";
         let error_msg_lower = "telegram api error (403 forbidden): blocked by the user";
         let error_msg_mixed = "Telegram API error (403 Forbidden): Blocked By The User";
 
-        // Current implementation is case-sensitive - "blocked by the user" must be lowercase
+        // All cases should match due to case-insensitive comparison
         assert!(
-            !should_auto_remove_blocked_subscriber(error_msg_upper),
-            "Should NOT match uppercase 'BLOCKED BY THE USER'"
+            should_auto_remove_blocked_subscriber(error_msg_upper),
+            "Should match uppercase 'BLOCKED BY THE USER'"
         );
         assert!(
             should_auto_remove_blocked_subscriber(error_msg_lower),
             "Should match lowercase 'blocked by the user'"
         );
         assert!(
-            !should_auto_remove_blocked_subscriber(error_msg_mixed),
-            "Should NOT match mixed case 'Blocked By The User'"
+            should_auto_remove_blocked_subscriber(error_msg_mixed),
+            "Should match mixed case 'Blocked By The User'"
         );
     }
 
