@@ -290,11 +290,13 @@ pub async fn send_test_message(config: &Config, chat_id: &str, summary: &str) ->
         escape_markdownv2(summary)
     );
 
-    let chat_id_i64 = chat_id.parse::<i64>().context("Invalid chat ID format")?;
+    let chat_id_i64 = chat_id
+        .parse::<i64>()
+        .context(format!("Invalid chat ID format: '{}'. Expected numeric chat ID (e.g., 123456789)", chat_id))?;
 
     send_message(config, chat_id_i64, &message)
         .await
-        .context("Failed to send test message")?;
+        .context(format!("Failed to send test message to chat ID {}", chat_id))?;
 
     Ok(())
 }

@@ -24,6 +24,7 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use std::error::Error;
 use std::fs;
 use std::path::Path;
 use tracing::info;
@@ -363,7 +364,17 @@ async fn main() -> Result<()> {
                 println!("✅ Message sent successfully to chat ID: {}", test_chat_id);
             }
             Err(e) => {
-                println!("❌ Failed to send message: {}", e);
+                println!("❌ Failed to send message:");
+                println!("   Error: {}", e);
+                // Print the full error chain for debugging
+                if let Some(source) = e.source() {
+                    println!("   Caused by: {}", source);
+                    let mut current_source = source.source();
+                    while let Some(src) = current_source {
+                        println!("   Caused by: {}", src);
+                        current_source = src.source();
+                    }
+                }
             }
         }
         println!();
