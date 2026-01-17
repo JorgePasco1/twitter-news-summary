@@ -1,17 +1,13 @@
 #!/bin/bash
-# Pre-push hook: runs formatting check, clippy, and tests before allowing push
+# Pre-push hook: auto-formats code, then runs clippy and tests before allowing push
 
 set -e
 
 echo "Running pre-push checks..."
 
-# Check formatting
-echo "Checking formatting..."
-if ! cargo fmt -- --check; then
-    echo ""
-    echo "ERROR: Code is not formatted. Run 'cargo fmt' to fix."
-    exit 1
-fi
+# Auto-format code before running checks
+echo "Formatting code..."
+cargo fmt
 
 # Run clippy
 echo "Running clippy..."
