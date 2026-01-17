@@ -193,9 +193,18 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
             Err(e) => {
                 fail_count += 1;
                 let error_msg = e.to_string();
-                warn!("✗ Failed to send to {}: {}", subscriber.chat_id, error_msg);
 
-                // Log failure to database
+                // Auto-remove subscribers who blocked the bot
+                if error_msg.contains("403") && error_msg.contains("blocked by the user") {
+                    warn!("✗ Auto-removing blocked subscriber {}", subscriber.chat_id);
+                    if let Err(remove_err) = db.remove_subscriber(subscriber.chat_id).await {
+                        warn!("Failed to remove blocked subscriber: {}", remove_err);
+                    }
+                } else {
+                    warn!("✗ Failed to send to {}: {}", subscriber.chat_id, error_msg);
+                }
+
+                // Log failure to database for analytics
                 if let Err(log_err) = db
                     .log_delivery_failure(subscriber.chat_id, &error_msg)
                     .await
@@ -1197,5 +1206,425 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         };
 
         assert!(expected_response.contains("already subscribed"));
+    }
+
+    // ==================== Blocked User Auto-Removal Detection Tests ====================
+
+    /// Helper function that mirrors the detection logic in send_to_subscribers
+    /// This allows us to test the detection logic in isolation without database dependencies
+    fn should_auto_remove_blocked_subscriber(error_msg: &str) -> bool {
+        error_msg.contains("403") && error_msg.contains("blocked by the user")
+    }
+
+    // ---------- Positive Cases: Should Trigger Auto-Removal ----------
+
+    #[test]
+    fn test_blocked_user_detection_exact_telegram_format() {
+        // This is the exact format returned by Telegram API when a user blocks the bot
+        let error_msg = r#"Telegram API error (403 Forbidden): {"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"}"#;
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect blocked user from exact Telegram API response format"
+        );
+    }
+
+    #[test]
+    fn test_blocked_user_detection_contains_both_markers() {
+        // The detection requires BOTH "403" AND "blocked by the user" to be present
+        let error_msg = "Error: 403 - user has blocked by the user";
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect when both '403' and 'blocked by the user' are present"
+        );
+    }
+
+    #[test]
+    fn test_blocked_user_detection_different_403_position() {
+        // 403 can appear in different positions within the error message
+        let error_msg = "blocked by the user, status: 403";
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect regardless of where '403' appears in message"
+        );
+    }
+
+    #[test]
+    fn test_blocked_user_detection_with_additional_context() {
+        // Error message might have additional context wrapping it
+        let error_msg = "Failed to send message: Telegram API error (403 Forbidden): bot was blocked by the user - chat_id: 123456";
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect blocked user even with additional context"
+        );
+    }
+
+    #[test]
+    fn test_blocked_user_detection_multiline_error() {
+        // Error message could span multiple lines
+        let error_msg = r#"Telegram API error (403 Forbidden):
+{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"}"#;
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect blocked user in multiline error messages"
+        );
+    }
+
+    #[test]
+    fn test_blocked_user_detection_different_case_preserved() {
+        // Note: Current implementation is case-sensitive
+        // This test documents the current behavior
+        let error_msg = "Telegram API error (403 Forbidden): blocked by the user";
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect with exact case match"
+        );
+    }
+
+    // ---------- Negative Cases: Should NOT Trigger Auto-Removal ----------
+
+    #[test]
+    fn test_no_auto_remove_for_400_bad_request() {
+        // 400 Bad Request should not trigger auto-removal
+        let error_msg = r#"Telegram API error (400 Bad Request): {"ok":false,"error_code":400,"description":"Bad Request: chat not found"}"#;
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "400 Bad Request should NOT trigger auto-removal"
+        );
+    }
+
+    #[test]
+    fn test_no_auto_remove_for_401_unauthorized() {
+        // 401 Unauthorized (invalid bot token) should not trigger auto-removal
+        let error_msg = r#"Telegram API error (401 Unauthorized): {"ok":false,"error_code":401,"description":"Unauthorized"}"#;
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "401 Unauthorized should NOT trigger auto-removal"
+        );
+    }
+
+    #[test]
+    fn test_no_auto_remove_for_429_rate_limited() {
+        // 429 Rate Limited should not trigger auto-removal
+        let error_msg = r#"Telegram API error (429 Too Many Requests): {"ok":false,"error_code":429,"description":"Too Many Requests: retry after 35"}"#;
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "429 Rate Limited should NOT trigger auto-removal"
+        );
+    }
+
+    #[test]
+    fn test_no_auto_remove_for_500_server_error() {
+        // 500 Internal Server Error should not trigger auto-removal
+        let error_msg = r#"Telegram API error (500 Internal Server Error): {"ok":false,"error_code":500,"description":"Internal Server Error"}"#;
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "500 Server Error should NOT trigger auto-removal"
+        );
+    }
+
+    #[test]
+    fn test_no_auto_remove_for_network_error() {
+        // Network errors (connection refused, timeout, etc.) should not trigger auto-removal
+        let error_msg = "Failed to send request to Telegram API: connection refused";
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "Network errors should NOT trigger auto-removal"
+        );
+    }
+
+    #[test]
+    fn test_no_auto_remove_for_timeout() {
+        // Timeout errors should not trigger auto-removal
+        let error_msg = "Failed to send request to Telegram API: operation timed out";
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "Timeout errors should NOT trigger auto-removal"
+        );
+    }
+
+    #[test]
+    fn test_no_auto_remove_for_dns_error() {
+        // DNS resolution errors should not trigger auto-removal
+        let error_msg = "Failed to send request to Telegram API: failed to resolve host";
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "DNS errors should NOT trigger auto-removal"
+        );
+    }
+
+    #[test]
+    fn test_no_auto_remove_for_403_without_blocked_text() {
+        // 403 alone (without "blocked by the user") should not trigger auto-removal
+        // This could be a different kind of 403 error (e.g., bot not in chat)
+        let error_msg = r#"Telegram API error (403 Forbidden): {"ok":false,"error_code":403,"description":"Forbidden: bot is not a member of the group chat"}"#;
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "403 without 'blocked by the user' should NOT trigger auto-removal"
+        );
+    }
+
+    #[test]
+    fn test_no_auto_remove_for_blocked_text_without_403() {
+        // "blocked by the user" text without 403 status code should not trigger auto-removal
+        let error_msg = "User action: blocked by the user preference settings";
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "'blocked by the user' text without 403 should NOT trigger auto-removal"
+        );
+    }
+
+    #[test]
+    fn test_no_auto_remove_for_chat_not_found() {
+        // Chat not found (deleted account) is different from blocked
+        let error_msg = r#"Telegram API error (400 Bad Request): {"ok":false,"error_code":400,"description":"Bad Request: chat not found"}"#;
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "Chat not found should NOT trigger auto-removal (could be temporary)"
+        );
+    }
+
+    #[test]
+    fn test_no_auto_remove_for_bot_kicked_from_group() {
+        // Bot kicked from group chat is different from user blocking
+        let error_msg = r#"Telegram API error (403 Forbidden): {"ok":false,"error_code":403,"description":"Forbidden: bot was kicked from the group chat"}"#;
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "Bot kicked from group should NOT trigger auto-removal (different scenario)"
+        );
+    }
+
+    #[test]
+    fn test_no_auto_remove_for_user_deactivated() {
+        // User deactivated their account
+        let error_msg = r#"Telegram API error (403 Forbidden): {"ok":false,"error_code":403,"description":"Forbidden: user is deactivated"}"#;
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "User deactivated should NOT trigger auto-removal (different scenario)"
+        );
+    }
+
+    // ---------- Edge Cases in Error Message Format ----------
+
+    #[test]
+    fn test_blocked_detection_empty_string() {
+        let error_msg = "";
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "Empty error message should NOT trigger auto-removal"
+        );
+    }
+
+    #[test]
+    fn test_blocked_detection_whitespace_only() {
+        let error_msg = "   \n\t  ";
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "Whitespace-only error message should NOT trigger auto-removal"
+        );
+    }
+
+    #[test]
+    fn test_blocked_detection_very_long_error() {
+        // Very long error message with blocked user info somewhere in the middle
+        let prefix = "A".repeat(5000);
+        let suffix = "B".repeat(5000);
+        let error_msg = format!(
+            "{}Telegram API error (403 Forbidden): blocked by the user{}",
+            prefix, suffix
+        );
+
+        assert!(
+            should_auto_remove_blocked_subscriber(&error_msg),
+            "Should detect blocked user even in very long error messages"
+        );
+    }
+
+    #[test]
+    fn test_blocked_detection_unicode_in_error() {
+        // Error message might contain Unicode characters
+        let error_msg =
+            "Telegram API error (403 Forbidden): \u{1f6ab} blocked by the user \u{1f44b}";
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect blocked user even with Unicode in error message"
+        );
+    }
+
+    #[test]
+    fn test_blocked_detection_special_characters() {
+        // Error message with various special characters
+        let error_msg = r#"Error [403] "blocked by the user" <test> & more"#;
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect blocked user with special characters in message"
+        );
+    }
+
+    #[test]
+    fn test_blocked_detection_403_as_substring() {
+        // 403 appearing as part of a larger number should still match
+        // (current implementation uses simple contains)
+        let error_msg = "Error code: 14030 - blocked by the user";
+
+        // This WILL match because "14030" contains "403"
+        // This documents current behavior - might want to improve detection
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Current implementation matches 403 as substring (documents behavior)"
+        );
+    }
+
+    #[test]
+    fn test_blocked_detection_case_sensitivity() {
+        // Test that the detection is case-sensitive
+        let error_msg_upper = "Telegram API error (403 Forbidden): BLOCKED BY THE USER";
+        let error_msg_lower = "telegram api error (403 forbidden): blocked by the user";
+        let error_msg_mixed = "Telegram API error (403 Forbidden): Blocked By The User";
+
+        // Current implementation is case-sensitive - "blocked by the user" must be lowercase
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg_upper),
+            "Should NOT match uppercase 'BLOCKED BY THE USER'"
+        );
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg_lower),
+            "Should match lowercase 'blocked by the user'"
+        );
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg_mixed),
+            "Should NOT match mixed case 'Blocked By The User'"
+        );
+    }
+
+    // ---------- Real-World Telegram API Response Format Tests ----------
+
+    #[test]
+    fn test_blocked_detection_with_json_escaped_quotes() {
+        // JSON response might have escaped quotes in some contexts
+        let error_msg = r#"Telegram API error (403 Forbidden): {\"ok\":false,\"error_code\":403,\"description\":\"Forbidden: bot was blocked by the user\"}"#;
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect blocked user even with escaped JSON quotes"
+        );
+    }
+
+    #[test]
+    fn test_blocked_detection_anyhow_error_chain() {
+        // The error message format from anyhow's error chain
+        let error_msg =
+            "Telegram API error (403 Forbidden): Forbidden: bot was blocked by the user";
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect blocked user in anyhow error format"
+        );
+    }
+
+    #[test]
+    fn test_blocked_detection_reqwest_error_context() {
+        // Error might include reqwest context
+        let error_msg = "Failed to send request to Telegram API: Telegram API error (403 Forbidden): {\"ok\":false,\"error_code\":403,\"description\":\"Forbidden: bot was blocked by the user\"}";
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect blocked user even with reqwest context wrapper"
+        );
+    }
+
+    // ---------- Boundary Condition Tests ----------
+
+    #[test]
+    fn test_blocked_detection_markers_adjacent() {
+        // Both markers present but adjacent (no space)
+        let error_msg = "403blocked by the user";
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect when markers are adjacent"
+        );
+    }
+
+    #[test]
+    fn test_blocked_detection_markers_reversed_order() {
+        // The markers can appear in any order
+        let error_msg = "User was blocked by the user, error code 403";
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect regardless of marker order"
+        );
+    }
+
+    #[test]
+    fn test_blocked_detection_multiple_403_occurrences() {
+        // Multiple occurrences of 403 in the message
+        let error_msg = "Error 403: code 403, status 403 Forbidden, blocked by the user";
+
+        assert!(
+            should_auto_remove_blocked_subscriber(error_msg),
+            "Should detect with multiple 403 occurrences"
+        );
+    }
+
+    #[test]
+    fn test_blocked_detection_partial_phrase_not_matched() {
+        // Partial phrase "blocked by the" (without "user") should not match
+        let error_msg = "Error 403: action was blocked by the system";
+
+        assert!(
+            !should_auto_remove_blocked_subscriber(error_msg),
+            "Partial phrase 'blocked by the' should NOT match"
+        );
+    }
+
+    // ---------- Documentation Tests ----------
+
+    #[test]
+    fn test_blocked_detection_logic_documents_implementation() {
+        // This test documents and verifies the exact implementation logic
+        // The detection requires BOTH conditions to be true:
+        // 1. error_msg.contains("403")
+        // 2. error_msg.contains("blocked by the user")
+
+        // Both present = should remove
+        assert!(should_auto_remove_blocked_subscriber(
+            "403 blocked by the user"
+        ));
+
+        // Only 403 = should NOT remove
+        assert!(!should_auto_remove_blocked_subscriber("error 403"));
+
+        // Only blocked text = should NOT remove
+        assert!(!should_auto_remove_blocked_subscriber(
+            "blocked by the user"
+        ));
+
+        // Neither present = should NOT remove
+        assert!(!should_auto_remove_blocked_subscriber(
+            "some other error message"
+        ));
     }
 }
