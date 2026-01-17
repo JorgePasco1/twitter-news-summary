@@ -156,7 +156,7 @@ async fn send_welcome_summary(
 ) -> Result<()> {
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
     let message = format!(
-        "📰 *Hey! Here's what you missed* 😉\n_{}_\n\n{}",
+        "📰 <b>Hey! Here's what you missed</b> 😉\n<i>{}</i>\n\n{}",
         timestamp, summary
     );
 
@@ -179,7 +179,7 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
     info!("Sending summary to {} subscribers", subscribers.len());
 
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
-    let message = format!("📰 *Twitter Summary*\n_{}_\n\n{}", timestamp, summary);
+    let message = format!("📰 <b>Twitter Summary</b>\n<i>{}</i>\n\n{}", timestamp, summary);
 
     let mut success_count = 0;
     let mut fail_count = 0;
@@ -263,7 +263,7 @@ async fn send_message(config: &Config, chat_id: i64, text: &str) -> Result<()> {
     let request = SendMessageRequest {
         chat_id: chat_id.to_string(),
         text: text.to_string(),
-        parse_mode: "Markdown".to_string(),
+        parse_mode: "HTML".to_string(),
     };
 
     let response = client
@@ -557,7 +557,7 @@ mod tests {
         let summary = "This is the summary content.";
 
         let message = format!(
-            "<b>Twitter Summary</b>\n<i>{}</i>\n\n{}",
+            "📰 <b>Twitter Summary</b>\n<i>{}</i>\n\n{}",
             timestamp, summary
         );
 
@@ -735,7 +735,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 
         // This matches the format in send_welcome_summary
         let message = format!(
-            "\u{1f4f0} *Hey! Here's what you missed* 😉\n_{}_\n\n{}",
+            "📰 <b>Hey! Here's what you missed</b> 😉\n<i>{}</i>\n\n{}",
             timestamp, summary
         );
 
@@ -754,13 +754,13 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 
         // Welcome format
         let welcome_msg = format!(
-            "\u{1f4f0} *Hey! Here's what you missed* 😉\n_{}_\n\n{}",
+            "📰 <b>Hey! Here's what you missed</b> 😉\n<i>{}</i>\n\n{}",
             timestamp, summary
         );
 
         // Regular summary format (from send_to_subscribers)
         let regular_msg = format!(
-            "\u{1f4f0} *Twitter Summary*\n_{}_\n\n{}",
+            "📰 <b>Twitter Summary</b>\n<i>{}</i>\n\n{}",
             timestamp, summary
         );
 
@@ -778,7 +778,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let summary = "Summary with *bold* and _italic_ text";
 
         let message = format!(
-            "\u{1f4f0} *Hey! Here's what you missed* 😉\n_{}_\n\n{}",
+            "📰 <b>Hey! Here's what you missed</b> 😉\n<i>{}</i>\n\n{}",
             timestamp, summary
         );
 
@@ -795,7 +795,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let summary = "A".repeat(4000); // Telegram limit is 4096
 
         let message = format!(
-            "\u{1f4f0} *Hey! Here's what you missed* 😉\n_{}_\n\n{}",
+            "📰 <b>Hey! Here's what you missed</b> 😉\n<i>{}</i>\n\n{}",
             timestamp, summary
         );
 
@@ -1148,12 +1148,12 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 
         let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
         let message = format!(
-            "\u{1f4f0} *Twitter Summary*\n_{}_\n\n{}",
+            "📰 <b>Twitter Summary</b>\n<i>{}</i>\n\n{}",
             timestamp, "content"
         );
 
-        // Timestamp should be in italics (Markdown)
-        assert!(message.contains(&format!("_{}_", timestamp)));
+        // Timestamp should be in italics (HTML)
+        assert!(message.contains(&format!("<i>{}</i>", timestamp)));
     }
 
     // ---------- Rate Limiting Tests ----------
@@ -1176,17 +1176,17 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 
         let messages = vec![
             // 1. User sends /start
-            "\u{1f44b} Welcome to Twitter News Summary Bot!",
+            "👋 Welcome to Twitter News Summary Bot!",
             // 2. User sends /subscribe (first time)
-            "\u{2705} Successfully subscribed! You'll receive summaries twice daily.",
+            "✅ Successfully subscribed! You'll receive summaries twice daily.",
             // 3. Welcome summary (if available)
-            "\u{1f4f0} *Hey! Here's what you missed* 😉",
+            "📰 <b>Hey! Here's what you missed</b> 😉",
             // 4. User checks /status
-            "\u{2705} You are subscribed",
+            "✅ You are subscribed",
             // 5. User sends /unsubscribe
-            "\u{1f44b} Successfully unsubscribed. You won't receive any more summaries.",
+            "👋 Successfully unsubscribed. You won't receive any more summaries.",
             // 6. User re-subscribes (no welcome this time)
-            "\u{2705} Successfully subscribed! You'll receive summaries twice daily.",
+            "✅ Successfully subscribed! You'll receive summaries twice daily.",
         ];
 
         // All messages should be non-empty
