@@ -5,15 +5,16 @@ This document provides detailed information about all available `make` commands 
 ## Quick Reference
 
 ```bash
-make help      # Show all available commands
-make export    # Export Twitter list members (one-time)
-make run       # Run the summary job locally
-make preview   # Preview summary without sending
-make trigger   # Trigger summary on Fly.io production
-make build     # Build release binary
-make check     # Check code without building
-make test      # Run all tests
-make clean     # Clean build artifacts
+make help           # Show all available commands
+make export         # Export Twitter list members (one-time)
+make run            # Run the summary job locally
+make preview        # Preview summary without sending (fetches tweets, saves cache)
+make preview-cached # Preview with cached tweets (fast iteration)
+make trigger        # Trigger summary on Fly.io production
+make build          # Build release binary
+make check          # Check code without building
+make test           # Run all tests
+make clean          # Clean build artifacts
 ```
 
 ---
@@ -93,9 +94,53 @@ make run
 make preview
 ```
 
-**Output**: Prints the generated summary to stdout (does not send via Telegram)
+**Output**:
+- Prints the formatted summary to stdout (MarkdownV2 format)
+- Saves summary to `run-history/{timestamp}.md`
+- Saves tweets to `run-history/tweets_cache.json` for reuse
 
 **Tip**: Use this before `make run` to validate your summary looks good!
+
+---
+
+### `make preview-cached`
+
+**Purpose**: Generate summary using previously cached tweets (fast iteration on formatting)
+
+**When to use**:
+- Iterating on OpenAI prompt changes
+- Testing message formatting changes
+- Quick iteration without waiting for tweet fetches
+- Experimenting with different summary styles
+
+**Requirements**:
+- Previous run of `make preview` (to generate the cache)
+- `OPENAI_API_KEY` in `.env`
+
+**Example**:
+```bash
+# First run: fetch tweets and cache them
+make preview
+
+# Subsequent runs: use cached tweets (much faster!)
+make preview-cached
+```
+
+**Advanced usage**:
+```bash
+# You can also use the flag directly
+cargo run --bin preview -- --use-cached
+```
+
+**Benefits**:
+- ⚡ **Much faster** - No RSS fetching delay (saves ~30-60 seconds)
+- 💰 **Saves Nitter API calls** - Uses previously fetched tweets
+- 🔄 **Perfect for iteration** - Test prompt changes without re-fetching
+- 📊 **Consistent baseline** - Same tweets = easier comparison
+
+**Output**: Same as `make preview` but uses cached tweets instead of fresh fetch
+
+**Tip**: Great for A/B testing different OpenAI prompts or formatting styles!
 
 ---
 
@@ -303,6 +348,23 @@ make preview
 
 # Test full flow locally
 make run
+```
+
+### Iterating on Formatting/Prompts
+```bash
+# First run: fetch tweets and cache them
+make preview
+
+# Iterate on formatting changes (much faster!)
+# Edit src/openai.rs or src/telegram.rs...
+make preview-cached  # Uses cached tweets from previous run
+
+# Keep iterating until satisfied
+make preview-cached
+make preview-cached
+
+# When ready, test with fresh data
+make preview
 ```
 
 ### Deployment Cycle

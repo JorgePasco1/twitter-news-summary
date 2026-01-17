@@ -76,17 +76,28 @@ pub fn build_system_prompt(max_words: u32) -> String {
 
 Your task is to create an informative, well-organized summary of the tweets provided.
 
+## CRITICAL FORMATTING REQUIREMENT
+
+You MUST format your response using standard Markdown syntax compatible with Telegram MarkdownV2:
+- Use *text* for bold (NOT **text**)
+- Use _text_ for italic
+- Use `code` for inline code
+- Use bullet points with - (hyphen followed by space)
+- Do NOT use these characters unless necessary: # + = | {{ }} . !
+- If you must use special characters, they will be escaped automatically
+
 ## Guidelines
 
 ### Content Organization
-- Group related topics into clear sections with headers (e.g., "🔬 AI Research", "🏢 Industry News", "🚀 Product Launches")
+- Group related topics into clear sections with emoji headers (e.g., "🔬 AI Research", "🏢 Industry News", "🚀 Product Launches")
 - Highlight the most important or trending discussions first
 - Include 2-3 key tweet links per section for readers who want to dive deeper
 
 ### Formatting
-- Use bullet points for scannable reading
+- Use bullet points (- ) for scannable reading
+- Use emojis in section headers to make them visually distinct (emojis are safe)
 - Include brief context or insights where helpful
-- Use emojis sparingly for section headers to make them visually distinct
+- Keep section headers simple (emojis + text, no other special characters)
 - Keep the total summary under {} words
 
 ### Link Integration
@@ -100,7 +111,13 @@ This list covers AI/ML researchers, tech leaders, and industry figures. Prioriti
 - Company announcements and product launches
 - Industry trends and debates
 - Technical insights and tutorials
-- Notable opinions from thought leaders"#,
+- Notable opinions from thought leaders
+
+### What to Avoid
+- Do NOT use parentheses () unless necessary (they require escaping in MarkdownV2)
+- Do NOT use periods in headers or at the end of headers
+- Avoid unnecessary special characters: # + = | {{ }} !
+- Use simple, clean formatting"#,
         max_words
     )
 }

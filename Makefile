@@ -5,13 +5,14 @@ help:
 	@echo "Twitter News Summary - Available Commands:"
 	@echo ""
 	@echo "Development:"
-	@echo "  make export      - Export Twitter list members (one-time setup)"
-	@echo "  make run         - Run the news summary job locally (uses RSS feeds)"
-	@echo "  make preview     - Preview summary without sending (for testing)"
-	@echo "  make build       - Build release binary"
-	@echo "  make check       - Check code without building"
-	@echo "  make test        - Run tests"
-	@echo "  make clean       - Clean build artifacts"
+	@echo "  make export         - Export Twitter list members (one-time setup)"
+	@echo "  make run            - Run the news summary job locally (uses RSS feeds)"
+	@echo "  make preview        - Preview summary without sending (fetches tweets, saves cache)"
+	@echo "  make preview-cached - Preview with cached tweets (fast iteration on formatting)"
+	@echo "  make build          - Build release binary"
+	@echo "  make check          - Check code without building"
+	@echo "  make test           - Run tests"
+	@echo "  make clean          - Clean build artifacts"
 	@echo ""
 	@echo "Production:"
 	@echo "  make trigger     - Trigger summary on Fly.io (requires API_KEY in .env)"
@@ -38,6 +39,11 @@ run:
 preview:
 	@echo "👀 Generating summary preview..."
 	cargo run --bin preview
+
+# Preview using cached tweets (for fast iteration on formatting)
+preview-cached:
+	@echo "👀 Generating summary from cached tweets..."
+	cargo run --bin preview -- --use-cached
 
 # Build release binary
 build:
