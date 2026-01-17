@@ -179,7 +179,10 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
     info!("Sending summary to {} subscribers", subscribers.len());
 
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
-    let message = format!("📰 <b>Twitter Summary</b>\n<i>{}</i>\n\n{}", timestamp, summary);
+    let message = format!(
+        "📰 <b>Twitter Summary</b>\n<i>{}</i>\n\n{}",
+        timestamp, summary
+    );
 
     let mut success_count = 0;
     let mut fail_count = 0;
