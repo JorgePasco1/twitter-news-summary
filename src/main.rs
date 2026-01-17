@@ -196,22 +196,10 @@ async fn test_handler(
 
     // Get or generate summary
     let summary = if params.fresh.unwrap_or(false) {
-        info!("Generating fresh summary for test");
-        // Generate fresh summary (same as /trigger)
-        match scheduler::trigger_summary(&state.config, &state.db).await {
-            Ok(_) => match state.db.get_latest_summary().await {
-                Ok(Some(s)) => s.content,
-                Ok(None) => {
-                    warn!("No summary available after generation");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "No summary available")
-                        .into_response();
-                }
-                Err(e) => {
-                    warn!("Failed to fetch latest summary: {}", e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))
-                        .into_response();
-                }
-            },
+        info!("Generating fresh summary for test (no broadcast)");
+        // Generate fresh summary WITHOUT broadcasting to all subscribers
+        match scheduler::generate_summary_only(&state.config, &state.db).await {
+            Ok(summary) => summary,
             Err(e) => {
                 warn!("Failed to generate summary: {}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))
