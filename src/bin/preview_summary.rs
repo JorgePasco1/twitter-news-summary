@@ -3,6 +3,8 @@
 //! Usage:
 //!   cargo run --bin preview                  # Fetch tweets and generate summary
 //!   cargo run --bin preview -- --use-cached  # Use cached tweets from last run
+//!   cargo run --bin preview -- --send        # Generate and send to test user
+//!   cargo run --bin preview -- --use-cached --send  # Use cached tweets and send
 //!   make preview                              # Same as first command
 //!
 //! Required environment variables:
@@ -15,6 +17,10 @@
 //! - MAX_TWEETS (defaults to 100)
 //! - SUMMARY_MAX_TOKENS (defaults to 2500)
 //! - SUMMARY_MAX_WORDS (defaults to 800)
+//!
+//! For --send flag:
+//! - TELEGRAM_BOT_TOKEN (required to send)
+//! - TEST_CHAT_ID (required to send)
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -167,6 +173,7 @@ async fn main() -> Result<()> {
     let use_cached = args
         .iter()
         .any(|arg| arg == "--use-cached" || arg == "--use-cached-tweets");
+    let send_to_telegram = args.iter().any(|arg| arg == "--send");
 
     info!("Loading configuration...");
     let preview_config = PreviewConfig::from_env()?;
@@ -313,6 +320,54 @@ async fn main() -> Result<()> {
         println!("   (Use --use-cached flag to iterate on formatting without re-fetching)");
     }
     println!();
+
+    // Send to Telegram if --send flag is present
+    if send_to_telegram {
+        println!();
+        println!("📤 Sending to Telegram...");
+
+        // Get Telegram credentials (optional for preview)
+        let telegram_token = match std::env::var("TELEGRAM_BOT_TOKEN") {
+            Ok(token) => token,
+            Err(_) => {
+                println!("❌ TELEGRAM_BOT_TOKEN not set. Cannot send.");
+                println!("   Set TELEGRAM_BOT_TOKEN in .env to use --send flag");
+                return Ok(());
+            }
+        };
+
+        let test_chat_id = match std::env::var("TEST_CHAT_ID") {
+            Ok(id) => id,
+            Err(_) => {
+                println!("❌ TEST_CHAT_ID not set. Cannot send.");
+                println!("   Set TEST_CHAT_ID in .env to use --send flag");
+                return Ok(());
+            }
+        };
+
+        // Create config with Telegram credentials
+        let test_config = twitter_news_summary::config::Config {
+            telegram_bot_token: telegram_token,
+            ..config
+        };
+
+        // Send message
+        match twitter_news_summary::telegram::send_test_message(
+            &test_config,
+            &test_chat_id,
+            &summary,
+        )
+        .await
+        {
+            Ok(_) => {
+                println!("✅ Message sent successfully to chat ID: {}", test_chat_id);
+            }
+            Err(e) => {
+                println!("❌ Failed to send message: {}", e);
+            }
+        }
+        println!();
+    }
 
     Ok(())
 }

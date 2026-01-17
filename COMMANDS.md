@@ -5,16 +5,19 @@ This document provides detailed information about all available `make` commands 
 ## Quick Reference
 
 ```bash
-make help           # Show all available commands
-make export         # Export Twitter list members (one-time)
-make run            # Run the summary job locally
-make preview        # Preview summary without sending (fetches tweets, saves cache)
-make preview-cached # Preview with cached tweets (fast iteration)
-make trigger        # Trigger summary on Fly.io production
-make build          # Build release binary
-make check          # Check code without building
-make test           # Run all tests
-make clean          # Clean build artifacts
+make help                # Show all available commands
+make export              # Export Twitter list members (one-time)
+make run                 # Run the summary job locally
+make preview             # Preview summary without sending (fetches tweets, saves cache)
+make preview-cached      # Preview with cached tweets (fast iteration)
+make preview-send        # Preview and send to test user (local)
+make preview-cached-send # Preview cached and send to test user (local)
+make test-send           # Send test message on Fly.io (production)
+make trigger             # Trigger summary on Fly.io production
+make build               # Build release binary
+make check               # Check code without building
+make test                # Run all tests
+make clean               # Clean build artifacts
 ```
 
 ---
@@ -230,6 +233,184 @@ make clean
 
 ---
 
+## Testing Commands
+
+### `make preview-send`
+
+**Purpose**: Generate summary locally and send to a test user via Telegram
+
+**When to use**:
+- Testing Telegram message delivery locally
+- Verifying MarkdownV2 formatting in actual Telegram
+- Quick iteration on message formatting with real delivery
+- Testing before sending to all subscribers
+
+**Requirements**:
+- `OPENAI_API_KEY` in `.env`
+- `NITTER_INSTANCE` in `.env`
+- `TELEGRAM_BOT_TOKEN` in `.env`
+- `TEST_CHAT_ID` in `.env` (your personal Telegram chat ID)
+- `data/usernames.txt` with Twitter usernames
+
+**Example**:
+```bash
+make preview-send
+```
+
+**What it does**:
+1. Fetches latest tweets from RSS feeds
+2. Generates summary using OpenAI
+3. Formats message with MarkdownV2
+4. **Sends test message to TEST_CHAT_ID** (with 🧪 prefix)
+5. Saves preview to `run-history/`
+6. Caches tweets for future use
+
+**Output**:
+```
+👀 Generating summary and sending to test user...
+...
+📤 Sending to Telegram...
+✅ Message sent successfully to chat ID: 123456789
+```
+
+**How to get TEST_CHAT_ID**:
+1. Send any message to your bot
+2. Visit: `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
+3. Find `"chat":{"id":123456789}` in the response
+4. Add `TEST_CHAT_ID=123456789` to `.env`
+
+**Tip**: This is perfect for testing message formatting changes before deploying!
+
+---
+
+### `make preview-cached-send`
+
+**Purpose**: Generate summary using cached tweets and send to test user (fast iteration)
+
+**When to use**:
+- Rapid iteration on message formatting
+- Testing MarkdownV2 escaping changes
+- Experimenting with message structure
+- Quick testing without waiting for tweet fetches
+
+**Requirements**:
+- Previous run of `make preview` or `make preview-send` (to generate cache)
+- `OPENAI_API_KEY` in `.env`
+- `TELEGRAM_BOT_TOKEN` in `.env`
+- `TEST_CHAT_ID` in `.env`
+
+**Example**:
+```bash
+# First run: fetch and cache tweets
+make preview-send
+
+# Subsequent runs: use cached tweets (much faster!)
+make preview-cached-send
+make preview-cached-send  # Keep iterating!
+```
+
+**Benefits**:
+- ⚡ **Ultra fast** - No RSS fetching (saves ~30-60 seconds)
+- 💸 **Free** - No OpenAI/Nitter API calls wasted
+- 🔄 **Perfect for iteration** - Change code, test, repeat
+- ✅ **Real delivery** - See exactly how it looks in Telegram
+
+**Advanced usage**:
+```bash
+# Iterate on formatting changes
+# Edit src/telegram.rs or src/openai.rs...
+make preview-cached-send  # Test the change
+# Edit again...
+make preview-cached-send  # Test again
+# Repeat until perfect!
+```
+
+**Tip**: This is the **fastest way** to iterate on message formatting!
+
+---
+
+### `make test-send`
+
+**Purpose**: Send a test message on the Fly.io production instance (without sending to all subscribers)
+
+**When to use**:
+- Testing in production environment
+- Verifying deployment before sending to all subscribers
+- Testing with production database and configuration
+- Final validation before `make trigger`
+
+**Requirements**:
+- `API_KEY` in `.env` file OR exported as environment variable
+- `TEST_CHAT_ID` in `.env` (your personal Telegram chat ID)
+- Production app running on Fly.io
+
+**Example**:
+```bash
+# Using API_KEY and TEST_CHAT_ID from .env file
+make test-send
+
+# Or with explicit API_KEY
+API_KEY=your_key_here make test-send
+```
+
+**What it does**:
+1. Reads `API_KEY` and `TEST_CHAT_ID` from `.env`
+2. Sends POST request to `https://twitter-summary-bot.fly.dev/test?chat_id={TEST_CHAT_ID}`
+3. Server fetches latest summary from database
+4. Sends test message (with 🧪 prefix) to your chat ID only
+5. Returns success confirmation
+
+**Expected output**:
+```
+🧪 Sending test message to your Telegram...
+Test message sent to 123456789
+```
+
+**Message format**:
+- Prefix: `🧪 TEST - Twitter Summary`
+- Content: Latest summary from production database
+- Distinct from regular messages (won't confuse with production)
+
+**Comparison with other commands**:
+- `make preview-send` → Local (uses your local environment)
+- `make test-send` → Production (uses Fly.io environment)
+- `make trigger` → Production (sends to **all** subscribers)
+
+**Workflow**:
+```bash
+# 1. Test locally first
+make preview-send
+
+# 2. If looks good, deploy
+flyctl deploy
+
+# 3. Test in production (just to you)
+make test-send
+
+# 4. If still looks good, send to everyone
+make trigger
+```
+
+**Troubleshooting**:
+- `401 Unauthorized` - Invalid or missing API_KEY
+- `404 Not Found` - No summary available in database (run `make trigger` with `?fresh=true`)
+- `500 Internal Server Error` - Check Fly.io logs: `flyctl logs`
+
+**Advanced options**:
+```bash
+# Send to a different chat ID (useful for testing with alt accounts)
+curl -X POST "https://twitter-summary-bot.fly.dev/test?chat_id=987654321" \
+  -H "X-API-Key: $API_KEY"
+
+# Generate a fresh summary instead of using cached
+curl -X POST "https://twitter-summary-bot.fly.dev/test?fresh=true" \
+  -H "X-API-Key: $API_KEY"
+```
+
+**Security note**: The `/test` endpoint requires API_KEY authentication and is rate-limited like other admin endpoints.
+
+---
+
 ## Production Commands
 
 ### `make trigger`
@@ -310,6 +491,16 @@ TWITTER_BEARER_TOKEN=...           # OAuth 2.0 App-Only token
 TWITTER_LIST_ID=...                # Numeric list ID
 ```
 
+### Testing Variables (Optional - for testing commands)
+```bash
+TEST_CHAT_ID=123456789             # Your Telegram chat ID for test messages
+```
+
+**How to get TEST_CHAT_ID**:
+1. Send a message to your bot
+2. Visit: `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
+3. Find `"chat":{"id":123456789}` in the response
+
 ---
 
 ## Common Workflows
@@ -367,6 +558,59 @@ make preview-cached
 make preview
 ```
 
+### Testing Message Delivery (Recommended Workflow)
+```bash
+# Stage 1: Local iteration (fast, safe)
+make preview             # Preview without sending
+make preview-send        # Send to test user locally
+
+# Iterate on formatting changes (ultra fast)
+# Edit src/telegram.rs or src/openai.rs...
+make preview-cached-send # Uses cached tweets, sends immediately
+make preview-cached-send # Keep iterating until perfect!
+
+# Stage 2: Production testing (before sending to all)
+flyctl deploy            # Deploy your changes
+make test-send           # Test on Fly.io (sends to you only)
+
+# Stage 3: Full deployment (when confident)
+make trigger             # Send to all subscribers
+```
+
+**Why this workflow?**
+- ✅ **Safety**: Never accidentally send to all subscribers while testing
+- ⚡ **Speed**: Cached iteration is near-instant
+- 🎯 **Confidence**: Test in production environment before full send
+- 🔄 **Gradual rollout**: Local → Your account → All subscribers
+
+**Example iteration session**:
+```bash
+# Initial test
+make preview-send
+# "Hmm, the escaping looks weird..."
+
+# Quick iteration (uses cached tweets)
+# Edit src/telegram.rs to fix escaping...
+make preview-cached-send  # Instant feedback!
+# "Better, but still not perfect..."
+
+# Keep iterating
+make preview-cached-send
+make preview-cached-send
+make preview-cached-send
+# "Perfect! Now let's test in production..."
+
+# Deploy and test on Fly.io
+flyctl deploy
+make test-send
+# "Looks good in production! Send to everyone!"
+
+make trigger
+# ✅ All subscribers get the perfectly formatted message
+```
+
+---
+
 ### Deployment Cycle
 ```bash
 # Build release binary
@@ -417,9 +661,17 @@ make preview  # Test without sending messages
 make run      # Test full flow with local database
 ```
 
-### Production Testing
+### Testing Message Delivery
 ```bash
-make trigger  # Manual trigger to test live system
+# Local testing (fast iteration)
+make preview-send         # Generate and send to test user
+make preview-cached-send  # Use cached tweets (ultra fast)
+
+# Production testing (before sending to all)
+make test-send           # Test on Fly.io (sends to you only)
+
+# Full deployment (when confident)
+make trigger             # Send to all subscribers
 ```
 
 ### Cleaning Up

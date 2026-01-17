@@ -14,6 +14,11 @@ help:
 	@echo "  make test           - Run tests"
 	@echo "  make clean          - Clean build artifacts"
 	@echo ""
+	@echo "Testing:"
+	@echo "  make preview-send        - Generate summary and send to test user (local)"
+	@echo "  make preview-cached-send - Use cached tweets and send to test user (local)"
+	@echo "  make test-send           - Send test message on Fly.io (production)"
+	@echo ""
 	@echo "Production:"
 	@echo "  make trigger     - Trigger summary on Fly.io (requires API_KEY in .env)"
 	@echo ""
@@ -84,3 +89,34 @@ trigger:
 			-H "X-API-Key: $$API_KEY" \
 			-w "\n" || echo "❌ Failed to trigger summary"; \
 	fi
+
+# Test send to specific user in production
+test-send:
+	@echo "🧪 Sending test message to your Telegram..."
+	@if [ -z "$$API_KEY" ]; then \
+		if [ -f .env ]; then \
+			export $$(grep "^API_KEY=" .env | xargs) && \
+			export $$(grep "^TEST_CHAT_ID=" .env | xargs) && \
+			curl -X POST "https://twitter-summary-bot.fly.dev/test?chat_id=$$TEST_CHAT_ID" \
+				-H "X-API-Key: $$API_KEY" \
+				-w "\n" || echo "❌ Failed to send test message"; \
+		else \
+			echo "❌ Error: API_KEY not found in environment or .env file"; \
+			exit 1; \
+		fi \
+	else \
+		export $$(grep "^TEST_CHAT_ID=" .env | xargs) && \
+		curl -X POST "https://twitter-summary-bot.fly.dev/test?chat_id=$$TEST_CHAT_ID" \
+			-H "X-API-Key: $$API_KEY" \
+			-w "\n" || echo "❌ Failed to send test message"; \
+	fi
+
+# Preview and send to test user locally
+preview-send:
+	@echo "👀 Generating summary and sending to test user..."
+	cargo run --bin preview -- --send
+
+# Preview using cached tweets and send
+preview-cached-send:
+	@echo "👀 Using cached tweets and sending to test user..."
+	cargo run --bin preview -- --use-cached --send

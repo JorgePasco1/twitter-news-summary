@@ -1,6 +1,6 @@
 use anyhow::Result;
 use axum::{
-    extract::{Json, State},
+    extract::{Json, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -13,6 +13,12 @@ use twitter_news_summary::{config, db, scheduler, security, telegram};
 struct AppState {
     config: Arc<config::Config>,
     db: Arc<db::Database>,
+}
+
+#[derive(serde::Deserialize)]
+struct TestParams {
+    chat_id: Option<String>,
+    fresh: Option<bool>,
 }
 
 #[tokio::main]
@@ -60,6 +66,7 @@ async fn main() -> Result<()> {
         .route("/health", get(health_check))
         .route("/webhook", post(webhook_handler))
         .route("/trigger", post(trigger_handler))
+        .route("/test", post(test_handler))
         .route("/subscribers", get(subscribers_handler))
         .with_state(state);
 
@@ -142,6 +149,90 @@ async fn trigger_handler(
         }
         Err(e) => {
             warn!("Manual trigger failed: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e)).into_response()
+        }
+    }
+}
+
+/// Test message endpoint (API key protected) - sends test message to specific chat ID
+async fn test_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<TestParams>,
+) -> impl IntoResponse {
+    // Check API key with constant-time comparison
+    if let Some(expected_key) = &state.config.api_key {
+        match headers.get("X-API-Key") {
+            Some(header_value) => {
+                let provided_key = header_value.to_str().unwrap_or("");
+                if !security::constant_time_compare(provided_key, expected_key) {
+                    warn!("Unauthorized test attempt: invalid API key");
+                    return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+                }
+            }
+            None => {
+                warn!("Unauthorized test attempt: missing API key");
+                return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+            }
+        }
+    }
+
+    // Get chat ID (from query param or default to TEST_CHAT_ID env var or config chat_id)
+    let chat_id = params
+        .chat_id
+        .or_else(|| std::env::var("TEST_CHAT_ID").ok())
+        .unwrap_or_else(|| state.config.telegram_chat_id.clone());
+
+    info!("Test message requested for chat_id: {}", chat_id);
+
+    // Get or generate summary
+    let summary = if params.fresh.unwrap_or(false) {
+        info!("Generating fresh summary for test");
+        // Generate fresh summary (same as /trigger)
+        match scheduler::trigger_summary(&state.config, &state.db).await {
+            Ok(_) => match state.db.get_latest_summary().await {
+                Ok(Some(s)) => s.content,
+                Ok(None) => {
+                    warn!("No summary available after generation");
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "No summary available")
+                        .into_response();
+                }
+                Err(e) => {
+                    warn!("Failed to fetch latest summary: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))
+                        .into_response();
+                }
+            },
+            Err(e) => {
+                warn!("Failed to generate summary: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))
+                    .into_response();
+            }
+        }
+    } else {
+        // Use latest from DB
+        match state.db.get_latest_summary().await {
+            Ok(Some(summary)) => summary.content,
+            Ok(None) => {
+                warn!("No summary available in database");
+                return (StatusCode::NOT_FOUND, "No summary available").into_response();
+            }
+            Err(e) => {
+                warn!("Failed to fetch summary from database: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))
+                    .into_response();
+            }
+        }
+    };
+
+    // Send test message
+    match telegram::send_test_message(&state.config, &chat_id, &summary).await {
+        Ok(_) => {
+            info!("Test message sent successfully to {}", chat_id);
+            (StatusCode::OK, format!("Test message sent to {}", chat_id)).into_response()
+        }
+        Err(e) => {
+            warn!("Test message failed: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e)).into_response()
         }
     }
