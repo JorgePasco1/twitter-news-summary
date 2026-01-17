@@ -284,9 +284,10 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
 /// Send a test summary message to a specific chat ID
 pub async fn send_test_message(config: &Config, chat_id: &str, summary: &str) -> Result<()> {
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
+    let escaped_timestamp = escape_markdownv2(&timestamp.to_string());
     let message = format!(
-        "🧪 *TEST - Twitter Summary*\n_{}_\n\n{}",
-        timestamp,
+        "🧪 *TEST \\- Twitter Summary*\n_{}_\n\n{}",
+        escaped_timestamp,
         escape_markdownv2(summary)
     );
 
