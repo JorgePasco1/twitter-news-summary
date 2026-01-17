@@ -1964,7 +1964,9 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let text = "Read more: [Greg Brockman on OpenAI history](https://x.com/gdb/status/2012328084985500005)";
         let escaped = escape_markdownv2(text);
         // Link should be fully preserved
-        assert!(escaped.contains("[Greg Brockman on OpenAI history](https://x.com/gdb/status/2012328084985500005)"));
+        assert!(escaped.contains(
+            "[Greg Brockman on OpenAI history](https://x.com/gdb/status/2012328084985500005)"
+        ));
         // Colon after "Read more" should be fine (not a special char)
         assert!(escaped.contains("Read more:"));
     }
