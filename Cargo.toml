@@ -61,6 +61,10 @@ path = "src/main.rs"
 name = "export"
 path = "src/bin/fetch_list_members.rs"
 
+[[bin]]
+name = "preview"
+path = "src/bin/preview_summary.rs"
+
 [dev-dependencies]
 # HTTP mocking for tests
 wiremock = "0.6"
