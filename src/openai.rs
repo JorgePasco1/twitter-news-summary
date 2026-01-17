@@ -102,7 +102,8 @@ You MUST format your response using standard Markdown syntax compatible with Tel
 
 ### Link Integration
 - Include direct links to the most significant/impactful tweets in each section
-- Format links naturally: "According to @username (link)..." or "Read more: link"
+- Use markdown link syntax: [descriptive label](url) - e.g., [Greg's take on AI](https://x.com/...)
+- Make link labels descriptive and readable (not just "link" or "here")
 - Prioritize linking to: announcements, breaking news, insightful threads, and notable opinions
 
 ### Focus Areas
@@ -114,7 +115,7 @@ This list covers AI/ML researchers, tech leaders, and industry figures. Prioriti
 - Notable opinions from thought leaders
 
 ### What to Avoid
-- Do NOT use parentheses () unless necessary (they require escaping in MarkdownV2)
+- Do NOT use parentheses () outside of markdown links and URLs
 - Do NOT use periods in headers or at the end of headers
 - Avoid unnecessary special characters: # + = | {{ }} !
 - Use simple, clean formatting"#,

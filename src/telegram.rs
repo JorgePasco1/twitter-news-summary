@@ -41,15 +41,57 @@ struct SendMessageRequest {
     parse_mode: String,
 }
 
-/// Escape special characters for Telegram's MarkdownV2 parse mode
+/// Escape special characters for Telegram's MarkdownV2 parse mode,
+/// while preserving markdown link syntax [text](url).
 ///
 /// Per Telegram Bot API docs, MarkdownV2 requires escaping 18 special characters:
 /// _ * [ ] ( ) ~ ` > # + - = | { } . !
 ///
-/// All these characters must be preceded by '\' to be displayed as literal text.
+/// However, inline links use the syntax [text](url), so we must NOT escape the
+/// structural brackets and parentheses that form the link. Inside the link:
+/// - Link text: escape all special chars (the text between [ and ])
+/// - URL: only ) and \ need escaping (per Telegram docs)
 ///
 /// Reference: https://core.telegram.org/bots/api#markdownv2-style
 fn escape_markdownv2(text: &str) -> String {
+    // Regex to match markdown links: [text](url)
+    // Note: we use lazy_static pattern via once_cell or just create it (regex crate caches)
+    let link_regex = regex::Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
+
+    let mut result = String::with_capacity(text.len() * 2);
+    let mut last_end = 0;
+
+    for cap in link_regex.captures_iter(text) {
+        let whole_match = cap.get(0).unwrap();
+        let link_text = cap.get(1).unwrap().as_str();
+        let link_url = cap.get(2).unwrap().as_str();
+
+        // Escape text before this link (normal escaping)
+        let before = &text[last_end..whole_match.start()];
+        result.push_str(&escape_markdownv2_simple(before));
+
+        // Build the link with proper escaping:
+        // - Link text: escape special chars (but not [ ] which are structural)
+        // - URL: escape only ) and \ inside the URL
+        result.push('[');
+        result.push_str(&escape_markdownv2_link_text(link_text));
+        result.push_str("](");
+        result.push_str(&escape_markdownv2_url(link_url));
+        result.push(')');
+
+        last_end = whole_match.end();
+    }
+
+    // Escape remaining text after last link (normal escaping)
+    let remaining = &text[last_end..];
+    result.push_str(&escape_markdownv2_simple(remaining));
+
+    result
+}
+
+/// Simple escape for text that's not inside a markdown link structure.
+/// Escapes all 18 MarkdownV2 special characters.
+fn escape_markdownv2_simple(text: &str) -> String {
     let special_chars = [
         '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!',
     ];
@@ -58,6 +100,43 @@ fn escape_markdownv2(text: &str) -> String {
 
     for c in text.chars() {
         if special_chars.contains(&c) {
+            result.push('\\');
+        }
+        result.push(c);
+    }
+
+    result
+}
+
+/// Escape text inside markdown link brackets [text].
+/// All special chars need escaping for the text to display correctly.
+fn escape_markdownv2_link_text(text: &str) -> String {
+    // Inside link text, we need to escape special chars that would otherwise
+    // be interpreted as MarkdownV2 formatting
+    let special_chars = [
+        '_', '*', '[', ']', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!',
+    ];
+    // Note: ( and ) don't need escaping inside link text
+
+    let mut result = String::with_capacity(text.len() * 2);
+
+    for c in text.chars() {
+        if special_chars.contains(&c) {
+            result.push('\\');
+        }
+        result.push(c);
+    }
+
+    result
+}
+
+/// Escape URL inside markdown link parentheses (url).
+/// Per Telegram docs, only ) and \ need escaping inside URLs.
+fn escape_markdownv2_url(url: &str) -> String {
+    let mut result = String::with_capacity(url.len() * 2);
+
+    for c in url.chars() {
+        if c == ')' || c == '\\' {
             result.push('\\');
         }
         result.push(c);
@@ -291,13 +370,17 @@ pub async fn send_test_message(config: &Config, chat_id: &str, summary: &str) ->
         escape_markdownv2(summary)
     );
 
-    let chat_id_i64 = chat_id
-        .parse::<i64>()
-        .context(format!("Invalid chat ID format: '{}'. Expected numeric chat ID (e.g., 123456789)", chat_id))?;
+    let chat_id_i64 = chat_id.parse::<i64>().context(format!(
+        "Invalid chat ID format: '{}'. Expected numeric chat ID (e.g., 123456789)",
+        chat_id
+    ))?;
 
     send_message(config, chat_id_i64, &message)
         .await
-        .context(format!("Failed to send test message to chat ID {}", chat_id))?;
+        .context(format!(
+            "Failed to send test message to chat ID {}",
+            chat_id
+        ))?;
 
     Ok(())
 }
@@ -1798,6 +1881,115 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
     #[test]
     fn test_escape_markdownv2_math_symbols() {
         assert_eq!(escape_markdownv2("x + y = z"), "x \\+ y \\= z");
+    }
+
+    // ==================== Markdown Link Preservation Tests ====================
+
+    #[test]
+    fn test_escape_markdownv2_preserves_simple_link() {
+        let text = "Check this out: [Click here](https://example.com)";
+        let escaped = escape_markdownv2(text);
+        // Link structure should be preserved
+        assert!(escaped.contains("[Click here](https://example.com)"));
+        // Text before link should be escaped
+        assert!(escaped.contains("Check this out:"));
+    }
+
+    #[test]
+    fn test_escape_markdownv2_preserves_link_with_special_chars_in_text() {
+        let text = "[Greg's take on AI](https://x.com/gdb/status/123)";
+        let escaped = escape_markdownv2(text);
+        // Link structure preserved, apostrophe in text is fine (not a special char)
+        assert!(escaped.contains("[Greg's take on AI](https://x.com/gdb/status/123)"));
+    }
+
+    #[test]
+    fn test_escape_markdownv2_preserves_link_escapes_special_in_label() {
+        let text = "[AI + ML news](https://example.com)";
+        let escaped = escape_markdownv2(text);
+        // The + in the link text should be escaped
+        assert!(escaped.contains("[AI \\+ ML news](https://example.com)"));
+    }
+
+    #[test]
+    fn test_escape_markdownv2_preserves_multiple_links() {
+        let text = "See [link1](https://a.com) and [link2](https://b.com) for details.";
+        let escaped = escape_markdownv2(text);
+        // Both links should be preserved
+        assert!(escaped.contains("[link1](https://a.com)"));
+        assert!(escaped.contains("[link2](https://b.com)"));
+        // Dots outside links should be escaped
+        assert!(escaped.contains("details\\."));
+    }
+
+    #[test]
+    fn test_escape_markdownv2_link_with_hyphen_in_label() {
+        let text = "[AI-powered tool](https://example.com)";
+        let escaped = escape_markdownv2(text);
+        // Hyphen in link text should be escaped
+        assert!(escaped.contains("[AI\\-powered tool](https://example.com)"));
+    }
+
+    #[test]
+    fn test_escape_markdownv2_link_with_underscore_in_label() {
+        let text = "[user_name's post](https://x.com/user)";
+        let escaped = escape_markdownv2(text);
+        // Underscore in link text should be escaped
+        assert!(escaped.contains("[user\\_name's post](https://x.com/user)"));
+    }
+
+    #[test]
+    fn test_escape_markdownv2_text_with_brackets_not_link() {
+        let text = "Array [0] and (parentheses) are escaped";
+        let escaped = escape_markdownv2(text);
+        // Brackets and parentheses not part of a link should be escaped
+        assert!(escaped.contains("\\[0\\]"));
+        assert!(escaped.contains("\\(parentheses\\)"));
+    }
+
+    #[test]
+    fn test_escape_markdownv2_mixed_links_and_special_chars() {
+        let text = "News: [OpenAI's GPT-5](https://openai.com) is *amazing*!";
+        let escaped = escape_markdownv2(text);
+        // Link preserved with special chars in label escaped
+        assert!(escaped.contains("[OpenAI's GPT\\-5](https://openai.com)"));
+        // Asterisks outside link escaped
+        assert!(escaped.contains("\\*amazing\\*"));
+        // Exclamation escaped
+        assert!(escaped.contains("\\!"));
+    }
+
+    #[test]
+    fn test_escape_markdownv2_real_tweet_link() {
+        let text = "Read more: [Greg Brockman on OpenAI history](https://x.com/gdb/status/2012328084985500005)";
+        let escaped = escape_markdownv2(text);
+        // Link should be fully preserved
+        assert!(escaped.contains("[Greg Brockman on OpenAI history](https://x.com/gdb/status/2012328084985500005)"));
+        // Colon after "Read more" should be fine (not a special char)
+        assert!(escaped.contains("Read more:"));
+    }
+
+    #[test]
+    fn test_escape_markdownv2_link_at_start() {
+        let text = "[First link](https://a.com) starts the text";
+        let escaped = escape_markdownv2(text);
+        assert!(escaped.contains("[First link](https://a.com)"));
+    }
+
+    #[test]
+    fn test_escape_markdownv2_link_at_end() {
+        let text = "Text ends with [last link](https://z.com)";
+        let escaped = escape_markdownv2(text);
+        assert!(escaped.contains("[last link](https://z.com)"));
+    }
+
+    #[test]
+    fn test_escape_markdownv2_url_with_special_chars() {
+        // URLs with query params, fragments, etc.
+        let text = "[Search](https://google.com/search?q=test&lang=en)";
+        let escaped = escape_markdownv2(text);
+        // URL should be preserved (only ) and \ need escaping in URLs)
+        assert!(escaped.contains("[Search](https://google.com/search?q=test&lang=en)"));
     }
 
     // ==================== Realistic OpenAI Summary Tests ====================

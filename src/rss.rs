@@ -48,7 +48,10 @@ pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Res
                 success_count += 1;
                 let tweet_count = tweets.len();
                 all_tweets.extend(tweets);
-                info!("[{}/{}] ✓ @{} - {} tweets fetched", progress, total, username, tweet_count);
+                info!(
+                    "[{}/{}] ✓ @{} - {} tweets fetched",
+                    progress, total, username, tweet_count
+                );
             }
             Err(e) => {
                 fail_count += 1;

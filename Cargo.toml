@@ -45,6 +45,7 @@ dotenvy = "0.15"
 
 # Utilities
 futures = "0.3"
+regex = "1"
 
 # Security
 subtle = "2"  # Constant-time comparison
