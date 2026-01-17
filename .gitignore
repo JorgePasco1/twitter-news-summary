@@ -11,6 +11,13 @@
 !/data/usernames.txt
 /run-history/
 
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
 # IDE
 .idea/
 .vscode/
