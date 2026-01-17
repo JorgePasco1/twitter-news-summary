@@ -1,0 +1,4 @@
+- [ ] Spanish support / configurable
+- [ ] Improve UX (Helpful hints on telegram)
+- [ ] Gather feedback. Easy question, answer from 1-5, ask about specific, each message different questions
+- [ ] Add more accounts
