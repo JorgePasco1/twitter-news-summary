@@ -12,11 +12,21 @@ pub struct Subscriber {
     pub first_subscribed_at: DateTime<Utc>,
     pub is_active: bool,
     pub received_welcome_summary: bool,
+    pub language_code: String,
 }
 
 #[derive(Debug, Clone, FromRow)]
 pub struct Summary {
     pub id: i64,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct SummaryTranslation {
+    pub id: i64,
+    pub summary_id: i64,
+    pub language_code: String,
     pub content: String,
     pub created_at: DateTime<Utc>,
 }
@@ -94,10 +104,10 @@ impl Database {
                 }
             }
             None => {
-                // New subscriber
+                // New subscriber (defaults to English)
                 sqlx::query(
-                    "INSERT INTO subscribers (chat_id, username, subscribed_at, first_subscribed_at, is_active, received_welcome_summary)
-                     VALUES ($1, $2, NOW(), NOW(), TRUE, FALSE)",
+                    "INSERT INTO subscribers (chat_id, username, subscribed_at, first_subscribed_at, is_active, received_welcome_summary, language_code)
+                     VALUES ($1, $2, NOW(), NOW(), TRUE, FALSE, 'en')",
                 )
                 .bind(chat_id)
                 .bind(username)
@@ -136,7 +146,7 @@ impl Database {
     /// Get all active subscribers
     pub async fn list_subscribers(&self) -> Result<Vec<Subscriber>> {
         let subscribers = sqlx::query_as::<_, Subscriber>(
-            "SELECT chat_id, username, subscribed_at, first_subscribed_at, is_active, received_welcome_summary
+            "SELECT chat_id, username, subscribed_at, first_subscribed_at, is_active, received_welcome_summary, language_code
              FROM subscribers
              WHERE is_active = TRUE
              ORDER BY subscribed_at DESC",
@@ -251,6 +261,77 @@ impl Database {
         .context("Failed to fetch delivery failure counts")?;
 
         Ok(counts)
+    }
+
+    // ==================== Language Support Methods ====================
+
+    /// Update a subscriber's language preference
+    pub async fn set_subscriber_language(&self, chat_id: i64, language_code: &str) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE subscribers SET language_code = $1 WHERE chat_id = $2 AND is_active = TRUE",
+        )
+        .bind(language_code)
+        .bind(chat_id)
+        .execute(&self.pool)
+        .await
+        .context("Failed to update subscriber language")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Get a subscriber's language preference
+    pub async fn get_subscriber_language(&self, chat_id: i64) -> Result<Option<String>> {
+        let result: Option<(String,)> = sqlx::query_as(
+            "SELECT language_code FROM subscribers WHERE chat_id = $1 AND is_active = TRUE",
+        )
+        .bind(chat_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(result.map(|(lang,)| lang))
+    }
+
+    /// Save a translated summary (for caching)
+    pub async fn save_translation(
+        &self,
+        summary_id: i64,
+        language_code: &str,
+        content: &str,
+    ) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as(
+            "INSERT INTO summary_translations (summary_id, language_code, content, created_at)
+             VALUES ($1, $2, $3, NOW())
+             ON CONFLICT (summary_id, language_code)
+             DO UPDATE SET content = EXCLUDED.content, created_at = NOW()
+             RETURNING id",
+        )
+        .bind(summary_id)
+        .bind(language_code)
+        .bind(content)
+        .fetch_one(&self.pool)
+        .await
+        .context("Failed to save translation")?;
+
+        Ok(row.0)
+    }
+
+    /// Get a cached translation for a summary
+    pub async fn get_translation(
+        &self,
+        summary_id: i64,
+        language_code: &str,
+    ) -> Result<Option<SummaryTranslation>> {
+        let translation = sqlx::query_as::<_, SummaryTranslation>(
+            "SELECT id, summary_id, language_code, content, created_at
+             FROM summary_translations
+             WHERE summary_id = $1 AND language_code = $2",
+        )
+        .bind(summary_id)
+        .bind(language_code)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(translation)
     }
 }
 
@@ -581,6 +662,7 @@ mod tests {
             first_subscribed_at: Utc::now(),
             is_active: true,
             received_welcome_summary: false,
+            language_code: "en".to_string(),
         };
 
         let cloned = subscriber.clone();
@@ -594,6 +676,7 @@ mod tests {
             subscriber.received_welcome_summary,
             cloned.received_welcome_summary
         );
+        assert_eq!(subscriber.language_code, cloned.language_code);
     }
 
     #[test]
@@ -605,6 +688,7 @@ mod tests {
             first_subscribed_at: Utc::now(),
             is_active: true,
             received_welcome_summary: false,
+            language_code: "en".to_string(),
         };
 
         let debug_str = format!("{:?}", subscriber);
@@ -2192,5 +2276,316 @@ mod tests {
         let failures = db.get_recent_failures(10).await.expect("get");
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0].chat_id, 123);
+    }
+
+    // ==================== Language Support Tests ====================
+
+    #[tokio::test]
+    async fn test_new_subscriber_defaults_to_english() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.add_subscriber(123, Some("user")).await.expect("add");
+
+        let subscribers = db.list_subscribers().await.expect("list");
+        assert_eq!(subscribers[0].language_code, "en");
+    }
+
+    #[tokio::test]
+    async fn test_set_subscriber_language_to_spanish() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.add_subscriber(123, Some("user")).await.expect("add");
+
+        let updated = db
+            .set_subscriber_language(123, "es")
+            .await
+            .expect("set language");
+        assert!(updated, "Should return true for successful update");
+
+        let subscribers = db.list_subscribers().await.expect("list");
+        assert_eq!(subscribers[0].language_code, "es");
+    }
+
+    #[tokio::test]
+    async fn test_set_subscriber_language_back_to_english() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.add_subscriber(123, Some("user")).await.expect("add");
+        db.set_subscriber_language(123, "es")
+            .await
+            .expect("set spanish");
+        db.set_subscriber_language(123, "en")
+            .await
+            .expect("set english");
+
+        let subscribers = db.list_subscribers().await.expect("list");
+        assert_eq!(subscribers[0].language_code, "en");
+    }
+
+    #[tokio::test]
+    async fn test_set_subscriber_language_nonexistent_user() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let updated = db
+            .set_subscriber_language(999999, "es")
+            .await
+            .expect("set language");
+        assert!(!updated, "Should return false for nonexistent user");
+    }
+
+    #[tokio::test]
+    async fn test_set_subscriber_language_inactive_user() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.add_subscriber(123, Some("user")).await.expect("add");
+        db.remove_subscriber(123).await.expect("remove");
+
+        let updated = db
+            .set_subscriber_language(123, "es")
+            .await
+            .expect("set language");
+        assert!(!updated, "Should return false for inactive user");
+    }
+
+    #[tokio::test]
+    async fn test_get_subscriber_language() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.add_subscriber(123, Some("user")).await.expect("add");
+
+        let lang = db.get_subscriber_language(123).await.expect("get language");
+        assert_eq!(lang, Some("en".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_subscriber_language_nonexistent() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let lang = db
+            .get_subscriber_language(999999)
+            .await
+            .expect("get language");
+        assert_eq!(lang, None);
+    }
+
+    #[tokio::test]
+    async fn test_get_subscriber_language_inactive() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        db.add_subscriber(123, Some("user")).await.expect("add");
+        db.remove_subscriber(123).await.expect("remove");
+
+        let lang = db.get_subscriber_language(123).await.expect("get language");
+        assert_eq!(lang, None);
+    }
+
+    #[tokio::test]
+    async fn test_language_preserved_across_reactivation() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Subscribe and set Spanish
+        db.add_subscriber(123, Some("user")).await.expect("add");
+        db.set_subscriber_language(123, "es")
+            .await
+            .expect("set spanish");
+
+        // Unsubscribe
+        db.remove_subscriber(123).await.expect("remove");
+
+        // Resubscribe
+        db.add_subscriber(123, Some("user"))
+            .await
+            .expect("reactivate");
+
+        // Language should still be Spanish (not reset to English)
+        let subscribers = db.list_subscribers().await.expect("list");
+        assert_eq!(
+            subscribers[0].language_code, "es",
+            "Language should be preserved after reactivation"
+        );
+    }
+
+    // ---------- Translation Storage Tests ----------
+
+    #[tokio::test]
+    async fn test_save_translation() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // First save a summary
+        let summary_id = db.save_summary("Test summary").await.expect("save summary");
+
+        // Save translation
+        let translation_id = db
+            .save_translation(summary_id, "es", "Resumen de prueba")
+            .await
+            .expect("save translation");
+
+        assert!(translation_id > 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_translation() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let summary_id = db.save_summary("Test summary").await.expect("save summary");
+        db.save_translation(summary_id, "es", "Resumen de prueba")
+            .await
+            .expect("save translation");
+
+        let translation = db
+            .get_translation(summary_id, "es")
+            .await
+            .expect("get translation");
+
+        assert!(translation.is_some());
+        let t = translation.unwrap();
+        assert_eq!(t.summary_id, summary_id);
+        assert_eq!(t.language_code, "es");
+        assert_eq!(t.content, "Resumen de prueba");
+    }
+
+    #[tokio::test]
+    async fn test_get_translation_nonexistent_summary() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let translation = db
+            .get_translation(999999, "es")
+            .await
+            .expect("get translation");
+
+        assert!(translation.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_translation_nonexistent_language() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let summary_id = db.save_summary("Test summary").await.expect("save summary");
+
+        let translation = db
+            .get_translation(summary_id, "fr")
+            .await
+            .expect("get translation");
+
+        assert!(translation.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_save_translation_updates_existing() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let summary_id = db.save_summary("Test summary").await.expect("save summary");
+
+        // Save first translation
+        db.save_translation(summary_id, "es", "Primera traduccion")
+            .await
+            .expect("save translation 1");
+
+        // Save updated translation (should update via UPSERT)
+        db.save_translation(summary_id, "es", "Segunda traduccion")
+            .await
+            .expect("save translation 2");
+
+        let translation = db
+            .get_translation(summary_id, "es")
+            .await
+            .expect("get translation")
+            .expect("should exist");
+
+        assert_eq!(
+            translation.content, "Segunda traduccion",
+            "Translation should be updated"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_multiple_language_translations() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        let summary_id = db.save_summary("Test summary").await.expect("save summary");
+
+        // Save translations in different languages
+        db.save_translation(summary_id, "es", "Resumen en espanol")
+            .await
+            .expect("save es");
+        db.save_translation(summary_id, "en", "Summary in English")
+            .await
+            .expect("save en");
+
+        let es_translation = db
+            .get_translation(summary_id, "es")
+            .await
+            .expect("get es")
+            .expect("should exist");
+        let en_translation = db
+            .get_translation(summary_id, "en")
+            .await
+            .expect("get en")
+            .expect("should exist");
+
+        assert_eq!(es_translation.content, "Resumen en espanol");
+        assert_eq!(en_translation.content, "Summary in English");
+    }
+
+    #[tokio::test]
+    async fn test_translation_deleted_with_summary() {
+        let db = create_test_db().await.expect("Failed to create test db");
+
+        // Save 11 summaries to trigger cleanup (keeps last 10)
+        for i in 1..=11 {
+            let summary_id = db
+                .save_summary(&format!("Summary {}", i))
+                .await
+                .expect("save summary");
+
+            if i == 1 {
+                db.save_translation(summary_id, "es", "Primera traduccion")
+                    .await
+                    .expect("save translation");
+            }
+        }
+
+        // The first summary (and its translation) should be deleted
+        // due to cleanup keeping only last 10 summaries
+        let translation = db.get_translation(1, "es").await.expect("get translation");
+        assert!(
+            translation.is_none(),
+            "Translation should be deleted with summary (CASCADE)"
+        );
+    }
+
+    #[test]
+    fn test_summary_translation_struct_clone() {
+        let translation = SummaryTranslation {
+            id: 1,
+            summary_id: 42,
+            language_code: "es".to_string(),
+            content: "Test content".to_string(),
+            created_at: Utc::now(),
+        };
+
+        let cloned = translation.clone();
+
+        assert_eq!(translation.id, cloned.id);
+        assert_eq!(translation.summary_id, cloned.summary_id);
+        assert_eq!(translation.language_code, cloned.language_code);
+        assert_eq!(translation.content, cloned.content);
+        assert_eq!(translation.created_at, cloned.created_at);
+    }
+
+    #[test]
+    fn test_summary_translation_struct_debug() {
+        let translation = SummaryTranslation {
+            id: 1,
+            summary_id: 42,
+            language_code: "es".to_string(),
+            content: "Test".to_string(),
+            created_at: Utc::now(),
+        };
+
+        let debug_str = format!("{:?}", translation);
+        assert!(debug_str.contains("SummaryTranslation"));
+        assert!(debug_str.contains("42"));
+        assert!(debug_str.contains("es"));
     }
 }

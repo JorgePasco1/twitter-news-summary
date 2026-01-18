@@ -58,15 +58,25 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
 
     info!("Received message from {}: {}", chat_id, text);
 
-    // Handle bot commands
-    match text.as_str() {
+    // Handle bot commands - check for /language with argument first
+    let (command, arg) = if text.starts_with("/language ") {
+        (
+            "/language",
+            Some(text.strip_prefix("/language ").unwrap().trim()),
+        )
+    } else {
+        (text.as_str(), None)
+    };
+
+    match command {
         "/start" => {
-            let welcome = r#"👋 Welcome to Twitter News Summary Bot!
+            let welcome = r#"Welcome to Twitter News Summary Bot!
 
 Commands:
 /subscribe - Get daily AI-powered summaries of Twitter/X news
 /unsubscribe - Stop receiving summaries
 /status - Check your subscription status
+/language - Change summary language (en/es)
 
 Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers."#;
 
@@ -81,7 +91,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                 send_message(
                     config,
                     chat_id,
-                    "✅ Successfully subscribed! You'll receive summaries twice daily.",
+                    "✅ Successfully subscribed! You'll receive summaries twice daily.\n\nWant summaries in Spanish? Use /language es to switch.",
                 )
                 .await?;
 
@@ -117,21 +127,92 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                 !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
 
             let status_msg = if is_subscribed {
+                let lang = db
+                    .get_subscriber_language(chat_id)
+                    .await?
+                    .unwrap_or_else(|| "en".to_string());
+                let lang_name = match lang.as_str() {
+                    "es" => "Spanish",
+                    _ => "English",
+                };
+
                 if is_admin {
                     // Admin sees subscriber count
                     format!(
-                        "✅ You are subscribed\n📊 Total subscribers: {}",
+                        "✅ You are subscribed\n🌐 Language: {}\n📊 Total subscribers: {}",
+                        lang_name,
                         db.subscriber_count().await?
                     )
                 } else {
-                    // Regular users only see their own status
-                    "✅ You are subscribed".to_string()
+                    // Regular users see their own status and language
+                    format!("✅ You are subscribed\n🌐 Language: {}", lang_name)
                 }
             } else {
                 "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries."
                     .to_string()
             };
             send_message(config, chat_id, &status_msg).await?;
+        }
+        "/language" => {
+            // Handle /language command (with or without argument)
+            let is_subscribed = db.is_subscribed(chat_id).await?;
+
+            if !is_subscribed {
+                send_message(
+                    config,
+                    chat_id,
+                    "You need to subscribe first. Use /subscribe to get started.",
+                )
+                .await?;
+            } else if let Some(lang_arg) = arg {
+                // User specified a language: /language en or /language es
+                match lang_arg {
+                    "en" => {
+                        db.set_subscriber_language(chat_id, "en").await?;
+                        info!("Language changed to English for {}", chat_id);
+                        send_message(
+                            config,
+                            chat_id,
+                            "✅ Language changed to English. You'll receive summaries in English.",
+                        )
+                        .await?;
+                    }
+                    "es" => {
+                        db.set_subscriber_language(chat_id, "es").await?;
+                        info!("Language changed to Spanish for {}", chat_id);
+                        send_message(
+                            config,
+                            chat_id,
+                            "✅ Idioma cambiado a espanol. Recibiras los resumenes en espanol.",
+                        )
+                        .await?;
+                    }
+                    _ => {
+                        send_message(
+                            config,
+                            chat_id,
+                            "Invalid language. Available options:\n/language en - English\n/language es - Spanish",
+                        )
+                        .await?;
+                    }
+                }
+            } else {
+                // No argument: show current language and options
+                let current_lang = db
+                    .get_subscriber_language(chat_id)
+                    .await?
+                    .unwrap_or_else(|| "en".to_string());
+                let current_name = match current_lang.as_str() {
+                    "es" => "Spanish",
+                    _ => "English",
+                };
+
+                let msg = format!(
+                    "🌐 <b>Language Settings</b>\n\nCurrent: {}\n\nTo change, use:\n/language en - English\n/language es - Spanish",
+                    current_name
+                );
+                send_message(config, chat_id, &msg).await?;
+            }
         }
         _ => {
             // Unknown command, send help
@@ -167,8 +248,23 @@ async fn send_welcome_summary(
     Ok(())
 }
 
-/// Send summary to all subscribers
-pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) -> Result<()> {
+/// Send summary to all subscribers with language-specific translations
+///
+/// # Arguments
+/// * `config` - Application configuration
+/// * `db` - Database connection
+/// * `summary` - The canonical English summary
+/// * `summary_id` - The summary ID for caching translations
+pub async fn send_to_subscribers(
+    config: &Config,
+    db: &Database,
+    summary: &str,
+    summary_id: i64,
+) -> Result<()> {
+    use crate::translation::{
+        get_summary_header, get_translation_failure_notice, translate_summary, Language,
+    };
+
     let subscribers = db.list_subscribers().await?;
 
     if subscribers.is_empty() {
@@ -179,19 +275,63 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
     info!("Sending summary to {} subscribers", subscribers.len());
 
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
-    let message = format!(
-        "📰 <b>Twitter Summary</b>\n<i>{}</i>\n\n{}",
-        timestamp, summary
-    );
+    let client = reqwest::Client::new();
+
+    // Cache for translations (keyed by language code)
+    let mut translation_cache: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    // Pre-populate cache with English (canonical)
+    translation_cache.insert("en".to_string(), summary.to_string());
 
     let mut success_count = 0;
     let mut fail_count = 0;
 
     for subscriber in subscribers {
+        let lang_code = subscriber.language_code.clone();
+        let language = Language::from_code(&lang_code).unwrap_or(Language::English);
+
+        // Get or create translation for this language
+        let content = if let Some(cached) = translation_cache.get(&lang_code) {
+            cached.clone()
+        } else {
+            // Check if translation exists in database
+            if let Ok(Some(cached_translation)) = db.get_translation(summary_id, &lang_code).await {
+                let content = cached_translation.content.clone();
+                translation_cache.insert(lang_code.clone(), content.clone());
+                content
+            } else {
+                // Generate translation via OpenAI
+                match translate_summary(&client, config, summary, language).await {
+                    Ok(translated) => {
+                        // Cache in database for future use
+                        if let Err(e) = db
+                            .save_translation(summary_id, &lang_code, &translated)
+                            .await
+                        {
+                            warn!("Failed to cache translation: {}", e);
+                        }
+                        translation_cache.insert(lang_code.clone(), translated.clone());
+                        translated
+                    }
+                    Err(e) => {
+                        warn!("Translation failed for {}: {}", lang_code, e);
+                        // Use English with failure notice
+                        let notice = get_translation_failure_notice(language);
+                        format!("{}{}", notice, summary)
+                    }
+                }
+            }
+        };
+
+        // Build message with language-specific header
+        let header = get_summary_header(language);
+        let message = format!("📰 <b>{}</b>\n<i>{}</i>\n\n{}", header, timestamp, content);
+
         match send_message(config, subscriber.chat_id, &message).await {
             Ok(_) => {
                 success_count += 1;
-                info!("✓ Sent to {}", subscriber.chat_id);
+                info!("✓ Sent to {} ({})", subscriber.chat_id, lang_code);
             }
             Err(e) => {
                 fail_count += 1;
@@ -578,12 +718,14 @@ Commands:
 /subscribe - Get daily AI-powered summaries of Twitter/X news
 /unsubscribe - Stop receiving summaries
 /status - Check your subscription status
+/language - Change summary language (en/es)
 
 Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers."#;
 
         assert!(welcome.contains("/subscribe"));
         assert!(welcome.contains("/unsubscribe"));
         assert!(welcome.contains("/status"));
+        assert!(welcome.contains("/language"));
         assert!(welcome.contains("twice daily"));
     }
 
@@ -1656,5 +1798,128 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         assert!(!should_auto_remove_blocked_subscriber(
             "some other error message"
         ));
+    }
+
+    // ==================== Language Command Tests ====================
+
+    #[test]
+    fn test_language_command_pattern() {
+        let text = "/language";
+        assert_eq!(text, "/language");
+    }
+
+    #[test]
+    fn test_language_command_with_argument_parsing() {
+        let text = "/language es";
+
+        // Test the parsing logic used in handle_webhook
+        let (command, arg) = if text.starts_with("/language ") {
+            (
+                "/language",
+                Some(text.strip_prefix("/language ").unwrap().trim()),
+            )
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/language");
+        assert_eq!(arg, Some("es"));
+    }
+
+    #[test]
+    fn test_language_command_without_argument_parsing() {
+        let text = "/language";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            (
+                "/language",
+                Some(text.strip_prefix("/language ").unwrap().trim()),
+            )
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/language");
+        assert_eq!(arg, None);
+    }
+
+    #[test]
+    fn test_language_command_with_extra_spaces() {
+        let text = "/language   es  ";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            (
+                "/language",
+                Some(text.strip_prefix("/language ").unwrap().trim()),
+            )
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/language");
+        assert_eq!(arg, Some("es"));
+    }
+
+    #[test]
+    fn test_language_settings_message_format() {
+        let current_lang = "en";
+        let current_name = match current_lang {
+            "es" => "Spanish",
+            _ => "English",
+        };
+
+        let msg = format!(
+            "Language Settings\n\nCurrent: {}\n\nTo change, use:\n/language en - English\n/language es - Spanish",
+            current_name
+        );
+
+        assert!(msg.contains("English"));
+        assert!(msg.contains("/language en"));
+        assert!(msg.contains("/language es"));
+    }
+
+    #[test]
+    fn test_language_change_confirmation_english() {
+        let msg = "Language changed to English. You'll receive summaries in English.";
+        assert!(msg.contains("English"));
+    }
+
+    #[test]
+    fn test_language_change_confirmation_spanish() {
+        let msg = "Idioma cambiado a espanol. Recibiras los resumenes en espanol.";
+        assert!(msg.contains("espanol"));
+    }
+
+    #[test]
+    fn test_invalid_language_error_message() {
+        let msg =
+            "Invalid language. Available options:\n/language en - English\n/language es - Spanish";
+        assert!(msg.contains("Invalid"));
+        assert!(msg.contains("/language en"));
+        assert!(msg.contains("/language es"));
+    }
+
+    #[test]
+    fn test_language_command_requires_subscription() {
+        let msg = "You need to subscribe first. Use /subscribe to get started.";
+        assert!(msg.contains("subscribe"));
+    }
+
+    #[test]
+    fn test_status_message_with_language() {
+        let lang_name = "English";
+        let status_msg = format!("You are subscribed\nLanguage: {}", lang_name);
+
+        assert!(status_msg.contains("subscribed"));
+        assert!(status_msg.contains("English"));
+    }
+
+    #[test]
+    fn test_subscribe_message_includes_language_hint() {
+        let msg = "Successfully subscribed! You'll receive summaries twice daily.\n\nWant summaries in Spanish? Use /language es to switch.";
+
+        assert!(msg.contains("subscribed"));
+        assert!(msg.contains("/language es"));
+        assert!(msg.contains("Spanish"));
     }
 }

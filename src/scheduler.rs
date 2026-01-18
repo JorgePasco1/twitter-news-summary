@@ -92,13 +92,13 @@ async fn run_summary_job(config: &Config, db: &Database, usernames: &[String]) -
     let client = reqwest::Client::new();
     let summary = openai::summarize_tweets(&client, config, &tweets).await?;
 
-    // Save summary to database
-    db.save_summary(&summary).await?;
-    info!("✓ Summary saved to database");
+    // Save summary to database and get the ID for translation caching
+    let summary_id = db.save_summary(&summary).await?;
+    info!("✓ Summary saved to database (id: {})", summary_id);
 
-    // Send to all subscribers
+    // Send to all subscribers (with language-specific translations)
     info!("Sending summary via Telegram");
-    telegram::send_to_subscribers(config, db, &summary).await?;
+    telegram::send_to_subscribers(config, db, &summary, summary_id).await?;
 
     info!("✓ Summary job completed successfully");
 
