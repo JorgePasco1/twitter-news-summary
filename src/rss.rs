@@ -33,8 +33,10 @@ pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Res
     let mut success_count = 0;
     let mut fail_count = 0;
 
+    let total = usernames.len();
     for (index, username) in usernames.iter().enumerate() {
-        info!("Fetching @{} account...", username);
+        let progress = index + 1;
+        info!("[{}/{}] Fetching @{}...", progress, total, username);
         match fetch_user_rss(
             &config.nitter_instance,
             username,
@@ -46,11 +48,14 @@ pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Res
                 success_count += 1;
                 let tweet_count = tweets.len();
                 all_tweets.extend(tweets);
-                info!("✓ @{} - {} tweets fetched", username, tweet_count);
+                info!(
+                    "[{}/{}] ✓ @{} - {} tweets fetched",
+                    progress, total, username, tweet_count
+                );
             }
             Err(e) => {
                 fail_count += 1;
-                warn!("✗ Failed to fetch RSS for @{}: {}", username, e);
+                warn!("[{}/{}] ✗ @{} - {}", progress, total, username, e);
             }
         }
 
