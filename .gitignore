@@ -4,6 +4,7 @@
 # Environment
 .env
 .env.local
+.env.test
 .api_key*
 
 # Data

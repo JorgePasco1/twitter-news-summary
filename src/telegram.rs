@@ -232,7 +232,8 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                     "✅ You are subscribed".to_string()
                 }
             } else {
-                "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries\\.".to_string()
+                "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries\\."
+                    .to_string()
             };
             send_message(config, chat_id, &status_msg).await?;
         }
@@ -2472,24 +2473,24 @@ Discussion on #AI trends and python_utils.py examples."#;
     fn test_escape_each_special_char_individually() {
         // Test each of the 18 special characters individually
         let test_cases = [
-            ("test_text", "test\\_text"),                 // underscore
-            ("test*text", "test\\*text"),                 // asterisk
-            ("test[text", "test\\[text"),                 // left bracket
-            ("test]text", "test\\]text"),                 // right bracket
-            ("test(text", "test\\(text"),                 // left paren
-            ("test)text", "test\\)text"),                 // right paren
-            ("test~text", "test\\~text"),                 // tilde
-            ("test`text", "test\\`text"),                 // backtick
-            ("test>text", "test\\>text"),                 // greater than
-            ("test#text", "test\\#text"),                 // hash
-            ("test+text", "test\\+text"),                 // plus
-            ("test-text", "test\\-text"),                 // hyphen/minus
-            ("test=text", "test\\=text"),                 // equals
-            ("test|text", "test\\|text"),                 // pipe
-            ("test{text", "test\\{text"),                 // left brace
-            ("test}text", "test\\}text"),                 // right brace
-            ("test.text", "test\\.text"),                 // period
-            ("test!text", "test\\!text"),                 // exclamation
+            ("test_text", "test\\_text"), // underscore
+            ("test*text", "test\\*text"), // asterisk
+            ("test[text", "test\\[text"), // left bracket
+            ("test]text", "test\\]text"), // right bracket
+            ("test(text", "test\\(text"), // left paren
+            ("test)text", "test\\)text"), // right paren
+            ("test~text", "test\\~text"), // tilde
+            ("test`text", "test\\`text"), // backtick
+            ("test>text", "test\\>text"), // greater than
+            ("test#text", "test\\#text"), // hash
+            ("test+text", "test\\+text"), // plus
+            ("test-text", "test\\-text"), // hyphen/minus
+            ("test=text", "test\\=text"), // equals
+            ("test|text", "test\\|text"), // pipe
+            ("test{text", "test\\{text"), // left brace
+            ("test}text", "test\\}text"), // right brace
+            ("test.text", "test\\.text"), // period
+            ("test!text", "test\\!text"), // exclamation
         ];
 
         for (input, expected) in test_cases {
@@ -2568,18 +2569,12 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let unescaped_period = welcome
             .match_indices('.')
             .any(|(i, _)| i == 0 || welcome.as_bytes()[i - 1] != b'\\');
-        assert!(
-            !unescaped_period,
-            "Found unescaped '.' in welcome message"
-        );
+        assert!(!unescaped_period, "Found unescaped '.' in welcome message");
 
         let unescaped_hyphen = welcome
             .match_indices('-')
             .any(|(i, _)| i == 0 || welcome.as_bytes()[i - 1] != b'\\');
-        assert!(
-            !unescaped_hyphen,
-            "Found unescaped '-' in welcome message"
-        );
+        assert!(!unescaped_hyphen, "Found unescaped '-' in welcome message");
     }
 
     #[test]
@@ -2625,7 +2620,10 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let unescaped_period = msg
             .match_indices('.')
             .any(|(i, _)| i == 0 || msg.as_bytes()[i - 1] != b'\\');
-        assert!(!unescaped_period, "Periods must be escaped in unsubscribe message");
+        assert!(
+            !unescaped_period,
+            "Periods must be escaped in unsubscribe message"
+        );
     }
 
     #[test]
@@ -2673,7 +2671,9 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         // The current implementation passes this directly to send_message
         // which expects pre-escaped content - this is a potential BUG!
         // For now, verify the message doesn't accidentally have special chars
-        let has_special = raw_msg.chars().any(|c| MARKDOWNV2_SPECIAL_CHARS.contains(&c));
+        let has_special = raw_msg
+            .chars()
+            .any(|c| MARKDOWNV2_SPECIAL_CHARS.contains(&c));
         assert!(
             !has_special,
             "Admin status message has no special chars to escape (current implementation)"
@@ -2710,7 +2710,10 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 
         // * is used for bold, _ for italic - these are intentional formatting
         // The timestamp has escaped hyphens
-        assert!(header.contains("*Twitter Summary*"), "Bold markers should be present");
+        assert!(
+            header.contains("*Twitter Summary*"),
+            "Bold markers should be present"
+        );
         assert!(header.contains("_2024"), "Italic markers should be present");
     }
 
@@ -2721,7 +2724,10 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let header = format!("📰 *Hey\\! Here's what you missed* 😉\n_{}_\n\n", timestamp);
 
         // ! in "Hey!" must be escaped
-        assert!(header.contains("Hey\\!"), "Exclamation in header must be escaped");
+        assert!(
+            header.contains("Hey\\!"),
+            "Exclamation in header must be escaped"
+        );
     }
 
     #[test]
@@ -2731,7 +2737,10 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let header = format!("🧪 *TEST \\- Twitter Summary*\n_{}_\n\n", timestamp);
 
         // - in "TEST - Twitter" must be escaped
-        assert!(header.contains("TEST \\-"), "Hyphen in header must be escaped");
+        assert!(
+            header.contains("TEST \\-"),
+            "Hyphen in header must be escaped"
+        );
     }
 
     #[test]
@@ -2767,7 +2776,10 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let msg = format!("Total: {} subscribers!", 42);
         let escaped = escape_markdownv2(&msg);
 
-        assert!(escaped.contains("subscribers\\!"), "Exclamation must be escaped");
+        assert!(
+            escaped.contains("subscribers\\!"),
+            "Exclamation must be escaped"
+        );
     }
 
     #[test]
@@ -2777,7 +2789,10 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let msg = format!("Welcome {}!", username);
         let escaped = escape_markdownv2(&msg);
 
-        assert!(escaped.contains("user\\_name\\_123"), "Underscores must be escaped");
+        assert!(
+            escaped.contains("user\\_name\\_123"),
+            "Underscores must be escaped"
+        );
         assert!(escaped.contains("\\!"), "Exclamation must be escaped");
     }
 
@@ -2831,7 +2846,10 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         let escaped = escape_markdownv2(msg);
 
         // Hyphens in list items must be escaped
-        assert!(escaped.matches("\\-").count() == 3, "All three hyphens must be escaped");
+        assert!(
+            escaped.matches("\\-").count() == 3,
+            "All three hyphens must be escaped"
+        );
     }
 
     #[test]
@@ -2897,7 +2915,8 @@ Read more: https://example.com/news"#;
         // Test that ) in URL gets escaped when detected
         // Note: Current implementation has a limitation with nested parens in URLs
         // This documents actual behavior
-        let text_with_paren_in_url = "[Link](https://en.wikipedia.org/wiki/Rust_(programming_language\\))";
+        let text_with_paren_in_url =
+            "[Link](https://en.wikipedia.org/wiki/Rust_(programming_language\\))";
         // This URL has a pre-escaped ) to work around the limitation
         let escaped2 = escape_markdownv2(text_with_paren_in_url);
         assert!(escaped2.contains("Rust_"));
@@ -3063,7 +3082,10 @@ For details: [OpenAI Blog](https://openai.com/blog)"#;
 
     #[test]
     fn test_very_long_message_escaping() {
-        let msg = format!("Long text with special chars! {} End.", "word ".repeat(1000));
+        let msg = format!(
+            "Long text with special chars! {} End.",
+            "word ".repeat(1000)
+        );
         let escaped = escape_markdownv2(&msg);
 
         assert!(escaped.starts_with("Long text with special chars\\!"));
@@ -3170,7 +3192,8 @@ For details: [OpenAI Blog](https://openai.com/blog)"#;
     fn test_full_summary_message_is_valid() {
         let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
         let escaped_timestamp = escape_markdownv2(&timestamp);
-        let summary = "AI news: GPT-4.5 released! Performance > baseline. Cost = $20/month (discount).";
+        let summary =
+            "AI news: GPT-4.5 released! Performance > baseline. Cost = $20/month (discount).";
         let escaped_summary = escape_markdownv2(summary);
 
         let full_message = format!(
