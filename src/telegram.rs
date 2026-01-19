@@ -145,39 +145,6 @@ fn escape_markdownv2_url(url: &str) -> String {
     result
 }
 
-/// Process an incoming Telegram Update and handle bot commands.
-///
-/// This function ignores non-message updates and messages without text. For text messages,
-/// it parses supported commands (/start, /subscribe, /unsubscribe, /status, /language, /broadcast)
-/// and performs the corresponding actions: sending responses, updating subscription state in the
-/// database, changing subscriber language, and (for admin users) broadcasting messages to all
-/// subscribers. Admin status is determined by comparing the incoming chat id to config.telegram_chat_id.
-/// All outgoing user-facing text is sent via the module's send_message helpers and is expected to be
-/// pre-escaped for MarkdownV2 where applicable. The function returns Ok(()) on success and forwards
-/// errors from underlying operations.
-///
-/// # Examples
-///
-/// ```
-/// # use crate::{Config, Database, Update, Message, Chat, User};
-/// # async fn doc_example() -> anyhow::Result<()> {
-/// // Construct minimal objects for demonstration; real usage uses actual Config/Database instances.
-/// let config = Config::default();
-/// let db = Database::in_memory();
-///
-/// let update = Update {
-///     update_id: 1,
-///     message: Some(Message {
-///         message_id: 1,
-///         from: Some(User { id: 123, username: Some("alice".into()), first_name: "Alice".into() }),
-///         chat: Chat { id: 123, r#type: "private".into() },
-///         text: Some("/start".into()),
-///     }),
-/// };
-///
-/// handle_webhook(&config, &db, update).await?;
-/// # Ok(()) }
-/// ```
 pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> Result<()> {
     let message = match update.message {
         Some(msg) => msg,
