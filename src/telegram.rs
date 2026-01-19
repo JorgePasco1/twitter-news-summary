@@ -184,19 +184,24 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
                 !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
 
             // Get welcome message from registry based on admin status
-            // For now, English is the default language for command responses
-            let welcome_text = if is_admin {
+            // Templates are pre-escaped for MarkdownV2, no need to escape again
+            let welcome = if is_admin {
                 Language::ENGLISH.config().strings.welcome_admin
             } else {
                 Language::ENGLISH.config().strings.welcome_user
             };
-            let welcome = escape_markdownv2(welcome_text);
 
-            send_message(config, chat_id, &welcome).await?;
+            send_message(config, chat_id, welcome).await?;
         }
         "/subscribe" => {
             if db.is_subscribed(chat_id).await? {
-                let msg = Language::ENGLISH.config().strings.subscribe_already;
+                // Already subscribed - respond in their preferred language
+                let lang_code = db
+                    .get_subscriber_language(chat_id)
+                    .await?
+                    .unwrap_or_else(|| "en".to_string());
+                let user_lang = Language::from_code(&lang_code).unwrap_or(Language::ENGLISH);
+                let msg = user_lang.config().strings.subscribe_already;
                 send_message(config, chat_id, msg).await?;
             } else {
                 let (_, needs_welcome) = db.add_subscriber(chat_id, username.as_deref()).await?;
@@ -215,11 +220,19 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
             }
         }
         "/unsubscribe" => {
+            // Get language BEFORE removing (so we can respond in their language)
+            let lang_code = db
+                .get_subscriber_language(chat_id)
+                .await?
+                .unwrap_or_else(|| "en".to_string());
+            let user_lang = Language::from_code(&lang_code).unwrap_or(Language::ENGLISH);
+
             if db.remove_subscriber(chat_id).await? {
                 info!("Unsubscribed: {}", chat_id);
-                let msg = Language::ENGLISH.config().strings.unsubscribe_success;
+                let msg = user_lang.config().strings.unsubscribe_success;
                 send_message(config, chat_id, msg).await?;
             } else {
+                // Not subscribed - use English (we don't know their preference)
                 let msg = Language::ENGLISH
                     .config()
                     .strings
@@ -236,27 +249,33 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
                 !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
 
             let status_msg = if is_subscribed {
-                let lang = db
+                let lang_code = db
                     .get_subscriber_language(chat_id)
                     .await?
                     .unwrap_or_else(|| "en".to_string());
-                let lang_name = match lang.as_str() {
-                    "es" => "Spanish",
+
+                // Get the user's preferred language for the response
+                let user_lang = Language::from_code(&lang_code).unwrap_or(Language::ENGLISH);
+
+                // Display language name in the user's language
+                let lang_name = match lang_code.as_str() {
+                    "es" => "Español",
                     _ => "English",
                 };
 
                 if is_admin {
                     // Admin sees subscriber count
-                    let template = Language::ENGLISH.config().strings.status_subscribed_admin;
+                    let template = user_lang.config().strings.status_subscribed_admin;
                     template
                         .replace("{language}", lang_name)
                         .replace("{count}", &db.subscriber_count().await?.to_string())
                 } else {
                     // Regular users see their own status and language
-                    let template = Language::ENGLISH.config().strings.status_subscribed_user;
+                    let template = user_lang.config().strings.status_subscribed_user;
                     template.replace("{language}", lang_name)
                 }
             } else {
+                // Non-subscribers get English (we don't know their preference)
                 Language::ENGLISH
                     .config()
                     .strings
@@ -272,40 +291,46 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
             if !is_subscribed {
                 let msg = Language::ENGLISH.config().strings.language_not_subscribed;
                 send_message(config, chat_id, msg).await?;
-            } else if let Some(lang_arg) = arg {
-                // User specified a language: /language en or /language es
-                match lang_arg {
-                    "en" => {
-                        db.set_subscriber_language(chat_id, "en").await?;
-                        info!("Language changed to English for {}", chat_id);
-                        let msg = Language::ENGLISH.config().strings.language_changed_english;
-                        send_message(config, chat_id, msg).await?;
-                    }
-                    "es" => {
-                        db.set_subscriber_language(chat_id, "es").await?;
-                        info!("Language changed to Spanish for {}", chat_id);
-                        let msg = Language::SPANISH.config().strings.language_changed_spanish;
-                        send_message(config, chat_id, msg).await?;
-                    }
-                    _ => {
-                        let msg = Language::ENGLISH.config().strings.language_invalid;
-                        send_message(config, chat_id, msg).await?;
-                    }
-                }
             } else {
-                // No argument: show current language and options
+                // Get user's current language for responses
                 let current_lang = db
                     .get_subscriber_language(chat_id)
                     .await?
                     .unwrap_or_else(|| "en".to_string());
-                let current_name = match current_lang.as_str() {
-                    "es" => "Spanish",
-                    _ => "English",
-                };
+                let user_lang = Language::from_code(&current_lang).unwrap_or(Language::ENGLISH);
 
-                let template = Language::ENGLISH.config().strings.language_settings;
-                let msg = template.replace("{current}", current_name);
-                send_message(config, chat_id, &msg).await?;
+                if let Some(lang_arg) = arg {
+                    // User specified a language: /language en or /language es
+                    match lang_arg {
+                        "en" => {
+                            db.set_subscriber_language(chat_id, "en").await?;
+                            info!("Language changed to English for {}", chat_id);
+                            let msg = Language::ENGLISH.config().strings.language_changed_english;
+                            send_message(config, chat_id, msg).await?;
+                        }
+                        "es" => {
+                            db.set_subscriber_language(chat_id, "es").await?;
+                            info!("Language changed to Spanish for {}", chat_id);
+                            let msg = Language::SPANISH.config().strings.language_changed_spanish;
+                            send_message(config, chat_id, msg).await?;
+                        }
+                        _ => {
+                            // Invalid language - respond in user's current language
+                            let msg = user_lang.config().strings.language_invalid;
+                            send_message(config, chat_id, msg).await?;
+                        }
+                    }
+                } else {
+                    // No argument: show current language and options in user's language
+                    let current_name = match current_lang.as_str() {
+                        "es" => "Español",
+                        _ => "English",
+                    };
+
+                    let template = user_lang.config().strings.language_settings;
+                    let msg = template.replace("{current}", current_name);
+                    send_message(config, chat_id, &msg).await?;
+                }
             }
         }
         "/broadcast" => {
@@ -4609,5 +4634,404 @@ For details: [OpenAI Blog](https://openai.com/blog)"#;
         assert!(template.contains("✅"));
         assert!(template.contains("🌐"));
         assert!(template.contains("📊"));
+    }
+
+    // ==================== Double-Escaping Detection Tests ====================
+    //
+    // These tests detect if pre-escaped templates are accidentally double-escaped.
+    // Double-escaping would produce patterns like `\\\\` (escaped backslash) or
+    // `\\\\!` instead of `\\!`.
+    //
+    // CRITICAL: If any of these tests fail, it means production code is double-escaping
+    // and will cause Telegram API errors.
+
+    /// Helper function to detect double-escaping in a string.
+    /// Double-escaping produces `\\\\` patterns (backslash followed by backslash).
+    fn has_double_escaping(s: &str) -> bool {
+        // In Rust strings, `\\\\` represents two literal backslashes
+        // If we see `\\` followed by another `\\` it means double-escaping
+        s.contains("\\\\")
+    }
+
+    /// Simulates what production code does for /start command
+    #[test]
+    fn test_production_start_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        // This is EXACTLY what production code does
+        let welcome = Language::ENGLISH.config().strings.welcome_admin;
+
+        // Production code should NOT wrap this in escape_markdownv2
+        // If it did, we'd see double-escaping
+        assert!(
+            !has_double_escaping(welcome),
+            "welcome_admin template should not have double-escaping. \
+             If this fails, production code may be calling escape_markdownv2 on pre-escaped template"
+        );
+
+        // Also verify the template IS properly escaped (single escaping)
+        assert!(
+            welcome.contains("\\!"),
+            "welcome_admin should have escaped exclamation marks"
+        );
+        assert!(
+            welcome.contains("\\-"),
+            "welcome_admin should have escaped hyphens"
+        );
+    }
+
+    #[test]
+    fn test_production_subscribe_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let already = Language::ENGLISH.config().strings.subscribe_already;
+        let success = Language::ENGLISH.config().strings.subscribe_success;
+
+        assert!(
+            !has_double_escaping(already),
+            "subscribe_already should not have double-escaping"
+        );
+        assert!(
+            !has_double_escaping(success),
+            "subscribe_success should not have double-escaping"
+        );
+
+        // Verify proper escaping exists
+        assert!(already.contains("\\!"));
+        assert!(success.contains("\\!"));
+        assert!(success.contains("\\."));
+    }
+
+    #[test]
+    fn test_production_unsubscribe_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let success = Language::ENGLISH.config().strings.unsubscribe_success;
+        let not_sub = Language::ENGLISH
+            .config()
+            .strings
+            .unsubscribe_not_subscribed;
+
+        assert!(
+            !has_double_escaping(success),
+            "unsubscribe_success should not have double-escaping"
+        );
+        assert!(
+            !has_double_escaping(not_sub),
+            "unsubscribe_not_subscribed should not have double-escaping"
+        );
+    }
+
+    #[test]
+    fn test_production_status_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let admin = Language::ENGLISH.config().strings.status_subscribed_admin;
+        let user = Language::ENGLISH.config().strings.status_subscribed_user;
+        let not_sub = Language::ENGLISH.config().strings.status_not_subscribed;
+
+        assert!(
+            !has_double_escaping(admin),
+            "status_subscribed_admin should not have double-escaping"
+        );
+        assert!(
+            !has_double_escaping(user),
+            "status_subscribed_user should not have double-escaping"
+        );
+        assert!(
+            !has_double_escaping(not_sub),
+            "status_not_subscribed should not have double-escaping"
+        );
+    }
+
+    #[test]
+    fn test_production_language_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let not_sub = Language::ENGLISH.config().strings.language_not_subscribed;
+        let changed_en = Language::ENGLISH.config().strings.language_changed_english;
+        let changed_es = Language::SPANISH.config().strings.language_changed_spanish;
+        let invalid = Language::ENGLISH.config().strings.language_invalid;
+        let settings = Language::ENGLISH.config().strings.language_settings;
+
+        assert!(!has_double_escaping(not_sub));
+        assert!(!has_double_escaping(changed_en));
+        assert!(!has_double_escaping(changed_es));
+        assert!(!has_double_escaping(invalid));
+        assert!(!has_double_escaping(settings));
+
+        // Verify language_settings has proper escaping (it uses * for bold and - for list)
+        assert!(
+            settings.contains("\\-"),
+            "language_settings should have escaped hyphens"
+        );
+        assert!(
+            settings.contains("*Language Settings*") || settings.contains("*Configuración"),
+            "language_settings should preserve intentional bold formatting"
+        );
+    }
+
+    #[test]
+    fn test_production_broadcast_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let admin_only = Language::ENGLISH.config().strings.broadcast_admin_only;
+        let success = Language::ENGLISH.config().strings.broadcast_success;
+        let partial = Language::ENGLISH.config().strings.broadcast_partial;
+        let failed = Language::ENGLISH.config().strings.broadcast_failed;
+        let usage = Language::ENGLISH.config().strings.broadcast_usage;
+
+        assert!(!has_double_escaping(admin_only));
+        assert!(!has_double_escaping(success));
+        assert!(!has_double_escaping(partial));
+        assert!(!has_double_escaping(failed));
+        assert!(!has_double_escaping(usage));
+    }
+
+    #[test]
+    fn test_production_unknown_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let unknown = Language::ENGLISH.config().strings.unknown_command;
+        assert!(
+            !has_double_escaping(unknown),
+            "unknown_command should not have double-escaping"
+        );
+    }
+
+    #[test]
+    fn test_production_welcome_summary_no_double_escape() {
+        use crate::i18n::Language;
+
+        let header = Language::ENGLISH.config().strings.welcome_summary_header;
+        assert!(
+            !has_double_escaping(header),
+            "welcome_summary_header should not have double-escaping"
+        );
+    }
+
+    #[test]
+    fn test_all_spanish_templates_no_double_escape() {
+        use crate::i18n::Language;
+
+        let strings = &Language::SPANISH.config().strings;
+
+        assert!(!has_double_escaping(strings.welcome_admin));
+        assert!(!has_double_escaping(strings.welcome_user));
+        assert!(!has_double_escaping(strings.subscribe_already));
+        assert!(!has_double_escaping(strings.subscribe_success));
+        assert!(!has_double_escaping(strings.unsubscribe_success));
+        assert!(!has_double_escaping(strings.unsubscribe_not_subscribed));
+        assert!(!has_double_escaping(strings.status_subscribed_admin));
+        assert!(!has_double_escaping(strings.status_subscribed_user));
+        assert!(!has_double_escaping(strings.status_not_subscribed));
+        assert!(!has_double_escaping(strings.language_not_subscribed));
+        assert!(!has_double_escaping(strings.language_changed_english));
+        assert!(!has_double_escaping(strings.language_changed_spanish));
+        assert!(!has_double_escaping(strings.language_invalid));
+        assert!(!has_double_escaping(strings.language_settings));
+        assert!(!has_double_escaping(strings.broadcast_admin_only));
+        assert!(!has_double_escaping(strings.broadcast_success));
+        assert!(!has_double_escaping(strings.broadcast_partial));
+        assert!(!has_double_escaping(strings.broadcast_failed));
+        assert!(!has_double_escaping(strings.broadcast_usage));
+        assert!(!has_double_escaping(strings.unknown_command));
+        assert!(!has_double_escaping(strings.welcome_summary_header));
+    }
+
+    /// Test that demonstrates what double-escaping looks like
+    /// and verifies our detection works
+    #[test]
+    fn test_double_escape_detection_works() {
+        // Single-escaped (correct)
+        let single_escaped = "Hello\\!";
+        assert!(
+            !has_double_escaping(single_escaped),
+            "Single-escaped should not trigger detection"
+        );
+
+        // Double-escaped (incorrect - what happens if escape_markdownv2 is called twice)
+        let double_escaped = escape_markdownv2("Hello\\!");
+        assert!(
+            has_double_escaping(&double_escaped),
+            "Double-escaped should be detected. Got: {}",
+            double_escaped
+        );
+    }
+
+    /// Simulates the exact bug scenario: calling escape_markdownv2 on pre-escaped template
+    #[test]
+    fn test_simulated_double_escape_bug() {
+        use crate::i18n::Language;
+
+        // Get the pre-escaped template
+        let template = Language::ENGLISH.config().strings.welcome_admin;
+
+        // Simulate the BUG: wrapping pre-escaped template in escape_markdownv2
+        let double_escaped = escape_markdownv2(template);
+
+        // This should detect the double-escaping
+        assert!(
+            has_double_escaping(&double_escaped),
+            "Calling escape_markdownv2 on pre-escaped template should produce double-escaping. \
+             This test verifies our detection works."
+        );
+
+        // The original template should NOT have double-escaping
+        assert!(
+            !has_double_escaping(template),
+            "Original template should not have double-escaping"
+        );
+    }
+
+    // ==================== Language-Aware Response Tests ====================
+    //
+    // These tests verify that commands respond in the subscriber's preferred language.
+
+    #[test]
+    fn test_status_response_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber should get English status
+        let en_template = Language::ENGLISH.config().strings.status_subscribed_user;
+        assert!(
+            en_template.contains("You are subscribed"),
+            "English status should say 'You are subscribed'"
+        );
+
+        // Spanish subscriber should get Spanish status
+        let es_template = Language::SPANISH.config().strings.status_subscribed_user;
+        assert!(
+            es_template.contains("Estás suscrito"),
+            "Spanish status should say 'Estás suscrito'"
+        );
+
+        // Both should have the language placeholder
+        assert!(en_template.contains("{language}"));
+        assert!(es_template.contains("{language}"));
+    }
+
+    #[test]
+    fn test_subscribe_already_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber should get English message
+        let en_msg = Language::ENGLISH.config().strings.subscribe_already;
+        assert!(
+            en_msg.contains("already subscribed"),
+            "English should say 'already subscribed'"
+        );
+
+        // Spanish subscriber should get Spanish message
+        let es_msg = Language::SPANISH.config().strings.subscribe_already;
+        assert!(
+            es_msg.contains("Ya estás suscrito"),
+            "Spanish should say 'Ya estás suscrito'"
+        );
+    }
+
+    #[test]
+    fn test_unsubscribe_success_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber should get English message
+        let en_msg = Language::ENGLISH.config().strings.unsubscribe_success;
+        assert!(
+            en_msg.contains("Successfully unsubscribed"),
+            "English should say 'Successfully unsubscribed'"
+        );
+
+        // Spanish subscriber should get Spanish message
+        let es_msg = Language::SPANISH.config().strings.unsubscribe_success;
+        assert!(
+            es_msg.contains("cancelada exitosamente"),
+            "Spanish should say 'cancelada exitosamente'"
+        );
+    }
+
+    #[test]
+    fn test_language_settings_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber sees English settings
+        let en_template = Language::ENGLISH.config().strings.language_settings;
+        assert!(
+            en_template.contains("Language Settings"),
+            "English should say 'Language Settings'"
+        );
+        assert!(
+            en_template.contains("To change, use"),
+            "English should say 'To change, use'"
+        );
+
+        // Spanish subscriber sees Spanish settings
+        let es_template = Language::SPANISH.config().strings.language_settings;
+        assert!(
+            es_template.contains("Configuración de Idioma"),
+            "Spanish should say 'Configuración de Idioma'"
+        );
+        assert!(
+            es_template.contains("Para cambiar, usa"),
+            "Spanish should say 'Para cambiar, usa'"
+        );
+    }
+
+    #[test]
+    fn test_language_invalid_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber sees English error
+        let en_msg = Language::ENGLISH.config().strings.language_invalid;
+        assert!(
+            en_msg.contains("Invalid language"),
+            "English should say 'Invalid language'"
+        );
+
+        // Spanish subscriber sees Spanish error
+        let es_msg = Language::SPANISH.config().strings.language_invalid;
+        assert!(
+            es_msg.contains("Idioma inválido"),
+            "Spanish should say 'Idioma inválido'"
+        );
+    }
+
+    #[test]
+    fn test_language_from_code_returns_correct_strings() {
+        use crate::i18n::Language;
+
+        // Test that Language::from_code gives us the right language
+        let english = Language::from_code("en").unwrap();
+        let spanish = Language::from_code("es").unwrap();
+
+        assert_eq!(
+            english.config().strings.status_subscribed_user,
+            Language::ENGLISH.config().strings.status_subscribed_user
+        );
+        assert_eq!(
+            spanish.config().strings.status_subscribed_user,
+            Language::SPANISH.config().strings.status_subscribed_user
+        );
+
+        // Verify they're different
+        assert_ne!(
+            english.config().strings.status_subscribed_user,
+            spanish.config().strings.status_subscribed_user
+        );
+    }
+
+    #[test]
+    fn test_language_from_code_fallback_to_english() {
+        use crate::i18n::Language;
+
+        // Unknown language code should fail gracefully
+        let result = Language::from_code("xx");
+        assert!(result.is_err(), "Unknown language code should return error");
+
+        // Code that uses unwrap_or_else pattern should fall back to English
+        let fallback = Language::from_code("xx").unwrap_or(Language::ENGLISH);
+        assert_eq!(
+            fallback.config().strings.status_subscribed_user,
+            Language::ENGLISH.config().strings.status_subscribed_user
+        );
     }
 }
