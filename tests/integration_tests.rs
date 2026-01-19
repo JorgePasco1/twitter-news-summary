@@ -26,6 +26,7 @@ fn create_test_config(nitter_url: &str, temp_dir: &TempDir) -> Config {
     std::fs::write(&usernames_path, "testuser1\ntestuser2\n").expect("Failed to write usernames");
 
     Config {
+        environment: "test".to_string(),
         twitter_bearer_token: None,
         twitter_list_id: None,
         openai_api_key: "test-openai-key".to_string(),

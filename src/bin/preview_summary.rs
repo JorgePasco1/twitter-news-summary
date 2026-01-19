@@ -77,6 +77,7 @@ impl PreviewConfig {
     /// Convert to the full Config struct (with dummy values for unused fields)
     fn to_full_config(&self) -> twitter_news_summary::config::Config {
         twitter_news_summary::config::Config {
+            environment: "preview".to_string(),
             twitter_bearer_token: None,
             twitter_list_id: None,
             openai_api_key: self.openai_api_key.clone(),

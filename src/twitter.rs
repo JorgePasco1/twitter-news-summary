@@ -369,6 +369,7 @@ mod tests {
     #[test]
     fn test_config_missing_bearer_token() {
         let config = Config {
+            environment: "test".to_string(),
             twitter_bearer_token: None,
             twitter_list_id: Some("123456".to_string()),
             openai_api_key: "test".to_string(),
@@ -396,6 +397,7 @@ mod tests {
     #[test]
     fn test_config_missing_list_id() {
         let config = Config {
+            environment: "test".to_string(),
             twitter_bearer_token: Some("test-token".to_string()),
             twitter_list_id: None,
             openai_api_key: "test".to_string(),
