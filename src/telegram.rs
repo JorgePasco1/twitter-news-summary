@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::db::Database;
+use crate::i18n::{Language, TranslationMetrics};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -182,40 +183,26 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
             let is_admin =
                 !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
 
-            // Pre-escaped for MarkdownV2 (escaped: ! - . )
-            let welcome = if is_admin {
-                "👋 Welcome to Twitter News Summary Bot\\!\n\n\
-Commands:\n\
-/subscribe \\- Get daily AI\\-powered summaries of Twitter/X news\n\
-/unsubscribe \\- Stop receiving summaries\n\
-/status \\- Check your subscription status\n\
-/language \\- Change summary language \\(en/es\\)\n\
-/broadcast \\- Send a message to all subscribers \\(admin only\\)\n\n\
-Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers\\."
+            // Get welcome message from registry based on admin status
+            // For now, English is the default language for command responses
+            let welcome_text = if is_admin {
+                Language::ENGLISH.config().strings.welcome_admin
             } else {
-                "👋 Welcome to Twitter News Summary Bot\\!\n\n\
-Commands:\n\
-/subscribe \\- Get daily AI\\-powered summaries of Twitter/X news\n\
-/unsubscribe \\- Stop receiving summaries\n\
-/status \\- Check your subscription status\n\
-/language \\- Change summary language \\(en/es\\)\n\n\
-Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers\\."
+                Language::ENGLISH.config().strings.welcome_user
             };
+            let welcome = escape_markdownv2(welcome_text);
 
-            send_message(config, chat_id, welcome).await?;
+            send_message(config, chat_id, &welcome).await?;
         }
         "/subscribe" => {
             if db.is_subscribed(chat_id).await? {
-                send_message(config, chat_id, "✅ You're already subscribed\\!").await?;
+                let msg = escape_markdownv2(Language::ENGLISH.config().strings.subscribe_already);
+                send_message(config, chat_id, &msg).await?;
             } else {
                 let (_, needs_welcome) = db.add_subscriber(chat_id, username.as_deref()).await?;
                 info!("New subscriber: {} (username: {:?})", chat_id, username);
-                send_message(
-                    config,
-                    chat_id,
-                    "✅ Successfully subscribed\\! You'll receive summaries twice daily\\.\n\nWant summaries in Spanish? Use /language es to switch\\.",
-                )
-                .await?;
+                let msg = escape_markdownv2(Language::ENGLISH.config().strings.subscribe_success);
+                send_message(config, chat_id, &msg).await?;
 
                 // Send welcome summary for first-time subscribers
                 if needs_welcome {
@@ -230,14 +217,16 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         "/unsubscribe" => {
             if db.remove_subscriber(chat_id).await? {
                 info!("Unsubscribed: {}", chat_id);
-                send_message(
-                    config,
-                    chat_id,
-                    "👋 Successfully unsubscribed\\. You won't receive any more summaries\\.",
-                )
-                .await?;
+                let msg = escape_markdownv2(Language::ENGLISH.config().strings.unsubscribe_success);
+                send_message(config, chat_id, &msg).await?;
             } else {
-                send_message(config, chat_id, "You're not currently subscribed\\.").await?;
+                let msg = escape_markdownv2(
+                    Language::ENGLISH
+                        .config()
+                        .strings
+                        .unsubscribe_not_subscribed,
+                );
+                send_message(config, chat_id, &msg).await?;
             }
         }
         "/status" => {
@@ -260,18 +249,17 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 
                 if is_admin {
                     // Admin sees subscriber count
-                    format!(
-                        "✅ You are subscribed\n🌐 Language: {}\n📊 Total subscribers: {}",
-                        lang_name,
-                        db.subscriber_count().await?
-                    )
+                    let template = Language::ENGLISH.config().strings.status_subscribed_admin;
+                    template
+                        .replace("{language}", lang_name)
+                        .replace("{count}", &db.subscriber_count().await?.to_string())
                 } else {
                     // Regular users see their own status and language
-                    format!("✅ You are subscribed\n🌐 Language: {}", lang_name)
+                    let template = Language::ENGLISH.config().strings.status_subscribed_user;
+                    template.replace("{language}", lang_name)
                 }
             } else {
-                "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries\\."
-                    .to_string()
+                escape_markdownv2(Language::ENGLISH.config().strings.status_not_subscribed)
             };
             send_message(config, chat_id, &status_msg).await?;
         }
@@ -280,42 +268,32 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
             let is_subscribed = db.is_subscribed(chat_id).await?;
 
             if !is_subscribed {
-                send_message(
-                    config,
-                    chat_id,
-                    "You need to subscribe first. Use /subscribe to get started.",
-                )
-                .await?;
+                let msg =
+                    escape_markdownv2(Language::ENGLISH.config().strings.language_not_subscribed);
+                send_message(config, chat_id, &msg).await?;
             } else if let Some(lang_arg) = arg {
                 // User specified a language: /language en or /language es
                 match lang_arg {
                     "en" => {
                         db.set_subscriber_language(chat_id, "en").await?;
                         info!("Language changed to English for {}", chat_id);
-                        send_message(
-                            config,
-                            chat_id,
-                            "✅ Language changed to English\\. You'll receive summaries in English\\.",
-                        )
-                        .await?;
+                        let msg = escape_markdownv2(
+                            Language::ENGLISH.config().strings.language_changed_english,
+                        );
+                        send_message(config, chat_id, &msg).await?;
                     }
                     "es" => {
                         db.set_subscriber_language(chat_id, "es").await?;
                         info!("Language changed to Spanish for {}", chat_id);
-                        send_message(
-                            config,
-                            chat_id,
-                            "✅ Idioma cambiado a español\\. Recibirás los resúmenes en español\\.",
-                        )
-                        .await?;
+                        let msg = escape_markdownv2(
+                            Language::SPANISH.config().strings.language_changed_spanish,
+                        );
+                        send_message(config, chat_id, &msg).await?;
                     }
                     _ => {
-                        send_message(
-                            config,
-                            chat_id,
-                            "Invalid language\\. Available options:\n/language en \\- English\n/language es \\- Spanish",
-                        )
-                        .await?;
+                        let msg =
+                            escape_markdownv2(Language::ENGLISH.config().strings.language_invalid);
+                        send_message(config, chat_id, &msg).await?;
                     }
                 }
             } else {
@@ -329,10 +307,8 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                     _ => "English",
                 };
 
-                let msg = format!(
-                    "🌐 *Language Settings*\n\nCurrent: {}\n\nTo change, use:\n/language en \\- English\n/language es \\- Spanish",
-                    current_name
-                );
+                let template = Language::ENGLISH.config().strings.language_settings;
+                let msg = template.replace("{current}", current_name);
                 send_message(config, chat_id, &msg).await?;
             }
         }
@@ -343,12 +319,9 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                 !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
 
             if !is_admin {
-                send_message(
-                    config,
-                    chat_id,
-                    "⛔ This command is only available to the bot administrator\\.",
-                )
-                .await?;
+                let msg =
+                    escape_markdownv2(Language::ENGLISH.config().strings.broadcast_admin_only);
+                send_message(config, chat_id, &msg).await?;
             } else if let Some(broadcast_msg) = arg {
                 // Send broadcast to all subscribers
                 info!(
@@ -360,47 +333,36 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                     Ok((sent, failures)) => {
                         let total = sent + failures.len();
                         let msg = if failures.is_empty() {
-                            format!(
-                                "✅ *Broadcast sent successfully*\\!\n\n📊 Delivered to {} subscribers",
-                                escape_markdownv2(&sent.to_string())
-                            )
+                            let template = Language::ENGLISH.config().strings.broadcast_success;
+                            template.replace("{count}", &escape_markdownv2(&sent.to_string()))
                         } else {
-                            format!(
-                                "📡 *Broadcast completed*\n\n✅ Sent: {}\n❌ Failed: {}\n📊 Total: {}",
-                                escape_markdownv2(&sent.to_string()),
-                                escape_markdownv2(&failures.len().to_string()),
-                                escape_markdownv2(&total.to_string())
-                            )
+                            let template = Language::ENGLISH.config().strings.broadcast_partial;
+                            template
+                                .replace("{sent}", &escape_markdownv2(&sent.to_string()))
+                                .replace(
+                                    "{failed}",
+                                    &escape_markdownv2(&failures.len().to_string()),
+                                )
+                                .replace("{total}", &escape_markdownv2(&total.to_string()))
                         };
                         send_message(config, chat_id, &msg).await?;
                     }
                     Err(e) => {
                         warn!("Broadcast failed: {}", e);
-                        send_message(
-                            config,
-                            chat_id,
-                            &format!("❌ Broadcast failed: {}", escape_markdownv2(&e.to_string())),
-                        )
-                        .await?;
+                        let template = Language::ENGLISH.config().strings.broadcast_failed;
+                        let msg = template.replace("{error}", &escape_markdownv2(&e.to_string()));
+                        send_message(config, chat_id, &msg).await?;
                     }
                 }
             } else {
-                send_message(
-                    config,
-                    chat_id,
-                    "Usage: /broadcast Your message here\n\nSends a plain text message to all subscribers\\.",
-                )
-                .await?;
+                let msg = escape_markdownv2(Language::ENGLISH.config().strings.broadcast_usage);
+                send_message(config, chat_id, &msg).await?;
             }
         }
         _ => {
             // Unknown command, send help
-            send_message(
-                config,
-                chat_id,
-                "Unknown command\\. Use /start to see available commands\\.",
-            )
-            .await?;
+            let msg = escape_markdownv2(Language::ENGLISH.config().strings.unknown_command);
+            send_message(config, chat_id, &msg).await?;
         }
     }
 
@@ -416,8 +378,10 @@ async fn send_welcome_summary(
 ) -> Result<()> {
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
     let escaped_timestamp = escape_markdownv2(&timestamp);
+    let header = escape_markdownv2(Language::ENGLISH.config().strings.welcome_summary_header);
     let message = format!(
-        "📰 *Hey\\! Here's what you missed* 😉\n_{}_\n\n{}",
+        "{}\n_{}_\n\n{}",
+        header,
         escaped_timestamp,
         escape_markdownv2(summary)
     );
@@ -476,15 +440,23 @@ pub async fn send_to_subscribers(
 
         // Get or create translation for this language
         let content = if let Some(cached) = translation_cache.get(&lang_code) {
+            // Memory cache hit
+            TranslationMetrics::global().record_cache_hit();
             cached.clone()
         } else {
             // Check if translation exists in database
             if let Ok(Some(cached_translation)) = db.get_translation(summary_id, &lang_code).await {
+                // Database cache hit
+                TranslationMetrics::global().record_cache_hit();
                 let content = cached_translation.content.clone();
                 translation_cache.insert(lang_code.clone(), content.clone());
                 content
             } else {
+                // Cache miss - need to generate translation
+                TranslationMetrics::global().record_cache_miss();
+
                 // Generate translation via OpenAI
+                TranslationMetrics::global().record_api_call();
                 match translate_summary(&client, config, summary, language).await {
                     Ok(translated) => {
                         // Cache in database for future use
@@ -498,6 +470,7 @@ pub async fn send_to_subscribers(
                         translated
                     }
                     Err(e) => {
+                        TranslationMetrics::global().record_api_failure();
                         warn!("Translation failed for {}: {}", lang_code, e);
                         // Use English with failure notice
                         let notice = get_translation_failure_notice(language);

@@ -6,6 +6,8 @@
 
 use std::sync::OnceLock;
 
+use super::strings::LanguageStrings;
+
 /// Configuration for a supported language.
 ///
 /// Contains all metadata and settings for a specific language, including
@@ -26,6 +28,9 @@ pub struct LanguageConfig {
 
     /// Whether this language is enabled for use
     pub enabled: bool,
+
+    /// All localized user-facing strings for this language
+    pub strings: LanguageStrings,
 }
 
 /// Global language registry singleton.
@@ -123,6 +128,8 @@ impl LanguageRegistry {
 /// This function returns the initial set of supported languages.
 /// Currently supports English (canonical) and Spanish.
 fn default_languages() -> Vec<LanguageConfig> {
+    use super::strings::{ENGLISH_STRINGS, SPANISH_STRINGS};
+
     vec![
         LanguageConfig {
             code: "en",
@@ -130,6 +137,7 @@ fn default_languages() -> Vec<LanguageConfig> {
             native_name: "English",
             is_canonical: true,
             enabled: true,
+            strings: ENGLISH_STRINGS,
         },
         LanguageConfig {
             code: "es",
@@ -137,6 +145,7 @@ fn default_languages() -> Vec<LanguageConfig> {
             native_name: "Español",
             is_canonical: false,
             enabled: true,
+            strings: SPANISH_STRINGS,
         },
     ]
 }
@@ -238,12 +247,15 @@ mod tests {
 
     #[test]
     fn test_language_config_clone() {
+        use super::super::strings::ENGLISH_STRINGS;
+
         let config = LanguageConfig {
             code: "en",
             name: "English",
             native_name: "English",
             is_canonical: true,
             enabled: true,
+            strings: ENGLISH_STRINGS,
         };
 
         let cloned = config.clone();

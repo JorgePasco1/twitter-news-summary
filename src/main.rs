@@ -8,7 +8,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tracing::{info, warn};
-use twitter_news_summary::{config, db, scheduler, security, telegram};
+use twitter_news_summary::{config, db, i18n::TranslationMetrics, scheduler, security, telegram};
 
 struct AppState {
     config: Arc<config::Config>,
@@ -93,6 +93,7 @@ async fn main() -> Result<()> {
         .route("/test", post(test_handler))
         .route("/subscribers", get(subscribers_handler))
         .route("/broadcast", post(broadcast_handler))
+        .route("/translation-metrics", get(translation_metrics_handler))
         .with_state(state);
 
     // Start server
@@ -404,4 +405,43 @@ async fn broadcast_handler(
                 .into_response()
         }
     }
+}
+
+/// Translation metrics endpoint (API key protected) - returns translation statistics
+async fn translation_metrics_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    // Check API key with constant-time comparison
+    if let Some(expected_key) = &state.config.api_key {
+        match headers.get("X-API-Key") {
+            Some(header_value) => {
+                let provided_key = header_value.to_str().unwrap_or("");
+                if !security::constant_time_compare(provided_key, expected_key) {
+                    warn!("Unauthorized translation metrics attempt: invalid API key");
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({
+                            "error": "Unauthorized"
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+            None => {
+                warn!("Unauthorized translation metrics attempt: missing API key");
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "error": "Unauthorized"
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Get metrics report
+    let report = TranslationMetrics::global().report();
+    (StatusCode::OK, Json(report)).into_response()
 }
