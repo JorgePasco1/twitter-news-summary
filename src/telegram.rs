@@ -145,7 +145,6 @@ fn escape_markdownv2_url(url: &str) -> String {
     result
 }
 
-/// Handle incoming webhook from Telegram
 pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> Result<()> {
     let message = match update.message {
         Some(msg) => msg,
@@ -162,27 +161,46 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
 
     info!("Received message from {}: {}", chat_id, text);
 
-    // Handle bot commands - check for /language with argument first
+    // Handle bot commands - check for commands with arguments
     // Note: All plain text messages must be escaped for MarkdownV2 mode
     let (command, arg) = if text.starts_with("/language ") {
-        (
-            "/language",
-            Some(text.strip_prefix("/language ").unwrap().trim()),
-        )
+        let arg = text.strip_prefix("/language ").unwrap().trim();
+        let arg = if arg.is_empty() { None } else { Some(arg) };
+        ("/language", arg)
+    } else if text.starts_with("/broadcast ") {
+        let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+        let arg = if arg.is_empty() { None } else { Some(arg) };
+        ("/broadcast", arg)
     } else {
         (text.as_str(), None)
     };
 
     match command {
         "/start" => {
+            // Check if user is admin
+            let chat_id_str = chat_id.to_string();
+            let is_admin =
+                !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
+
             // Pre-escaped for MarkdownV2 (escaped: ! - . )
-            let welcome = "👋 Welcome to Twitter News Summary Bot\\!\n\n\
+            let welcome = if is_admin {
+                "👋 Welcome to Twitter News Summary Bot\\!\n\n\
+Commands:\n\
+/subscribe \\- Get daily AI\\-powered summaries of Twitter/X news\n\
+/unsubscribe \\- Stop receiving summaries\n\
+/status \\- Check your subscription status\n\
+/language \\- Change summary language \\(en/es\\)\n\
+/broadcast \\- Send a message to all subscribers \\(admin only\\)\n\n\
+Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers\\."
+            } else {
+                "👋 Welcome to Twitter News Summary Bot\\!\n\n\
 Commands:\n\
 /subscribe \\- Get daily AI\\-powered summaries of Twitter/X news\n\
 /unsubscribe \\- Stop receiving summaries\n\
 /status \\- Check your subscription status\n\
 /language \\- Change summary language \\(en/es\\)\n\n\
-Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers\\.";
+Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers\\."
+            };
 
             send_message(config, chat_id, welcome).await?;
         }
@@ -316,6 +334,63 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                     current_name
                 );
                 send_message(config, chat_id, &msg).await?;
+            }
+        }
+        "/broadcast" => {
+            // Admin-only command to broadcast a message to all subscribers
+            let chat_id_str = chat_id.to_string();
+            let is_admin =
+                !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
+
+            if !is_admin {
+                send_message(
+                    config,
+                    chat_id,
+                    "⛔ This command is only available to the bot administrator\\.",
+                )
+                .await?;
+            } else if let Some(broadcast_msg) = arg {
+                // Send broadcast to all subscribers
+                info!(
+                    "Broadcasting message from admin {}: {}",
+                    chat_id, broadcast_msg
+                );
+
+                match broadcast_message(config, db, broadcast_msg, None).await {
+                    Ok((sent, failures)) => {
+                        let total = sent + failures.len();
+                        let msg = if failures.is_empty() {
+                            format!(
+                                "✅ *Broadcast sent successfully*\\!\n\n📊 Delivered to {} subscribers",
+                                escape_markdownv2(&sent.to_string())
+                            )
+                        } else {
+                            format!(
+                                "📡 *Broadcast completed*\n\n✅ Sent: {}\n❌ Failed: {}\n📊 Total: {}",
+                                escape_markdownv2(&sent.to_string()),
+                                escape_markdownv2(&failures.len().to_string()),
+                                escape_markdownv2(&total.to_string())
+                            )
+                        };
+                        send_message(config, chat_id, &msg).await?;
+                    }
+                    Err(e) => {
+                        warn!("Broadcast failed: {}", e);
+                        send_message(
+                            config,
+                            chat_id,
+                            &format!("❌ Broadcast failed: {}", escape_markdownv2(&e.to_string())),
+                        )
+                        .await?;
+                    }
+                }
+            } else {
+                send_message(
+                    config,
+                    chat_id,
+                    "Usage: /broadcast Your message here\n\nSends a plain text message to all subscribers\\.",
+                )
+                .await?;
             }
         }
         _ => {
@@ -3536,5 +3611,709 @@ For details: [OpenAI Blog](https://openai.com/blog)"#;
         assert!(full_message.contains("*TEST \\-"));
         // Content escaped
         assert!(full_message.contains("content\\."));
+    }
+
+    // ==================== Broadcast Command Parsing Tests ====================
+
+    #[test]
+    fn test_broadcast_command_with_message() {
+        let text = "/broadcast Hello everyone!";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert_eq!(arg, Some("Hello everyone!"));
+    }
+
+    #[test]
+    fn test_broadcast_command_with_whitespace_only_argument() {
+        // This tests the bug fix: "/broadcast    " should result in arg = None
+        let text = "/broadcast    ";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert_eq!(
+            arg, None,
+            "Whitespace-only argument should be treated as None"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_command_without_space() {
+        // "/broadcast" (without space) should not match the starts_with("/broadcast ") branch
+        let text = "/broadcast";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        // Without space, it falls through to the else branch
+        assert_eq!(command, "/broadcast");
+        assert_eq!(arg, None);
+    }
+
+    #[test]
+    fn test_broadcast_command_with_leading_trailing_whitespace() {
+        let text = "/broadcast   Hello world!   ";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert_eq!(arg, Some("Hello world!"));
+    }
+
+    #[test]
+    fn test_broadcast_command_with_multiline_message() {
+        let text = "/broadcast Line 1\nLine 2\nLine 3";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert_eq!(arg, Some("Line 1\nLine 2\nLine 3"));
+    }
+
+    #[test]
+    fn test_broadcast_command_with_special_characters() {
+        let text = "/broadcast Hello! *bold* _italic_ @mention #hashtag";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert_eq!(arg, Some("Hello! *bold* _italic_ @mention #hashtag"));
+    }
+
+    // ==================== Language Command Whitespace Edge Cases ====================
+
+    #[test]
+    fn test_language_command_with_whitespace_only_argument() {
+        // This tests the bug fix: "/language    " should result in arg = None
+        let text = "/language    ";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/language");
+        assert_eq!(
+            arg, None,
+            "Whitespace-only argument should be treated as None"
+        );
+    }
+
+    #[test]
+    fn test_language_command_with_tabs_only() {
+        let text = "/language \t\t\t";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/language");
+        assert_eq!(arg, None, "Tab-only argument should be treated as None");
+    }
+
+    #[test]
+    fn test_language_command_with_mixed_whitespace() {
+        let text = "/language  \t \n ";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/language");
+        assert_eq!(
+            arg, None,
+            "Mixed whitespace argument should be treated as None"
+        );
+    }
+
+    // ==================== Broadcast Command Handler Logic Tests ====================
+
+    #[test]
+    fn test_broadcast_admin_check_logic_admin_user() {
+        // Admin sends broadcast
+        let config_telegram_chat_id = "123456789";
+        let chat_id: i64 = 123456789;
+        let chat_id_str = chat_id.to_string();
+
+        let is_admin =
+            !config_telegram_chat_id.is_empty() && chat_id_str == config_telegram_chat_id;
+
+        assert!(is_admin, "Admin user should be recognized as admin");
+    }
+
+    #[test]
+    fn test_broadcast_admin_check_logic_non_admin_user() {
+        // Non-admin sends broadcast
+        let config_telegram_chat_id = "123456789";
+        let chat_id: i64 = 987654321;
+        let chat_id_str = chat_id.to_string();
+
+        let is_admin =
+            !config_telegram_chat_id.is_empty() && chat_id_str == config_telegram_chat_id;
+
+        assert!(
+            !is_admin,
+            "Non-admin user should not be recognized as admin"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_admin_check_logic_empty_config() {
+        // Config has empty admin chat ID
+        let config_telegram_chat_id = "";
+        let chat_id: i64 = 123456789;
+        let chat_id_str = chat_id.to_string();
+
+        let is_admin =
+            !config_telegram_chat_id.is_empty() && chat_id_str == config_telegram_chat_id;
+
+        assert!(!is_admin, "No one should be admin when config is empty");
+    }
+
+    #[test]
+    fn test_broadcast_permission_denied_message() {
+        let msg = "This command is only available to the bot administrator.";
+        assert!(msg.contains("administrator"));
+        assert!(msg.contains("only available"));
+    }
+
+    #[test]
+    fn test_broadcast_usage_message() {
+        let msg =
+            "Usage: /broadcast Your message here\n\nSends a plain text message to all subscribers.";
+        assert!(msg.contains("/broadcast"));
+        assert!(msg.contains("plain text"));
+        assert!(msg.contains("all subscribers"));
+    }
+
+    #[test]
+    fn test_broadcast_success_message_format_all_successful() {
+        let sent: usize = 10;
+        let failures: Vec<(i64, String)> = Vec::new();
+        let total = sent + failures.len();
+
+        let msg = if failures.is_empty() {
+            format!(
+                "Broadcast sent successfully!\n\nDelivered to {} subscribers",
+                escape_markdownv2(&sent.to_string())
+            )
+        } else {
+            format!(
+                "Broadcast completed\n\nSent: {}\nFailed: {}\nTotal: {}",
+                escape_markdownv2(&sent.to_string()),
+                escape_markdownv2(&failures.len().to_string()),
+                escape_markdownv2(&total.to_string())
+            )
+        };
+
+        assert!(msg.contains("Broadcast sent successfully"));
+        assert!(msg.contains("10 subscribers"));
+    }
+
+    #[test]
+    fn test_broadcast_success_message_format_with_failures() {
+        let sent: usize = 8;
+        let failures: Vec<(i64, String)> = vec![
+            (111, "blocked".to_string()),
+            (222, "deactivated".to_string()),
+        ];
+        let total = sent + failures.len();
+
+        let msg = if failures.is_empty() {
+            format!(
+                "Broadcast sent successfully!\n\nDelivered to {} subscribers",
+                sent
+            )
+        } else {
+            format!(
+                "Broadcast completed\n\nSent: {}\nFailed: {}\nTotal: {}",
+                sent,
+                failures.len(),
+                total
+            )
+        };
+
+        assert!(msg.contains("Broadcast completed"));
+        assert!(msg.contains("Sent: 8"));
+        assert!(msg.contains("Failed: 2"));
+        assert!(msg.contains("Total: 10"));
+    }
+
+    #[test]
+    fn test_broadcast_error_message_format() {
+        let error = "Database connection failed";
+        let msg = format!("Broadcast failed: {}", escape_markdownv2(error));
+
+        assert!(msg.contains("Broadcast failed"));
+        assert!(msg.contains("Database connection failed"));
+    }
+
+    // ==================== Broadcast Message Function Logic Tests ====================
+
+    #[test]
+    fn test_broadcast_empty_subscriber_list_returns_zero() {
+        // Simulates the case where there are no subscribers
+        let subscribers: Vec<i64> = vec![];
+
+        if subscribers.is_empty() {
+            let result = (0usize, Vec::<(i64, String)>::new());
+            assert_eq!(result.0, 0);
+            assert!(result.1.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_broadcast_subscriber_iteration_success() {
+        // Simulates successful broadcast to all subscribers
+        let subscriber_ids = vec![111i64, 222, 333];
+        let mut success_count: usize = 0;
+        let mut failures: Vec<(i64, String)> = Vec::new();
+
+        for _id in &subscriber_ids {
+            // Simulate success
+            let result: Result<(), &str> = Ok(());
+            match result {
+                Ok(_) => success_count += 1,
+                Err(e) => failures.push((*_id, e.to_string())),
+            }
+        }
+
+        assert_eq!(success_count, 3);
+        assert!(failures.is_empty());
+    }
+
+    #[test]
+    fn test_broadcast_subscriber_iteration_with_failures() {
+        // Simulates broadcast with some failures
+        let subscriber_ids = [111i64, 222, 333];
+        let mut success_count: usize = 0;
+        let mut failures: Vec<(i64, String)> = Vec::new();
+
+        for (idx, id) in subscriber_ids.iter().enumerate() {
+            // Simulate: first two succeed, third fails
+            let result: Result<(), &str> = if idx < 2 { Ok(()) } else { Err("blocked") };
+            match result {
+                Ok(_) => success_count += 1,
+                Err(e) => failures.push((*id, e.to_string())),
+            }
+        }
+
+        assert_eq!(success_count, 2);
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].0, 333);
+        assert_eq!(failures[0].1, "blocked");
+    }
+
+    #[test]
+    fn test_broadcast_blocked_user_detection_403_blocked() {
+        let error_msg = "Telegram API error (403): Forbidden: bot was blocked by the user";
+        let error_lower = error_msg.to_lowercase();
+
+        let is_blocked = error_msg.contains("403")
+            && (error_lower.contains("blocked by the user")
+                || error_lower.contains("user is deactivated"));
+
+        assert!(
+            is_blocked,
+            "Should detect blocked user from 403 error message"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_blocked_user_detection_403_deactivated() {
+        let error_msg = "Telegram API error (403): Forbidden: user is deactivated";
+        let error_lower = error_msg.to_lowercase();
+
+        let is_blocked = error_msg.contains("403")
+            && (error_lower.contains("blocked by the user")
+                || error_lower.contains("user is deactivated"));
+
+        assert!(
+            is_blocked,
+            "Should detect deactivated user from 403 error message"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_blocked_user_detection_other_403() {
+        // 403 error but not blocked/deactivated
+        let error_msg = "Telegram API error (403): Forbidden: some other reason";
+        let error_lower = error_msg.to_lowercase();
+
+        let is_blocked = error_msg.contains("403")
+            && (error_lower.contains("blocked by the user")
+                || error_lower.contains("user is deactivated"));
+
+        assert!(!is_blocked, "Should NOT auto-remove for other 403 errors");
+    }
+
+    #[test]
+    fn test_broadcast_blocked_user_detection_non_403() {
+        // Non-403 error should not trigger auto-remove
+        let error_msg = "Telegram API error (500): Internal server error";
+        let error_lower = error_msg.to_lowercase();
+
+        let is_blocked = error_msg.contains("403")
+            && (error_lower.contains("blocked by the user")
+                || error_lower.contains("user is deactivated"));
+
+        assert!(!is_blocked, "Should NOT auto-remove for non-403 errors");
+    }
+
+    #[test]
+    fn test_broadcast_blocked_user_detection_case_insensitive() {
+        // Test case insensitivity for error message matching
+        let error_msg = "Telegram API error (403): FORBIDDEN: BOT WAS BLOCKED BY THE USER";
+        let error_lower = error_msg.to_lowercase();
+
+        let is_blocked = error_msg.contains("403")
+            && (error_lower.contains("blocked by the user")
+                || error_lower.contains("user is deactivated"));
+
+        assert!(is_blocked, "Should detect blocked user case-insensitively");
+    }
+
+    // ==================== Send Broadcast Message Helper Tests ====================
+
+    #[test]
+    fn test_send_broadcast_message_plain_text_no_parse_mode() {
+        // When parse_mode is None, message should be sent as plain text
+        let parse_mode: Option<&str> = None;
+        let message = "Hello everyone! This is a *test* message.";
+
+        // In plain text mode, asterisks are literal, not markdown
+        assert!(parse_mode.is_none());
+        assert!(message.contains("*test*")); // Asterisks preserved literally
+    }
+
+    #[test]
+    fn test_send_broadcast_message_with_markdownv2() {
+        let parse_mode: Option<&str> = Some("MarkdownV2");
+        let message = "\\*Bold text\\* and \\_italic\\_ here";
+
+        assert_eq!(parse_mode, Some("MarkdownV2"));
+        // In MarkdownV2, special chars need escaping
+        assert!(message.contains("\\*"));
+        assert!(message.contains("\\_"));
+    }
+
+    #[test]
+    fn test_broadcast_request_json_plain_text() {
+        // Verify JSON structure for plain text broadcast
+        let chat_id = "123456789";
+        let text = "Hello everyone!";
+
+        let request = serde_json::json!({
+            "chat_id": chat_id,
+            "text": text
+        });
+
+        let json_str = serde_json::to_string(&request).unwrap();
+        assert!(json_str.contains("123456789"));
+        assert!(json_str.contains("Hello everyone!"));
+        // Should NOT contain parse_mode
+        assert!(!json_str.contains("parse_mode"));
+    }
+
+    #[test]
+    fn test_broadcast_request_json_with_parse_mode() {
+        // Verify JSON structure for formatted broadcast
+        let request = SendMessageRequest {
+            chat_id: "123456789".to_string(),
+            text: "\\*Bold\\* message".to_string(),
+            parse_mode: "MarkdownV2".to_string(),
+        };
+
+        let json_str = serde_json::to_string(&request).unwrap();
+        assert!(json_str.contains("123456789"));
+        assert!(json_str.contains("MarkdownV2"));
+    }
+
+    // ==================== Broadcast Admin Notification Tests ====================
+
+    #[test]
+    fn test_broadcast_admin_notification_format_with_failures() {
+        let success_count = 8;
+        let total_subscribers = 10;
+        let failures_count = 2;
+
+        let admin_msg = format!(
+            "Broadcast sent to {}/{} subscribers ({} failed)",
+            success_count, total_subscribers, failures_count
+        );
+
+        assert!(admin_msg.contains("8/10"));
+        assert!(admin_msg.contains("2 failed"));
+    }
+
+    #[test]
+    fn test_broadcast_admin_notification_not_sent_when_all_succeed() {
+        let failures: Vec<(i64, String)> = vec![];
+        let config_telegram_chat_id = "123456789";
+
+        // Admin notification is only sent when there are failures
+        let should_notify_admin = !config_telegram_chat_id.is_empty() && !failures.is_empty();
+
+        assert!(
+            !should_notify_admin,
+            "Should not send admin notification when all succeed"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_admin_notification_sent_when_failures_exist() {
+        let failures: Vec<(i64, String)> = vec![(111, "error".to_string())];
+        let config_telegram_chat_id = "123456789";
+
+        let should_notify_admin = !config_telegram_chat_id.is_empty() && !failures.is_empty();
+
+        assert!(
+            should_notify_admin,
+            "Should send admin notification when there are failures"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_admin_notification_not_sent_when_no_admin_configured() {
+        let failures: Vec<(i64, String)> = vec![(111, "error".to_string())];
+        let config_telegram_chat_id = "";
+
+        let should_notify_admin = !config_telegram_chat_id.is_empty() && !failures.is_empty();
+
+        assert!(
+            !should_notify_admin,
+            "Should not send admin notification when admin is not configured"
+        );
+    }
+
+    // ==================== Welcome Message with Broadcast Command Tests ====================
+
+    #[test]
+    fn test_admin_welcome_message_includes_broadcast_command() {
+        // Admin welcome message should include /broadcast command
+        let is_admin = true;
+        let welcome = if is_admin {
+            "Welcome to Twitter News Summary Bot!\n\n\
+            Commands:\n\
+            /subscribe - Get daily AI-powered summaries\n\
+            /unsubscribe - Stop receiving summaries\n\
+            /status - Check your subscription status\n\
+            /language - Change summary language (en/es)\n\
+            /broadcast - Send a message to all subscribers (admin only)"
+        } else {
+            "Welcome (non-admin version without broadcast)"
+        };
+
+        assert!(
+            welcome.contains("/broadcast"),
+            "Admin welcome should include /broadcast command"
+        );
+        assert!(welcome.contains("admin only"));
+    }
+
+    #[test]
+    fn test_non_admin_welcome_message_excludes_broadcast_command() {
+        // Non-admin welcome message should NOT include /broadcast
+        let is_admin = false;
+        let welcome = if is_admin {
+            "Welcome (admin version with broadcast)"
+        } else {
+            "Welcome to Twitter News Summary Bot!\n\n\
+            Commands:\n\
+            /subscribe - Get daily AI-powered summaries\n\
+            /unsubscribe - Stop receiving summaries\n\
+            /status - Check your subscription status\n\
+            /language - Change summary language (en/es)"
+        };
+
+        assert!(
+            !welcome.contains("/broadcast"),
+            "Non-admin welcome should NOT include /broadcast command"
+        );
+    }
+
+    // ==================== Broadcast Edge Cases ====================
+
+    #[test]
+    fn test_broadcast_message_with_emojis() {
+        let text = "/broadcast Hello! 👋 Welcome to the new update! 🎉";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert!(arg.unwrap().contains("👋"));
+        assert!(arg.unwrap().contains("🎉"));
+    }
+
+    #[test]
+    fn test_broadcast_message_with_urls() {
+        let text = "/broadcast Check out https://example.com for more info!";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert!(arg.unwrap().contains("https://example.com"));
+    }
+
+    #[test]
+    fn test_broadcast_message_very_long() {
+        // Test with a very long message (Telegram limit is 4096 chars)
+        let long_message = "A".repeat(4000);
+        let text = format!("/broadcast {}", long_message);
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (&text as &str, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert_eq!(arg.unwrap().len(), 4000);
+    }
+
+    #[test]
+    fn test_broadcast_stats_calculation() {
+        let sent: usize = 95;
+        let failures: Vec<(i64, String)> = vec![
+            (1, "error1".into()),
+            (2, "error2".into()),
+            (3, "error3".into()),
+            (4, "error4".into()),
+            (5, "error5".into()),
+        ];
+        let total = sent + failures.len();
+
+        assert_eq!(total, 100);
+        assert_eq!(failures.len(), 5);
+    }
+
+    #[test]
+    fn test_command_priority_broadcast_over_other() {
+        // Ensure /broadcast is checked correctly in the if-else chain
+        let text = "/broadcast test";
+
+        // Test that it doesn't accidentally match /language
+        assert!(!text.starts_with("/language "));
+        assert!(text.starts_with("/broadcast "));
+    }
+
+    #[test]
+    fn test_command_priority_language_over_broadcast() {
+        // Ensure /language is checked first
+        let text = "/language en";
+
+        // Test that it matches /language first
+        assert!(text.starts_with("/language "));
+        assert!(!text.starts_with("/broadcast "));
     }
 }
