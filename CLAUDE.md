@@ -66,7 +66,8 @@ See **Environment Variables Reference** section below for complete details.
 - `config.rs` - Environment variable loading and validation
 - `rss.rs` - Nitter RSS feed fetcher (reads from usernames file, main tweet source)
 - `openai.rs` - OpenAI chat completions for summarization
-- `telegram.rs` - Telegram Bot API messaging
+- `telegram.rs` - Telegram Bot API messaging and subscriber management
+- `translation.rs` - Multi-language translation via OpenAI (supports English, Spanish)
 - `twitter.rs` - Twitter API v2 client (only used by export binary, optional)
 - `bin/fetch_list_members.rs` - Optional "export" binary to fetch list members via Twitter API
 
@@ -111,10 +112,23 @@ See **Environment Variables Reference** section below for complete details.
 
 ### Telegram Delivery (src/telegram.rs)
 - Uses Telegram Bot API `/sendMessage` endpoint
-- Formats message with header: "📰 *Twitter Summary*" + UTC timestamp
-- Uses Markdown parse mode for formatting
+- Formats message with localized header (e.g., "📰 *Twitter Summary*" or "📰 *Resumen de Twitter*") + UTC timestamp
+- Uses MarkdownV2 parse mode for formatting
 - Bot token embedded in URL, no separate authentication needed
 - Supports both personal chats and group chats (bot must be added to group)
+- Manages subscriber preferences (language, chat ID) in PostgreSQL database
+- Translates summaries on-demand for non-English subscribers via `translation.rs`
+- Caches translations in database to avoid redundant API calls
+
+### Multi-Language Support (src/translation.rs)
+- Summaries are generated in English (canonical language)
+- Subscribers can set their preferred language via Telegram bot commands
+- Supported languages: English (`en`), Spanish (`es`)
+- Translation uses OpenAI Chat Completions API with specialized prompts
+- Translation rules preserve: @handles, #hashtags, $cashtags, URLs, proper names, technical terms
+- Headers are localized per language (e.g., "Twitter Summary" → "Resumen de Twitter")
+- Translations are cached in database per summary to avoid redundant API calls
+- If translation fails, subscribers receive English content with a failure notice
 
 ### Error Handling
 - Uses `anyhow::Result` for error propagation throughout
