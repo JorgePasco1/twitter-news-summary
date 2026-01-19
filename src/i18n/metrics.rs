@@ -307,11 +307,14 @@ mod tests {
 
     #[test]
     fn test_metrics_persist_across_calls() {
-        reset_metrics();
+        // Note: Don't reset here - this test verifies the singleton behavior
+        // by checking that incrementing through one reference is visible through another
         let metrics1 = TranslationMetrics::global();
+        let initial = metrics1.cache_hits();
         metrics1.record_cache_hit();
 
         let metrics2 = TranslationMetrics::global();
-        assert_eq!(metrics2.cache_hits(), 1);
+        // Value should have increased by 1 from the initial value
+        assert_eq!(metrics2.cache_hits(), initial + 1);
     }
 }

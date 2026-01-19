@@ -312,4 +312,572 @@ mod tests {
         assert!(ENGLISH_STRINGS.language_settings.contains("{current}"));
         assert!(SPANISH_STRINGS.language_settings.contains("{current}"));
     }
+
+    // ==================== MarkdownV2 Validation Tests ====================
+    //
+    // These tests ensure that all template strings are properly pre-escaped for
+    // Telegram's MarkdownV2 format. This prevents the "Character 'X' is reserved
+    // and must be escaped" errors that can occur in production.
+    //
+    // MarkdownV2 special characters that MUST be escaped: _ * [ ] ( ) ~ ` > # + - = | { } . !
+    // EXCEPTION: * is used intentionally for bold formatting and should NOT be escaped in those contexts.
+
+    /// Characters that must be escaped in MarkdownV2 (except when used for formatting)
+    /// Note: This constant is kept for documentation purposes and potential future use.
+    #[allow(dead_code)]
+    const MARKDOWNV2_SPECIAL_CHARS: [char; 18] = [
+        '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!',
+    ];
+
+    /// Characters that are typically problematic (the ones that caused the production bug)
+    /// These are often forgotten when writing template strings.
+    const COMMONLY_FORGOTTEN_CHARS: [char; 5] = ['-', '.', '!', '(', ')'];
+
+    /// Check if a character at a given position in a string is properly escaped.
+    /// A character is properly escaped if it's preceded by a backslash that is NOT itself escaped.
+    fn is_escaped_at(s: &str, pos: usize) -> bool {
+        if pos == 0 {
+            return false;
+        }
+        let bytes = s.as_bytes();
+        let mut backslash_count = 0;
+        let mut check_pos = pos;
+        while check_pos > 0 {
+            check_pos -= 1;
+            if bytes[check_pos] == b'\\' {
+                backslash_count += 1;
+            } else {
+                break;
+            }
+        }
+        // Character is escaped if preceded by an odd number of backslashes
+        backslash_count % 2 == 1
+    }
+
+    /// Check if a character appears unescaped in a string.
+    /// Returns the positions of all unescaped occurrences.
+    fn find_unescaped_chars(s: &str, chars: &[char]) -> Vec<(usize, char)> {
+        let mut unescaped = Vec::new();
+
+        for (pos, c) in s.char_indices() {
+            if chars.contains(&c) && !is_escaped_at(s, pos) {
+                // Special case: * is allowed unescaped when used for bold formatting (*text*)
+                // Check if this is part of a bold pattern
+                if c == '*' && is_bold_formatting_asterisk(s, pos) {
+                    continue;
+                }
+                // Special case: { and } are allowed for placeholders like {language}
+                if (c == '{' || c == '}') && is_placeholder_brace(s, pos, c) {
+                    continue;
+                }
+                unescaped.push((pos, c));
+            }
+        }
+        unescaped
+    }
+
+    /// Check if an asterisk at the given position is part of bold formatting (*text*)
+    fn is_bold_formatting_asterisk(s: &str, pos: usize) -> bool {
+        let bytes = s.as_bytes();
+        let len = bytes.len();
+
+        // Look for opening asterisk: followed by non-whitespace, non-asterisk
+        if pos + 1 < len {
+            let next_byte = bytes[pos + 1];
+            if next_byte != b' ' && next_byte != b'\n' && next_byte != b'*' {
+                // Could be opening asterisk of bold
+                // Search for closing asterisk
+                if let Some(rest) = s.get(pos + 1..) {
+                    if rest.contains('*') {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Look for closing asterisk: preceded by non-whitespace, non-asterisk
+        if pos > 0 {
+            let prev_byte = bytes[pos - 1];
+            if prev_byte != b' ' && prev_byte != b'\n' && prev_byte != b'*' && prev_byte != b'\\' {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check if a brace at the given position is part of a placeholder like {language}
+    fn is_placeholder_brace(s: &str, pos: usize, c: char) -> bool {
+        if c == '{' {
+            // Opening brace: check if followed by alphanumeric and eventually }
+            if let Some(rest) = s.get(pos + 1..) {
+                // Valid placeholder: {word} where word is alphanumeric/underscore
+                for (i, ch) in rest.char_indices() {
+                    if ch == '}' && i > 0 {
+                        return true; // Found closing brace
+                    }
+                    if !ch.is_alphanumeric() && ch != '_' {
+                        return false; // Invalid character for placeholder name
+                    }
+                }
+            }
+        } else if c == '}' {
+            // Closing brace: check if there's a matching { before it
+            if let Some(before) = s.get(..pos) {
+                if let Some(open_pos) = before.rfind('{') {
+                    let between = &before[open_pos + 1..];
+                    // Check if all characters between { and } are valid placeholder chars
+                    if !between.is_empty()
+                        && between.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Validate a template string for proper MarkdownV2 escaping.
+    /// Returns a list of validation errors if any issues are found.
+    fn validate_markdownv2_template(name: &str, template: &str) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        // Check for commonly forgotten characters (the ones that caused the bug)
+        let unescaped = find_unescaped_chars(template, &COMMONLY_FORGOTTEN_CHARS);
+        for (pos, c) in unescaped {
+            errors.push(format!(
+                "{}: Unescaped '{}' at position {} - must be escaped as '\\{}'",
+                name, c, pos, c
+            ));
+        }
+
+        errors
+    }
+
+    /// Helper to get all string fields from a LanguageStrings struct
+    fn get_all_string_fields(strings: &LanguageStrings) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("summary_header", strings.summary_header),
+            (
+                "translation_failure_notice",
+                strings.translation_failure_notice,
+            ),
+            ("welcome_admin", strings.welcome_admin),
+            ("welcome_user", strings.welcome_user),
+            ("subscribe_already", strings.subscribe_already),
+            ("subscribe_success", strings.subscribe_success),
+            ("unsubscribe_success", strings.unsubscribe_success),
+            (
+                "unsubscribe_not_subscribed",
+                strings.unsubscribe_not_subscribed,
+            ),
+            ("status_subscribed_admin", strings.status_subscribed_admin),
+            ("status_subscribed_user", strings.status_subscribed_user),
+            ("status_not_subscribed", strings.status_not_subscribed),
+            ("language_not_subscribed", strings.language_not_subscribed),
+            ("language_changed_english", strings.language_changed_english),
+            ("language_changed_spanish", strings.language_changed_spanish),
+            ("language_invalid", strings.language_invalid),
+            ("language_settings", strings.language_settings),
+            ("broadcast_admin_only", strings.broadcast_admin_only),
+            ("broadcast_success", strings.broadcast_success),
+            ("broadcast_partial", strings.broadcast_partial),
+            ("broadcast_failed", strings.broadcast_failed),
+            ("broadcast_usage", strings.broadcast_usage),
+            ("unknown_command", strings.unknown_command),
+            ("welcome_summary_header", strings.welcome_summary_header),
+        ]
+    }
+
+    // ---------- English MarkdownV2 Validation Tests ----------
+
+    #[test]
+    fn test_english_all_templates_valid_markdownv2() {
+        let fields = get_all_string_fields(&ENGLISH_STRINGS);
+        let mut all_errors = Vec::new();
+
+        for (name, template) in fields {
+            let errors =
+                validate_markdownv2_template(&format!("ENGLISH_STRINGS.{}", name), template);
+            all_errors.extend(errors);
+        }
+
+        if !all_errors.is_empty() {
+            panic!(
+                "English templates have invalid MarkdownV2 escaping:\n{}",
+                all_errors.join("\n")
+            );
+        }
+    }
+
+    #[test]
+    fn test_english_welcome_admin_special_chars_escaped() {
+        // This template contains many special characters that need escaping
+        let template = ENGLISH_STRINGS.welcome_admin;
+
+        // Should contain escaped hyphens for command descriptions
+        assert!(
+            template.contains("\\-"),
+            "Hyphens in welcome_admin should be escaped"
+        );
+
+        // Should contain escaped parentheses
+        assert!(
+            template.contains("\\(") && template.contains("\\)"),
+            "Parentheses in welcome_admin should be escaped"
+        );
+
+        // Should contain escaped periods
+        assert!(
+            template.contains("\\."),
+            "Periods in welcome_admin should be escaped"
+        );
+
+        // Should contain escaped exclamation marks
+        assert!(
+            template.contains("\\!"),
+            "Exclamation marks in welcome_admin should be escaped"
+        );
+    }
+
+    #[test]
+    fn test_english_status_subscribed_admin_special_chars_escaped() {
+        let template = ENGLISH_STRINGS.status_subscribed_admin;
+        let errors = validate_markdownv2_template("status_subscribed_admin", template);
+        assert!(
+            errors.is_empty(),
+            "status_subscribed_admin should have all special chars escaped: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_english_language_settings_special_chars_escaped() {
+        let template = ENGLISH_STRINGS.language_settings;
+        let errors = validate_markdownv2_template("language_settings", template);
+        assert!(
+            errors.is_empty(),
+            "language_settings should have all special chars escaped: {:?}",
+            errors
+        );
+
+        // Should preserve bold formatting with unescaped *
+        assert!(
+            template.contains("*Language Settings*"),
+            "Bold formatting should be preserved"
+        );
+    }
+
+    // ---------- Spanish MarkdownV2 Validation Tests ----------
+
+    #[test]
+    fn test_spanish_all_templates_valid_markdownv2() {
+        let fields = get_all_string_fields(&SPANISH_STRINGS);
+        let mut all_errors = Vec::new();
+
+        for (name, template) in fields {
+            let errors =
+                validate_markdownv2_template(&format!("SPANISH_STRINGS.{}", name), template);
+            all_errors.extend(errors);
+        }
+
+        if !all_errors.is_empty() {
+            panic!(
+                "Spanish templates have invalid MarkdownV2 escaping:\n{}",
+                all_errors.join("\n")
+            );
+        }
+    }
+
+    #[test]
+    fn test_spanish_welcome_admin_special_chars_escaped() {
+        let template = SPANISH_STRINGS.welcome_admin;
+
+        // Should contain escaped hyphens
+        assert!(
+            template.contains("\\-"),
+            "Hyphens in Spanish welcome_admin should be escaped"
+        );
+
+        // Should contain escaped parentheses
+        assert!(
+            template.contains("\\(") && template.contains("\\)"),
+            "Parentheses in Spanish welcome_admin should be escaped"
+        );
+
+        // Should contain escaped periods
+        assert!(
+            template.contains("\\."),
+            "Periods in Spanish welcome_admin should be escaped"
+        );
+
+        // Should contain escaped exclamation marks
+        assert!(
+            template.contains("\\!"),
+            "Exclamation marks in Spanish welcome_admin should be escaped"
+        );
+    }
+
+    #[test]
+    fn test_spanish_translation_failure_notice_special_chars_escaped() {
+        let template = SPANISH_STRINGS.translation_failure_notice;
+        let errors = validate_markdownv2_template("translation_failure_notice", template);
+        assert!(
+            errors.is_empty(),
+            "translation_failure_notice should have all special chars escaped: {:?}",
+            errors
+        );
+
+        // Should have escaped brackets for [Nota: ...]
+        assert!(
+            template.contains("\\[") && template.contains("\\]"),
+            "Brackets in translation_failure_notice should be escaped"
+        );
+    }
+
+    // ---------- Bold Formatting Preservation Tests ----------
+
+    #[test]
+    fn test_bold_formatting_preserved_in_english() {
+        // Templates that use bold formatting should have unescaped * around text
+        assert!(
+            ENGLISH_STRINGS
+                .language_settings
+                .contains("*Language Settings*"),
+            "Bold formatting should be preserved in language_settings"
+        );
+        assert!(
+            ENGLISH_STRINGS
+                .broadcast_success
+                .contains("*Broadcast sent successfully*"),
+            "Bold formatting should be preserved in broadcast_success"
+        );
+        assert!(
+            ENGLISH_STRINGS
+                .broadcast_partial
+                .contains("*Broadcast completed*"),
+            "Bold formatting should be preserved in broadcast_partial"
+        );
+        assert!(
+            ENGLISH_STRINGS
+                .welcome_summary_header
+                .contains("*Hey\\! Here's what you missed*"),
+            "Bold formatting should be preserved in welcome_summary_header"
+        );
+    }
+
+    #[test]
+    fn test_bold_formatting_preserved_in_spanish() {
+        assert!(
+            SPANISH_STRINGS
+                .language_settings
+                .contains("*Configuración de Idioma*"),
+            "Bold formatting should be preserved in Spanish language_settings"
+        );
+        assert!(
+            SPANISH_STRINGS
+                .broadcast_success
+                .contains("*¡Difusión enviada exitosamente*"),
+            "Bold formatting should be preserved in Spanish broadcast_success"
+        );
+        assert!(
+            SPANISH_STRINGS
+                .broadcast_partial
+                .contains("*Difusión completada*"),
+            "Bold formatting should be preserved in Spanish broadcast_partial"
+        );
+    }
+
+    // ---------- Placeholder Substitution Tests ----------
+
+    #[test]
+    fn test_placeholder_substitution_with_escaped_template() {
+        // Test that placeholder substitution works correctly with pre-escaped templates
+        let template = ENGLISH_STRINGS.status_subscribed_admin;
+
+        // Substitute placeholders
+        let result = template
+            .replace("{language}", "English")
+            .replace("{count}", "42");
+
+        assert!(result.contains("English"));
+        assert!(result.contains("42"));
+        // Should still have the emojis and structure
+        assert!(result.contains("✅"));
+        assert!(result.contains("🌐"));
+        assert!(result.contains("📊"));
+    }
+
+    #[test]
+    fn test_placeholder_substitution_preserves_escaping() {
+        let template = ENGLISH_STRINGS.language_settings;
+
+        // Substitute placeholder
+        let result = template.replace("{current}", "English");
+
+        // The escaped characters should still be escaped
+        assert!(
+            result.contains("\\-"),
+            "Escaping should be preserved after placeholder substitution"
+        );
+    }
+
+    #[test]
+    fn test_all_placeholders_have_valid_syntax() {
+        // All placeholders should use the {name} format
+        let placeholder_pattern = regex::Regex::new(r"\{([a-z_]+)\}").unwrap();
+
+        let english_fields = get_all_string_fields(&ENGLISH_STRINGS);
+        let spanish_fields = get_all_string_fields(&SPANISH_STRINGS);
+
+        // Known valid placeholders
+        let valid_placeholders = [
+            "language", "count", "current", "sent", "failed", "total", "error",
+        ];
+
+        for (name, template) in english_fields.iter().chain(spanish_fields.iter()) {
+            for cap in placeholder_pattern.captures_iter(template) {
+                let placeholder_name = cap.get(1).unwrap().as_str();
+                assert!(
+                    valid_placeholders.contains(&placeholder_name),
+                    "Unknown placeholder '{{{}}}' in {}: should be one of {:?}",
+                    placeholder_name,
+                    name,
+                    valid_placeholders
+                );
+            }
+        }
+    }
+
+    // ---------- Regression Test: Specific Characters That Caused the Bug ----------
+
+    #[test]
+    fn test_regression_hyphen_escaping() {
+        // The hyphen (-) was one of the characters that caused the production bug.
+        // All hyphens in user-facing strings must be escaped as \-
+
+        // Test specific templates that are known to use hyphens
+        let templates_with_hyphens = [
+            ("welcome_admin", ENGLISH_STRINGS.welcome_admin),
+            ("welcome_user", ENGLISH_STRINGS.welcome_user),
+            ("language_invalid", ENGLISH_STRINGS.language_invalid),
+            ("language_settings", ENGLISH_STRINGS.language_settings),
+            ("Spanish welcome_admin", SPANISH_STRINGS.welcome_admin),
+            ("Spanish welcome_user", SPANISH_STRINGS.welcome_user),
+        ];
+
+        for (name, template) in templates_with_hyphens {
+            let unescaped = find_unescaped_chars(template, &['-']);
+            assert!(
+                unescaped.is_empty(),
+                "Regression: {} contains unescaped hyphens at positions: {:?}",
+                name,
+                unescaped
+            );
+        }
+    }
+
+    #[test]
+    fn test_regression_period_escaping() {
+        // The period (.) was one of the characters that caused the production bug.
+        let templates_with_periods = [
+            ("subscribe_success", ENGLISH_STRINGS.subscribe_success),
+            ("unsubscribe_success", ENGLISH_STRINGS.unsubscribe_success),
+            ("broadcast_usage", ENGLISH_STRINGS.broadcast_usage),
+            (
+                "Spanish subscribe_success",
+                SPANISH_STRINGS.subscribe_success,
+            ),
+        ];
+
+        for (name, template) in templates_with_periods {
+            let unescaped = find_unescaped_chars(template, &['.']);
+            assert!(
+                unescaped.is_empty(),
+                "Regression: {} contains unescaped periods at positions: {:?}",
+                name,
+                unescaped
+            );
+        }
+    }
+
+    #[test]
+    fn test_regression_exclamation_escaping() {
+        // The exclamation mark (!) was one of the characters that caused the production bug.
+        let templates_with_exclamations = [
+            ("subscribe_already", ENGLISH_STRINGS.subscribe_already),
+            ("subscribe_success", ENGLISH_STRINGS.subscribe_success),
+            ("broadcast_success", ENGLISH_STRINGS.broadcast_success),
+            (
+                "Spanish subscribe_already",
+                SPANISH_STRINGS.subscribe_already,
+            ),
+        ];
+
+        for (name, template) in templates_with_exclamations {
+            let unescaped = find_unescaped_chars(template, &['!']);
+            assert!(
+                unescaped.is_empty(),
+                "Regression: {} contains unescaped exclamation marks at positions: {:?}",
+                name,
+                unescaped
+            );
+        }
+    }
+
+    #[test]
+    fn test_regression_parentheses_escaping() {
+        // Parentheses ( and ) were characters that caused the production bug.
+        let templates_with_parentheses = [
+            ("welcome_admin", ENGLISH_STRINGS.welcome_admin),
+            ("welcome_user", ENGLISH_STRINGS.welcome_user),
+            ("Spanish welcome_admin", SPANISH_STRINGS.welcome_admin),
+            ("Spanish welcome_user", SPANISH_STRINGS.welcome_user),
+        ];
+
+        for (name, template) in templates_with_parentheses {
+            let unescaped = find_unescaped_chars(template, &['(', ')']);
+            assert!(
+                unescaped.is_empty(),
+                "Regression: {} contains unescaped parentheses at positions: {:?}",
+                name,
+                unescaped
+            );
+        }
+    }
+
+    // ---------- Comprehensive Field-by-Field Validation ----------
+
+    #[test]
+    fn test_every_english_field_individually() {
+        // Test each field individually to make error messages more specific
+        let fields = get_all_string_fields(&ENGLISH_STRINGS);
+
+        for (name, template) in fields {
+            let errors = validate_markdownv2_template(name, template);
+            assert!(
+                errors.is_empty(),
+                "ENGLISH_STRINGS.{} has MarkdownV2 escaping errors:\n{}",
+                name,
+                errors.join("\n")
+            );
+        }
+    }
+
+    #[test]
+    fn test_every_spanish_field_individually() {
+        // Test each field individually to make error messages more specific
+        let fields = get_all_string_fields(&SPANISH_STRINGS);
+
+        for (name, template) in fields {
+            let errors = validate_markdownv2_template(name, template);
+            assert!(
+                errors.is_empty(),
+                "SPANISH_STRINGS.{} has MarkdownV2 escaping errors:\n{}",
+                name,
+                errors.join("\n")
+            );
+        }
+    }
 }
