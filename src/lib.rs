@@ -5,4 +5,5 @@ pub mod rss;
 pub mod scheduler;
 pub mod security;
 pub mod telegram;
+pub mod translation;
 pub mod twitter;
