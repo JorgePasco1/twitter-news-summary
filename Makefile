@@ -44,7 +44,10 @@ run:
 # Run with test environment settings
 run-test:
 	@echo "🧪 Running with test environment settings..."
-	@env $$(grep -v '^#' .env.test | xargs) cargo run --bin twitter-news-summary
+	@set -a; \
+	  . ./.env.test; \
+	  set +a; \
+	  cargo run --bin twitter-news-summary
 
 # Preview summary without sending to Telegram (for testing)
 preview:
