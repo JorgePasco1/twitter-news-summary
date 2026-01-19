@@ -114,7 +114,8 @@ fn build_translation_user_prompt(summary: &str, target_language: &str) -> String
 
 /// Translate a summary from English to the target language
 ///
-/// Returns the translated text on success, or the original text with an error notice on failure.
+/// Returns the translated text on success, or an error on failure.
+/// The caller is responsible for handling the error (e.g., adding a failure notice).
 pub async fn translate_summary(
     client: &reqwest::Client,
     config: &Config,
@@ -166,7 +167,7 @@ pub async fn translate_summary(
         .choices
         .first()
         .map(|c| c.message.content.clone())
-        .unwrap_or_else(|| summary.to_string());
+        .context("OpenAI translation response contained no choices")?;
 
     Ok(translated)
 }
@@ -469,12 +470,12 @@ mod tests {
         let client = reqwest::Client::new();
 
         let summary = "Original summary";
-        let result = translate_summary(&client, &config, summary, Language::Spanish)
-            .await
-            .expect("Should succeed");
+        let result = translate_summary(&client, &config, summary, Language::Spanish).await;
 
-        // Should return original on empty choices
-        assert_eq!(result, summary);
+        // Should return an error on empty choices
+        assert!(result.is_err());
+        let error_message = result.unwrap_err().to_string();
+        assert!(error_message.contains("no choices"));
     }
 
     // ==================== Request Structure Tests ====================
