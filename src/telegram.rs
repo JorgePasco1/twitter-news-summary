@@ -354,7 +354,10 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                 .await?;
             } else if let Some(broadcast_msg) = arg {
                 // Send broadcast to all subscribers
-                info!("Broadcasting message from admin {}: {}", chat_id, broadcast_msg);
+                info!(
+                    "Broadcasting message from admin {}: {}",
+                    chat_id, broadcast_msg
+                );
 
                 match broadcast_message(config, db, broadcast_msg, None).await {
                     Ok((sent, failures)) => {
