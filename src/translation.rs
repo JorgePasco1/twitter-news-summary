@@ -333,6 +333,7 @@ mod tests {
 
     fn create_test_config(api_url: &str) -> Config {
         Config {
+            environment: "test".to_string(),
             twitter_bearer_token: None,
             twitter_list_id: None,
             openai_api_key: "test-openai-key".to_string(),

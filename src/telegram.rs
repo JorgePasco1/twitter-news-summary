@@ -506,6 +506,137 @@ pub async fn send_to_subscribers(
     Ok(())
 }
 
+/// Broadcast a custom message to all active subscribers
+///
+/// # Arguments
+/// * `config` - Application configuration
+/// * `db` - Database connection
+/// * `message` - The message to broadcast
+/// * `parse_mode` - Optional parse mode ("MarkdownV2" for formatted, None for plain text)
+///
+/// # Returns
+/// * Tuple of (successful sends count, Vec of (chat_id, error) for failures)
+pub async fn broadcast_message(
+    config: &Config,
+    db: &Database,
+    message: &str,
+    parse_mode: Option<&str>,
+) -> Result<(usize, Vec<(i64, String)>)> {
+    let subscribers = db.list_subscribers().await?;
+
+    if subscribers.is_empty() {
+        info!("No subscribers to broadcast to");
+        return Ok((0, Vec::new()));
+    }
+
+    info!("Broadcasting message to {} subscribers", subscribers.len());
+
+    let mut success_count = 0;
+    let mut failures: Vec<(i64, String)> = Vec::new();
+
+    for subscriber in &subscribers {
+        match send_broadcast_message(config, subscriber.chat_id, message, parse_mode).await {
+            Ok(_) => {
+                success_count += 1;
+                info!("✓ Broadcast sent to {}", subscriber.chat_id);
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+
+                // Auto-remove subscribers who blocked the bot or deleted their account
+                let error_lower = error_msg.to_lowercase();
+                let is_blocked = error_msg.contains("403")
+                    && (error_lower.contains("blocked by the user")
+                        || error_lower.contains("user is deactivated"));
+
+                if is_blocked {
+                    warn!(
+                        "✗ Auto-removing blocked/deactivated subscriber {}: {}",
+                        subscriber.chat_id, error_msg
+                    );
+                    if let Err(remove_err) = db.remove_subscriber(subscriber.chat_id).await {
+                        warn!("Failed to remove blocked subscriber: {}", remove_err);
+                    }
+                } else {
+                    warn!(
+                        "✗ Failed to broadcast to {}: {}",
+                        subscriber.chat_id, error_msg
+                    );
+                }
+
+                failures.push((subscriber.chat_id, error_msg));
+            }
+        }
+
+        // Small delay to avoid rate limiting
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    info!(
+        "Broadcast completed: {} successful, {} failed",
+        success_count,
+        failures.len()
+    );
+
+    // Send admin notification if configured and there were failures
+    if !config.telegram_chat_id.is_empty() && !failures.is_empty() {
+        if let Ok(admin_chat_id) = config.telegram_chat_id.parse::<i64>() {
+            let admin_msg = format!(
+                "📢 Broadcast sent to {}/{} subscribers \\({} failed\\)",
+                success_count,
+                subscribers.len(),
+                failures.len()
+            );
+            if let Err(e) = send_message(config, admin_chat_id, &admin_msg).await {
+                warn!("Failed to send admin notification: {}", e);
+            }
+        }
+    }
+
+    Ok((success_count, failures))
+}
+
+/// Send a broadcast message to a specific chat with optional parse mode
+async fn send_broadcast_message(
+    config: &Config,
+    chat_id: i64,
+    text: &str,
+    parse_mode: Option<&str>,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+
+    let url = format!(
+        "https://api.telegram.org/bot{}/sendMessage",
+        config.telegram_bot_token
+    );
+
+    // Build request based on parse mode
+    let response = if let Some(mode) = parse_mode {
+        let request = SendMessageRequest {
+            chat_id: chat_id.to_string(),
+            text: text.to_string(),
+            parse_mode: mode.to_string(),
+        };
+        client.post(&url).json(&request).send().await
+    } else {
+        // Plain text - send without parse_mode
+        let request = serde_json::json!({
+            "chat_id": chat_id.to_string(),
+            "text": text
+        });
+        client.post(&url).json(&request).send().await
+    }
+    .context("Failed to send request to Telegram API")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Telegram API error ({}): {}", status, body);
+    }
+
+    Ok(())
+}
+
 /// Send a test summary message to a specific chat ID
 pub async fn send_test_message(config: &Config, chat_id: &str, summary: &str) -> Result<()> {
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
