@@ -195,7 +195,13 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
         }
         "/subscribe" => {
             if db.is_subscribed(chat_id).await? {
-                let msg = Language::ENGLISH.config().strings.subscribe_already;
+                // Already subscribed - respond in their preferred language
+                let lang_code = db
+                    .get_subscriber_language(chat_id)
+                    .await?
+                    .unwrap_or_else(|| "en".to_string());
+                let user_lang = Language::from_code(&lang_code).unwrap_or(Language::ENGLISH);
+                let msg = user_lang.config().strings.subscribe_already;
                 send_message(config, chat_id, msg).await?;
             } else {
                 let (_, needs_welcome) = db.add_subscriber(chat_id, username.as_deref()).await?;
@@ -214,11 +220,19 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
             }
         }
         "/unsubscribe" => {
+            // Get language BEFORE removing (so we can respond in their language)
+            let lang_code = db
+                .get_subscriber_language(chat_id)
+                .await?
+                .unwrap_or_else(|| "en".to_string());
+            let user_lang = Language::from_code(&lang_code).unwrap_or(Language::ENGLISH);
+
             if db.remove_subscriber(chat_id).await? {
                 info!("Unsubscribed: {}", chat_id);
-                let msg = Language::ENGLISH.config().strings.unsubscribe_success;
+                let msg = user_lang.config().strings.unsubscribe_success;
                 send_message(config, chat_id, msg).await?;
             } else {
+                // Not subscribed - use English (we don't know their preference)
                 let msg = Language::ENGLISH
                     .config()
                     .strings
@@ -235,27 +249,33 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
                 !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
 
             let status_msg = if is_subscribed {
-                let lang = db
+                let lang_code = db
                     .get_subscriber_language(chat_id)
                     .await?
                     .unwrap_or_else(|| "en".to_string());
-                let lang_name = match lang.as_str() {
-                    "es" => "Spanish",
+
+                // Get the user's preferred language for the response
+                let user_lang = Language::from_code(&lang_code).unwrap_or(Language::ENGLISH);
+
+                // Display language name in the user's language
+                let lang_name = match lang_code.as_str() {
+                    "es" => "Español",
                     _ => "English",
                 };
 
                 if is_admin {
                     // Admin sees subscriber count
-                    let template = Language::ENGLISH.config().strings.status_subscribed_admin;
+                    let template = user_lang.config().strings.status_subscribed_admin;
                     template
                         .replace("{language}", lang_name)
                         .replace("{count}", &db.subscriber_count().await?.to_string())
                 } else {
                     // Regular users see their own status and language
-                    let template = Language::ENGLISH.config().strings.status_subscribed_user;
+                    let template = user_lang.config().strings.status_subscribed_user;
                     template.replace("{language}", lang_name)
                 }
             } else {
+                // Non-subscribers get English (we don't know their preference)
                 Language::ENGLISH
                     .config()
                     .strings
@@ -271,40 +291,46 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
             if !is_subscribed {
                 let msg = Language::ENGLISH.config().strings.language_not_subscribed;
                 send_message(config, chat_id, msg).await?;
-            } else if let Some(lang_arg) = arg {
-                // User specified a language: /language en or /language es
-                match lang_arg {
-                    "en" => {
-                        db.set_subscriber_language(chat_id, "en").await?;
-                        info!("Language changed to English for {}", chat_id);
-                        let msg = Language::ENGLISH.config().strings.language_changed_english;
-                        send_message(config, chat_id, msg).await?;
-                    }
-                    "es" => {
-                        db.set_subscriber_language(chat_id, "es").await?;
-                        info!("Language changed to Spanish for {}", chat_id);
-                        let msg = Language::SPANISH.config().strings.language_changed_spanish;
-                        send_message(config, chat_id, msg).await?;
-                    }
-                    _ => {
-                        let msg = Language::ENGLISH.config().strings.language_invalid;
-                        send_message(config, chat_id, msg).await?;
-                    }
-                }
             } else {
-                // No argument: show current language and options
+                // Get user's current language for responses
                 let current_lang = db
                     .get_subscriber_language(chat_id)
                     .await?
                     .unwrap_or_else(|| "en".to_string());
-                let current_name = match current_lang.as_str() {
-                    "es" => "Spanish",
-                    _ => "English",
-                };
+                let user_lang = Language::from_code(&current_lang).unwrap_or(Language::ENGLISH);
 
-                let template = Language::ENGLISH.config().strings.language_settings;
-                let msg = template.replace("{current}", current_name);
-                send_message(config, chat_id, &msg).await?;
+                if let Some(lang_arg) = arg {
+                    // User specified a language: /language en or /language es
+                    match lang_arg {
+                        "en" => {
+                            db.set_subscriber_language(chat_id, "en").await?;
+                            info!("Language changed to English for {}", chat_id);
+                            let msg = Language::ENGLISH.config().strings.language_changed_english;
+                            send_message(config, chat_id, msg).await?;
+                        }
+                        "es" => {
+                            db.set_subscriber_language(chat_id, "es").await?;
+                            info!("Language changed to Spanish for {}", chat_id);
+                            let msg = Language::SPANISH.config().strings.language_changed_spanish;
+                            send_message(config, chat_id, msg).await?;
+                        }
+                        _ => {
+                            // Invalid language - respond in user's current language
+                            let msg = user_lang.config().strings.language_invalid;
+                            send_message(config, chat_id, msg).await?;
+                        }
+                    }
+                } else {
+                    // No argument: show current language and options in user's language
+                    let current_name = match current_lang.as_str() {
+                        "es" => "Español",
+                        _ => "English",
+                    };
+
+                    let template = user_lang.config().strings.language_settings;
+                    let msg = template.replace("{current}", current_name);
+                    send_message(config, chat_id, &msg).await?;
+                }
             }
         }
         "/broadcast" => {
@@ -4855,6 +4881,157 @@ For details: [OpenAI Blog](https://openai.com/blog)"#;
         assert!(
             !has_double_escaping(template),
             "Original template should not have double-escaping"
+        );
+    }
+
+    // ==================== Language-Aware Response Tests ====================
+    //
+    // These tests verify that commands respond in the subscriber's preferred language.
+
+    #[test]
+    fn test_status_response_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber should get English status
+        let en_template = Language::ENGLISH.config().strings.status_subscribed_user;
+        assert!(
+            en_template.contains("You are subscribed"),
+            "English status should say 'You are subscribed'"
+        );
+
+        // Spanish subscriber should get Spanish status
+        let es_template = Language::SPANISH.config().strings.status_subscribed_user;
+        assert!(
+            es_template.contains("Estás suscrito"),
+            "Spanish status should say 'Estás suscrito'"
+        );
+
+        // Both should have the language placeholder
+        assert!(en_template.contains("{language}"));
+        assert!(es_template.contains("{language}"));
+    }
+
+    #[test]
+    fn test_subscribe_already_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber should get English message
+        let en_msg = Language::ENGLISH.config().strings.subscribe_already;
+        assert!(
+            en_msg.contains("already subscribed"),
+            "English should say 'already subscribed'"
+        );
+
+        // Spanish subscriber should get Spanish message
+        let es_msg = Language::SPANISH.config().strings.subscribe_already;
+        assert!(
+            es_msg.contains("Ya estás suscrito"),
+            "Spanish should say 'Ya estás suscrito'"
+        );
+    }
+
+    #[test]
+    fn test_unsubscribe_success_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber should get English message
+        let en_msg = Language::ENGLISH.config().strings.unsubscribe_success;
+        assert!(
+            en_msg.contains("Successfully unsubscribed"),
+            "English should say 'Successfully unsubscribed'"
+        );
+
+        // Spanish subscriber should get Spanish message
+        let es_msg = Language::SPANISH.config().strings.unsubscribe_success;
+        assert!(
+            es_msg.contains("cancelada exitosamente"),
+            "Spanish should say 'cancelada exitosamente'"
+        );
+    }
+
+    #[test]
+    fn test_language_settings_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber sees English settings
+        let en_template = Language::ENGLISH.config().strings.language_settings;
+        assert!(
+            en_template.contains("Language Settings"),
+            "English should say 'Language Settings'"
+        );
+        assert!(
+            en_template.contains("To change, use"),
+            "English should say 'To change, use'"
+        );
+
+        // Spanish subscriber sees Spanish settings
+        let es_template = Language::SPANISH.config().strings.language_settings;
+        assert!(
+            es_template.contains("Configuración de Idioma"),
+            "Spanish should say 'Configuración de Idioma'"
+        );
+        assert!(
+            es_template.contains("Para cambiar, usa"),
+            "Spanish should say 'Para cambiar, usa'"
+        );
+    }
+
+    #[test]
+    fn test_language_invalid_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber sees English error
+        let en_msg = Language::ENGLISH.config().strings.language_invalid;
+        assert!(
+            en_msg.contains("Invalid language"),
+            "English should say 'Invalid language'"
+        );
+
+        // Spanish subscriber sees Spanish error
+        let es_msg = Language::SPANISH.config().strings.language_invalid;
+        assert!(
+            es_msg.contains("Idioma inválido"),
+            "Spanish should say 'Idioma inválido'"
+        );
+    }
+
+    #[test]
+    fn test_language_from_code_returns_correct_strings() {
+        use crate::i18n::Language;
+
+        // Test that Language::from_code gives us the right language
+        let english = Language::from_code("en").unwrap();
+        let spanish = Language::from_code("es").unwrap();
+
+        assert_eq!(
+            english.config().strings.status_subscribed_user,
+            Language::ENGLISH.config().strings.status_subscribed_user
+        );
+        assert_eq!(
+            spanish.config().strings.status_subscribed_user,
+            Language::SPANISH.config().strings.status_subscribed_user
+        );
+
+        // Verify they're different
+        assert_ne!(
+            english.config().strings.status_subscribed_user,
+            spanish.config().strings.status_subscribed_user
+        );
+    }
+
+    #[test]
+    fn test_language_from_code_fallback_to_english() {
+        use crate::i18n::Language;
+
+        // Unknown language code should fail gracefully
+        let result = Language::from_code("xx");
+        assert!(result.is_err(), "Unknown language code should return error");
+
+        // Code that uses unwrap_or_else pattern should fall back to English
+        let fallback = Language::from_code("xx").unwrap_or(Language::ENGLISH);
+        assert_eq!(
+            fallback.config().strings.status_subscribed_user,
+            Language::ENGLISH.config().strings.status_subscribed_user
         );
     }
 }
