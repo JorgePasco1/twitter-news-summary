@@ -3969,7 +3969,7 @@ For details: [OpenAI Blog](https://openai.com/blog)"#;
     #[test]
     fn test_broadcast_subscriber_iteration_with_failures() {
         // Simulates broadcast with some failures
-        let subscriber_ids = vec![111i64, 222, 333];
+        let subscriber_ids = [111i64, 222, 333];
         let mut success_count: usize = 0;
         let mut failures: Vec<(i64, String)> = Vec::new();
 
