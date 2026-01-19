@@ -2493,6 +2493,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "proptest",
+ "regex",
  "reqwest",
  "rss",
  "serde",

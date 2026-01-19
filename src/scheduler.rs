@@ -118,6 +118,41 @@ pub async fn trigger_summary(config: &Config, db: &Database) -> Result<()> {
     run_summary_job(config, db, &usernames).await
 }
 
+/// Generate a fresh summary and save to database WITHOUT broadcasting to subscribers.
+/// Use this for test endpoints where you want to generate content but only send to a specific user.
+pub async fn generate_summary_only(config: &Config, db: &Database) -> Result<String> {
+    // Read usernames from file
+    let usernames_content = std::fs::read_to_string(&config.usernames_file)?;
+    let usernames: Vec<String> = usernames_content
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    info!("Starting summary generation (no broadcast)");
+
+    // Fetch tweets
+    info!("Fetching tweets from RSS feeds");
+    let tweets = rss::fetch_tweets_from_rss(config, &usernames).await?;
+
+    if tweets.is_empty() {
+        anyhow::bail!("No tweets found in the specified time window");
+    }
+
+    info!("Fetched {} tweets", tweets.len());
+
+    // Generate summary
+    info!("Generating summary with OpenAI");
+    let client = reqwest::Client::new();
+    let summary = openai::summarize_tweets(&client, config, &tweets).await?;
+
+    // Save summary to database
+    db.save_summary(&summary).await?;
+    info!("✓ Summary generated and saved (not broadcast)");
+
+    Ok(summary)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

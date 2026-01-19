@@ -1,6 +1,11 @@
 //! Preview summary binary - generates and displays a summary without sending to Telegram
 //!
-//! Usage: cargo run --bin preview_summary
+//! Usage:
+//!   cargo run --bin preview                  # Fetch tweets and generate summary
+//!   cargo run --bin preview -- --use-cached  # Use cached tweets from last run
+//!   cargo run --bin preview -- --send        # Generate and send to test user
+//!   cargo run --bin preview -- --use-cached --send  # Use cached tweets and send
+//!   make preview                              # Same as first command
 //!
 //! Required environment variables:
 //! - OPENAI_API_KEY
@@ -12,13 +17,17 @@
 //! - MAX_TWEETS (defaults to 100)
 //! - SUMMARY_MAX_TOKENS (defaults to 2500)
 //! - SUMMARY_MAX_WORDS (defaults to 800)
+//!
+//! For --send flag:
+//! - TELEGRAM_BOT_TOKEN (required to send)
+//! - TEST_CHAT_ID (required to send)
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::fs;
 use std::path::Path;
 use tracing::info;
-use twitter_news_summary::{openai, rss};
+use twitter_news_summary::{openai, rss, telegram, twitter::Tweet};
 
 /// Minimal config for preview (no Telegram/DB required)
 struct PreviewConfig {
@@ -91,6 +100,46 @@ impl PreviewConfig {
     }
 }
 
+/// Save tweets to cache file
+fn save_tweets_cache(tweets: &[Tweet]) -> Result<()> {
+    let cache_dir = Path::new("run-history");
+    fs::create_dir_all(cache_dir).context("Failed to create run-history directory")?;
+
+    let cache_path = cache_dir.join("tweets_cache.json");
+    let json = serde_json::to_string_pretty(tweets)?;
+    fs::write(&cache_path, json).context("Failed to write tweets cache")?;
+
+    info!(
+        "Saved {} tweets to cache at {}",
+        tweets.len(),
+        cache_path.display()
+    );
+    Ok(())
+}
+
+/// Load tweets from cache file
+fn load_tweets_cache() -> Result<Vec<Tweet>> {
+    let cache_path = Path::new("run-history/tweets_cache.json");
+
+    if !cache_path.exists() {
+        anyhow::bail!(
+            "No tweets cache found at {}. Run without --use-cached first.",
+            cache_path.display()
+        );
+    }
+
+    let contents = fs::read_to_string(cache_path).context("Failed to read tweets cache")?;
+    let tweets: Vec<Tweet> =
+        serde_json::from_str(&contents).context("Failed to parse tweets cache")?;
+
+    info!(
+        "Loaded {} tweets from cache at {}",
+        tweets.len(),
+        cache_path.display()
+    );
+    Ok(tweets)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
@@ -104,34 +153,58 @@ async fn main() -> Result<()> {
     // Load environment from .env file
     dotenvy::dotenv().ok();
 
+    // Parse CLI arguments
+    let args: Vec<String> = std::env::args().collect();
+    let use_cached = args
+        .iter()
+        .any(|arg| arg == "--use-cached" || arg == "--use-cached-tweets");
+    let send_to_telegram = args.iter().any(|arg| arg == "--send");
+
     info!("Loading configuration...");
     let preview_config = PreviewConfig::from_env()?;
     let config = preview_config.to_full_config();
 
-    // Read usernames
-    let usernames_content =
-        std::fs::read_to_string(&config.usernames_file).context("Failed to read usernames file")?;
-    let usernames: Vec<String> = usernames_content
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    // Fetch or load tweets
+    let tweets = if use_cached {
+        info!("Using cached tweets from previous run...");
+        load_tweets_cache()?
+    } else {
+        // Read usernames
+        let usernames_content = std::fs::read_to_string(&config.usernames_file)
+            .context("Failed to read usernames file")?;
+        let usernames: Vec<String> = usernames_content
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
 
-    info!("Loaded {} usernames", usernames.len());
+        info!("Loaded {} usernames", usernames.len());
 
-    // Fetch tweets
-    info!(
-        "Fetching tweets from RSS feeds (last {} hours)...",
-        config.hours_lookback
-    );
-    let tweets = rss::fetch_tweets_from_rss(&config, &usernames).await?;
+        // Fetch tweets
+        info!(
+            "Fetching tweets from RSS feeds (last {} hours)...",
+            config.hours_lookback
+        );
+        let fetched_tweets = rss::fetch_tweets_from_rss(&config, &usernames).await?;
+
+        // Save to cache for future use
+        if !fetched_tweets.is_empty() {
+            save_tweets_cache(&fetched_tweets)?;
+        }
+
+        fetched_tweets
+    };
 
     if tweets.is_empty() {
         println!("\n========== NO TWEETS FOUND ==========");
-        println!(
-            "No tweets found in the last {} hours.",
-            config.hours_lookback
-        );
+        if use_cached {
+            println!("No tweets in cache.");
+        } else {
+            println!(
+                "No tweets found in the last {} hours.",
+                config.hours_lookback
+            );
+        }
         println!("======================================\n");
         return Ok(());
     }
@@ -142,11 +215,13 @@ async fn main() -> Result<()> {
     let client = reqwest::Client::new();
     let summary = openai::summarize_tweets(&client, &config, &tweets).await?;
 
-    // Format the message exactly as Telegram would receive it
-    let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
+    // Format the message exactly as Telegram would receive it (MarkdownV2)
+    let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
+    let escaped_timestamp = telegram::escape_markdownv2(&timestamp);
     let formatted_message = format!(
-        "<b>Twitter News Summary</b>\n<i>{}</i>\n\n{}",
-        timestamp, summary
+        "📰 *Twitter Summary*\n_{}_\n\n{}",
+        escaped_timestamp,
+        telegram::escape_markdownv2(&summary)
     );
 
     // Save to run-history/
@@ -159,18 +234,39 @@ async fn main() -> Result<()> {
     let file_content = format!(
         "# Summary Preview - {}\n\n\
          **Tweets processed:** {}\n\
-         **Time window:** last {} hours\n\n\
+         **Time window:** last {} hours\n\
+         **Source:** {}\n\n\
          ---\n\n\
-         ## Telegram Message (HTML)\n\n\
-         ```html\n{}\n```\n\n\
+         ## Telegram Message (MarkdownV2)\n\n\
+         ```\n{}\n```\n\n\
          ---\n\n\
-         ## Raw Summary\n\n\
+         ## Raw Summary (from OpenAI)\n\n\
+         {}\n\n\
+         ---\n\n\
+         ## Sample Tweets\n\n\
          {}\n",
         timestamp,
         tweets.len(),
         config.hours_lookback,
+        if use_cached {
+            "cached tweets"
+        } else {
+            "fresh fetch"
+        },
         formatted_message,
-        summary
+        summary,
+        tweets
+            .iter()
+            .take(5)
+            .enumerate()
+            .map(|(i, t)| format!(
+                "{}. {} ({})",
+                i + 1,
+                t.text,
+                t.author_id.as_deref().unwrap_or("unknown")
+            ))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 
     fs::write(&filepath, &file_content).context("Failed to write summary to run-history")?;
@@ -188,16 +284,84 @@ async fn main() -> Result<()> {
         "║ Time window: last {} hours                                        ║",
         config.hours_lookback
     );
+    println!(
+        "║ Source: {:53} ║",
+        if use_cached {
+            "cached tweets"
+        } else {
+            "fresh fetch"
+        }
+    );
     println!("╚══════════════════════════════════════════════════════════════════╝");
     println!();
-    println!("--- HTML Message (as sent to Telegram) ---");
+    println!("--- MarkdownV2 Message (as sent to Telegram) ---");
     println!();
     println!("{}", formatted_message);
     println!();
     println!("--- End of Message ---");
     println!();
-    println!("Saved to: {}", filepath.display());
+    println!("💾 Saved to: {}", filepath.display());
+    if !use_cached {
+        println!("💾 Tweets cached to: run-history/tweets_cache.json");
+        println!("   (Use --use-cached flag to iterate on formatting without re-fetching)");
+    }
     println!();
+
+    // Send to Telegram if --send flag is present
+    if send_to_telegram {
+        println!();
+        println!("📤 Sending to Telegram...");
+
+        // Get Telegram credentials (optional for preview)
+        let telegram_token = match std::env::var("TELEGRAM_BOT_TOKEN") {
+            Ok(token) => token,
+            Err(_) => {
+                println!("❌ TELEGRAM_BOT_TOKEN not set. Cannot send.");
+                println!("   Set TELEGRAM_BOT_TOKEN in .env to use --send flag");
+                return Ok(());
+            }
+        };
+
+        let test_chat_id = match std::env::var("TEST_CHAT_ID") {
+            Ok(id) => id,
+            Err(_) => {
+                println!("❌ TEST_CHAT_ID not set. Cannot send.");
+                println!("   Set TEST_CHAT_ID in .env to use --send flag");
+                return Ok(());
+            }
+        };
+
+        // Create config with Telegram credentials
+        let test_config = twitter_news_summary::config::Config {
+            telegram_bot_token: telegram_token,
+            ..config
+        };
+
+        // Send message
+        match twitter_news_summary::telegram::send_test_message(
+            &test_config,
+            &test_chat_id,
+            &summary,
+        )
+        .await
+        {
+            Ok(_) => {
+                println!("✅ Message sent successfully to chat ID: {}", test_chat_id);
+            }
+            Err(e) => {
+                println!("❌ Failed to send message:");
+                // Print the full error chain for debugging
+                for (i, cause) in e.chain().enumerate() {
+                    if i == 0 {
+                        println!("   Error: {}", cause);
+                    } else {
+                        println!("   Caused by: {}", cause);
+                    }
+                }
+            }
+        }
+        println!();
+    }
 
     Ok(())
 }

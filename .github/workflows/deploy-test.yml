@@ -3,7 +3,7 @@ name: Deploy to Test Environment
 on:
   push:
     branches:
-      - develop
+      - test
     paths-ignore:
       - '**.md'
       - 'docs/**'
