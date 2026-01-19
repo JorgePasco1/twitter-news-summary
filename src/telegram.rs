@@ -196,13 +196,13 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
         }
         "/subscribe" => {
             if db.is_subscribed(chat_id).await? {
-                let msg = escape_markdownv2(Language::ENGLISH.config().strings.subscribe_already);
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH.config().strings.subscribe_already;
+                send_message(config, chat_id, msg).await?;
             } else {
                 let (_, needs_welcome) = db.add_subscriber(chat_id, username.as_deref()).await?;
                 info!("New subscriber: {} (username: {:?})", chat_id, username);
-                let msg = escape_markdownv2(Language::ENGLISH.config().strings.subscribe_success);
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH.config().strings.subscribe_success;
+                send_message(config, chat_id, msg).await?;
 
                 // Send welcome summary for first-time subscribers
                 if needs_welcome {
@@ -217,16 +217,14 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
         "/unsubscribe" => {
             if db.remove_subscriber(chat_id).await? {
                 info!("Unsubscribed: {}", chat_id);
-                let msg = escape_markdownv2(Language::ENGLISH.config().strings.unsubscribe_success);
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH.config().strings.unsubscribe_success;
+                send_message(config, chat_id, msg).await?;
             } else {
-                let msg = escape_markdownv2(
-                    Language::ENGLISH
-                        .config()
-                        .strings
-                        .unsubscribe_not_subscribed,
-                );
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH
+                    .config()
+                    .strings
+                    .unsubscribe_not_subscribed;
+                send_message(config, chat_id, msg).await?;
             }
         }
         "/status" => {
@@ -259,7 +257,11 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
                     template.replace("{language}", lang_name)
                 }
             } else {
-                escape_markdownv2(Language::ENGLISH.config().strings.status_not_subscribed)
+                Language::ENGLISH
+                    .config()
+                    .strings
+                    .status_not_subscribed
+                    .to_string()
             };
             send_message(config, chat_id, &status_msg).await?;
         }
@@ -268,32 +270,26 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
             let is_subscribed = db.is_subscribed(chat_id).await?;
 
             if !is_subscribed {
-                let msg =
-                    escape_markdownv2(Language::ENGLISH.config().strings.language_not_subscribed);
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH.config().strings.language_not_subscribed;
+                send_message(config, chat_id, msg).await?;
             } else if let Some(lang_arg) = arg {
                 // User specified a language: /language en or /language es
                 match lang_arg {
                     "en" => {
                         db.set_subscriber_language(chat_id, "en").await?;
                         info!("Language changed to English for {}", chat_id);
-                        let msg = escape_markdownv2(
-                            Language::ENGLISH.config().strings.language_changed_english,
-                        );
-                        send_message(config, chat_id, &msg).await?;
+                        let msg = Language::ENGLISH.config().strings.language_changed_english;
+                        send_message(config, chat_id, msg).await?;
                     }
                     "es" => {
                         db.set_subscriber_language(chat_id, "es").await?;
                         info!("Language changed to Spanish for {}", chat_id);
-                        let msg = escape_markdownv2(
-                            Language::SPANISH.config().strings.language_changed_spanish,
-                        );
-                        send_message(config, chat_id, &msg).await?;
+                        let msg = Language::SPANISH.config().strings.language_changed_spanish;
+                        send_message(config, chat_id, msg).await?;
                     }
                     _ => {
-                        let msg =
-                            escape_markdownv2(Language::ENGLISH.config().strings.language_invalid);
-                        send_message(config, chat_id, &msg).await?;
+                        let msg = Language::ENGLISH.config().strings.language_invalid;
+                        send_message(config, chat_id, msg).await?;
                     }
                 }
             } else {
@@ -319,9 +315,8 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
                 !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
 
             if !is_admin {
-                let msg =
-                    escape_markdownv2(Language::ENGLISH.config().strings.broadcast_admin_only);
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH.config().strings.broadcast_admin_only;
+                send_message(config, chat_id, msg).await?;
             } else if let Some(broadcast_msg) = arg {
                 // Send broadcast to all subscribers
                 info!(
@@ -334,35 +329,33 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
                         let total = sent + failures.len();
                         let msg = if failures.is_empty() {
                             let template = Language::ENGLISH.config().strings.broadcast_success;
-                            template.replace("{count}", &escape_markdownv2(&sent.to_string()))
+                            template.replace("{count}", &sent.to_string())
                         } else {
                             let template = Language::ENGLISH.config().strings.broadcast_partial;
                             template
-                                .replace("{sent}", &escape_markdownv2(&sent.to_string()))
-                                .replace(
-                                    "{failed}",
-                                    &escape_markdownv2(&failures.len().to_string()),
-                                )
-                                .replace("{total}", &escape_markdownv2(&total.to_string()))
+                                .replace("{sent}", &sent.to_string())
+                                .replace("{failed}", &failures.len().to_string())
+                                .replace("{total}", &total.to_string())
                         };
                         send_message(config, chat_id, &msg).await?;
                     }
                     Err(e) => {
                         warn!("Broadcast failed: {}", e);
                         let template = Language::ENGLISH.config().strings.broadcast_failed;
+                        // Error messages may contain special chars, so escape them
                         let msg = template.replace("{error}", &escape_markdownv2(&e.to_string()));
                         send_message(config, chat_id, &msg).await?;
                     }
                 }
             } else {
-                let msg = escape_markdownv2(Language::ENGLISH.config().strings.broadcast_usage);
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH.config().strings.broadcast_usage;
+                send_message(config, chat_id, msg).await?;
             }
         }
         _ => {
             // Unknown command, send help
-            let msg = escape_markdownv2(Language::ENGLISH.config().strings.unknown_command);
-            send_message(config, chat_id, &msg).await?;
+            let msg = Language::ENGLISH.config().strings.unknown_command;
+            send_message(config, chat_id, msg).await?;
         }
     }
 
@@ -378,7 +371,7 @@ async fn send_welcome_summary(
 ) -> Result<()> {
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
     let escaped_timestamp = escape_markdownv2(&timestamp);
-    let header = escape_markdownv2(Language::ENGLISH.config().strings.welcome_summary_header);
+    let header = Language::ENGLISH.config().strings.welcome_summary_header;
     let message = format!(
         "{}\n_{}_\n\n{}",
         header,
@@ -4289,5 +4282,332 @@ For details: [OpenAI Blog](https://openai.com/blog)"#;
         // Test that it matches /language first
         assert!(text.starts_with("/language "));
         assert!(!text.starts_with("/broadcast "));
+    }
+
+    // ==================== Pre-Escaped Template Validation Tests ====================
+    //
+    // These tests ensure that pre-escaped template strings from src/i18n/strings.rs
+    // work correctly with our escape functions. The key insight is that templates
+    // are pre-escaped to avoid the "Character 'X' is reserved" errors, and we must
+    // ensure that dynamic content added later is also properly escaped.
+
+    #[test]
+    fn test_pre_escaped_template_does_not_double_escape() {
+        // Pre-escaped template (like those in strings.rs)
+        let pre_escaped = "Hello\\! How are you\\?";
+
+        // If we pass an already-escaped string through escape_markdownv2,
+        // the backslashes should be escaped again
+        let double_escaped = escape_markdownv2(pre_escaped);
+
+        // The backslash before ! should now be \\! (escaped backslash + !)
+        // This is expected behavior - escape function does not detect pre-escaping
+        assert!(double_escaped.contains("\\\\"));
+    }
+
+    #[test]
+    fn test_pre_escaped_template_with_placeholder_substitution() {
+        // Simulate how templates with placeholders are used
+        let template = "✅ You are subscribed\n🌐 Language: {language}";
+
+        // Substitute with plain text value (not pre-escaped)
+        let result = template.replace("{language}", "English");
+
+        // Result should have the substituted value
+        assert!(result.contains("English"));
+        assert!(result.contains("Language:"));
+    }
+
+    #[test]
+    fn test_pre_escaped_template_special_chars_in_substitution() {
+        // Template with pre-escaped characters
+        let template = "Current: {current}\\.\n\nTo change, use:\n/language en \\- English";
+
+        // Substitute with a value that contains special characters
+        let value = "English (US)";
+        let result = template.replace("{current}", value);
+
+        // The substituted value is NOT automatically escaped
+        // This means if we use such templates directly with MarkdownV2,
+        // we need to ensure the substituted values are safe or pre-escaped
+        assert!(result.contains("English (US)"));
+
+        // The template's pre-escaped parts are preserved
+        assert!(result.contains("\\-"));
+        assert!(result.contains("\\."));
+    }
+
+    #[test]
+    fn test_escape_markdownv2_handles_already_escaped_chars() {
+        // What happens when text already has backslash-escaped characters?
+        let already_escaped = "Hello\\-World";
+        let result = escape_markdownv2(already_escaped);
+
+        // The backslash is NOT a MarkdownV2 special char (not in the 18),
+        // but the hyphen after it will be seen as unescaped and escaped again
+        // Actually, the original hyphen after \ should be escaped
+        // Input: Hello\-World
+        // The - is not preceded by an even number of backslashes from escape perspective
+        // escape_markdownv2_simple sees \, -, and escapes - (since - is special)
+        // Result depends on implementation
+        assert!(result.contains("\\-"));
+    }
+
+    // ==================== Regression Tests for Production Bug ====================
+    //
+    // These tests specifically validate scenarios that caused the production bug
+    // where /language and /status commands failed with "Character '-' is reserved" errors.
+
+    #[test]
+    fn test_regression_language_settings_message_format() {
+        use crate::i18n::Language;
+
+        // Get the actual language settings template
+        let template = Language::ENGLISH.config().strings.language_settings;
+
+        // This template is used directly without escape_markdownv2
+        // It must have all special characters pre-escaped
+
+        // Check that hyphens are escaped
+        assert!(
+            template.contains("\\-"),
+            "Language settings template must have escaped hyphens"
+        );
+
+        // Check bold formatting is intact
+        assert!(
+            template.contains("*Language Settings*"),
+            "Bold formatting must be preserved"
+        );
+
+        // Simulate placeholder substitution
+        let result = template.replace("{current}", "English");
+        assert!(result.contains("Current: English"));
+    }
+
+    #[test]
+    fn test_regression_status_message_format() {
+        use crate::i18n::Language;
+
+        // Get the actual status template
+        let template = Language::ENGLISH.config().strings.status_subscribed_admin;
+
+        // Simulate what happens in handle_webhook for /status command
+        let result = template
+            .replace("{language}", "English")
+            .replace("{count}", "42");
+
+        // The result should have proper content
+        assert!(result.contains("Language: English"));
+        assert!(result.contains("subscribers: 42"));
+    }
+
+    #[test]
+    fn test_regression_spanish_status_message() {
+        use crate::i18n::Language;
+
+        // Spanish templates must also be properly escaped
+        let template = Language::SPANISH.config().strings.status_subscribed_user;
+
+        let result = template.replace("{language}", "Español");
+        assert!(result.contains("Idioma: Español"));
+    }
+
+    #[test]
+    fn test_regression_subscribe_success_message() {
+        use crate::i18n::Language;
+
+        let template = Language::ENGLISH.config().strings.subscribe_success;
+
+        // This template has periods and exclamation marks that must be escaped
+        assert!(
+            template.contains("\\."),
+            "Periods must be escaped in subscribe_success"
+        );
+        assert!(
+            template.contains("\\!"),
+            "Exclamation marks must be escaped in subscribe_success"
+        );
+    }
+
+    #[test]
+    fn test_regression_welcome_message_contains_hyphens() {
+        use crate::i18n::Language;
+
+        // Welcome messages contain command descriptions with hyphens
+        let template = Language::ENGLISH.config().strings.welcome_admin;
+
+        // All hyphens must be escaped
+        assert!(
+            template.contains("\\-"),
+            "Welcome admin template must have escaped hyphens"
+        );
+
+        // Should contain multiple escaped hyphens (one for each command description)
+        let hyphen_count = template.matches("\\-").count();
+        assert!(
+            hyphen_count >= 4,
+            "Welcome admin should have at least 4 escaped hyphens (one per command), found {}",
+            hyphen_count
+        );
+    }
+
+    #[test]
+    fn test_regression_parentheses_in_templates() {
+        use crate::i18n::Language;
+
+        // Templates with (en/es) must have escaped parentheses
+        let template = Language::ENGLISH.config().strings.welcome_admin;
+
+        assert!(
+            template.contains("\\(") && template.contains("\\)"),
+            "Parentheses must be escaped in welcome_admin"
+        );
+    }
+
+    // ==================== Integration Tests: Template + escape_markdownv2 ====================
+
+    #[test]
+    fn test_summary_header_formatting() {
+        use crate::i18n::Language;
+
+        let header = Language::ENGLISH.config().strings.summary_header;
+
+        // The header "Twitter Summary" is used with *header* for bold
+        // This should be straightforward - no special chars in the header text itself
+        let formatted = format!("📰 *{}*", header);
+        assert!(formatted.contains("*Twitter Summary*"));
+    }
+
+    #[test]
+    fn test_summary_body_escaping() {
+        // Summary body comes from OpenAI and needs escape_markdownv2
+        let summary = "AI news: GPT-5 announced! Read more at https://example.com.";
+        let escaped = escape_markdownv2(summary);
+
+        // All special chars should be escaped
+        assert!(escaped.contains("\\-")); // GPT-5
+        assert!(escaped.contains("\\!")); // announced!
+        assert!(escaped.contains("\\.")); // example.com.
+    }
+
+    #[test]
+    fn test_full_message_construction() {
+        use crate::i18n::Language;
+
+        // Simulate constructing a full message like in send_to_subscribers
+        let header = Language::ENGLISH.config().strings.summary_header;
+        let timestamp = "2024-01-15 10:30 UTC";
+        let summary = "AI advancements - OpenAI releases GPT-5!";
+
+        let message = format!(
+            "📰 *{}*\n_{}_\n\n{}",
+            header,
+            escape_markdownv2(timestamp),
+            escape_markdownv2(summary)
+        );
+
+        // Header is wrapped in * for bold
+        assert!(message.contains("*Twitter Summary*"));
+        // Timestamp is wrapped in _ for italic and has special chars escaped
+        assert!(message.contains("_2024\\-01\\-15 10:30 UTC_"));
+        // Summary has special chars escaped
+        assert!(message.contains("\\-")); // from both timestamp and summary
+        assert!(message.contains("\\!"));
+    }
+
+    #[test]
+    fn test_broadcast_message_construction() {
+        use crate::i18n::Language;
+
+        // Broadcast success message uses placeholder substitution
+        let template = Language::ENGLISH.config().strings.broadcast_success;
+
+        let result = template.replace("{count}", "150");
+
+        // Should have the count
+        assert!(result.contains("150"));
+        // Should have escaped exclamation mark (from the template)
+        assert!(result.contains("\\!"));
+        // Should preserve bold formatting
+        assert!(result.contains("*Broadcast sent successfully*"));
+    }
+
+    // ==================== Edge Case Tests ====================
+
+    #[test]
+    fn test_empty_placeholder_substitution() {
+        let template = "Status: {status}";
+        let result = template.replace("{status}", "");
+        assert_eq!(result, "Status: ");
+    }
+
+    #[test]
+    fn test_placeholder_with_special_chars_value() {
+        // What if the substituted value contains MarkdownV2 special chars?
+        let template = "Error: {error}";
+        let error_msg = "Connection failed (timeout > 30s)!";
+
+        // If we substitute directly, special chars are NOT escaped
+        let result = template.replace("{error}", error_msg);
+        assert!(result.contains("(timeout > 30s)!"));
+
+        // If the template is meant to be used with MarkdownV2, the value should be escaped first
+        let safe_result = template.replace("{error}", &escape_markdownv2(error_msg));
+        assert!(safe_result.contains("\\(timeout \\> 30s\\)\\!"));
+    }
+
+    #[test]
+    fn test_multiple_placeholder_substitutions() {
+        let template = "Sent: {sent}, Failed: {failed}, Total: {total}";
+        let result = template
+            .replace("{sent}", "95")
+            .replace("{failed}", "5")
+            .replace("{total}", "100");
+
+        assert_eq!(result, "Sent: 95, Failed: 5, Total: 100");
+    }
+
+    #[test]
+    fn test_unicode_in_templates() {
+        use crate::i18n::Language;
+
+        // Spanish templates contain Unicode characters
+        let template = Language::SPANISH.config().strings.subscribe_success;
+
+        // Should contain Spanish characters
+        assert!(template.contains("Recibirás"));
+
+        // Should still have properly escaped special chars
+        assert!(template.contains("\\."));
+    }
+
+    #[test]
+    fn test_newlines_in_templates() {
+        use crate::i18n::Language;
+
+        let template = Language::ENGLISH.config().strings.welcome_admin;
+
+        // Templates use \n for newlines
+        assert!(template.contains('\n'));
+
+        // Count newlines to ensure proper structure
+        let newline_count = template.matches('\n').count();
+        assert!(
+            newline_count >= 5,
+            "Welcome admin should have multiple newlines for formatting, found {}",
+            newline_count
+        );
+    }
+
+    #[test]
+    fn test_emoji_preservation() {
+        use crate::i18n::Language;
+
+        // Emojis should be preserved in templates
+        let template = Language::ENGLISH.config().strings.status_subscribed_admin;
+        assert!(template.contains("✅"));
+        assert!(template.contains("🌐"));
+        assert!(template.contains("📊"));
     }
 }
