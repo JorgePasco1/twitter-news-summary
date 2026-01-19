@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::i18n::Language;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -27,44 +28,8 @@ struct Choice {
     message: Message,
 }
 
-/// Supported languages for translation
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Language {
-    English,
-    Spanish,
-}
-
-impl Language {
-    /// Get the language code (e.g., "en", "es")
-    pub fn code(&self) -> &'static str {
-        match self {
-            Language::English => "en",
-            Language::Spanish => "es",
-        }
-    }
-
-    /// Get the full language name
-    pub fn name(&self) -> &'static str {
-        match self {
-            Language::English => "English",
-            Language::Spanish => "Spanish",
-        }
-    }
-
-    /// Parse a language code string into a Language enum
-    pub fn from_code(code: &str) -> Option<Language> {
-        match code {
-            "en" => Some(Language::English),
-            "es" => Some(Language::Spanish),
-            _ => None,
-        }
-    }
-
-    /// Check if this is the default/canonical language
-    pub fn is_canonical(&self) -> bool {
-        matches!(self, Language::English)
-    }
-}
+// Language type is now defined in crate::i18n::Language
+// It's imported at the top of this file and used throughout
 
 /// Build the system prompt for translation
 fn build_translation_system_prompt(target_language: &str) -> String {
@@ -174,19 +139,25 @@ pub async fn translate_summary(
 
 /// Get the message header for a given language
 pub fn get_summary_header(language: Language) -> &'static str {
-    match language {
-        Language::English => "Twitter Summary",
-        Language::Spanish => "Resumen de Twitter",
+    if language == Language::ENGLISH {
+        "Twitter Summary"
+    } else if language == Language::SPANISH {
+        "Resumen de Twitter"
+    } else {
+        // Default to English for any other language
+        "Twitter Summary"
     }
 }
 
 /// Get the translation failure notice for a given target language
 pub fn get_translation_failure_notice(target_language: Language) -> String {
-    match target_language {
-        Language::Spanish => {
-            "[Nota: La traducción no está disponible. Enviando en inglés.]\n\n".to_string()
-        }
-        Language::English => String::new(), // No notice needed for English
+    if target_language == Language::SPANISH {
+        "[Nota: La traducción no está disponible. Enviando en inglés.]\n\n".to_string()
+    } else if target_language == Language::ENGLISH {
+        String::new() // No notice needed for English
+    } else {
+        // Default: no notice for unknown languages
+        String::new()
     }
 }
 
@@ -202,62 +173,62 @@ mod tests {
 
     #[test]
     fn test_language_english_code() {
-        assert_eq!(Language::English.code(), "en");
+        assert_eq!(Language::ENGLISH.code(), "en");
     }
 
     #[test]
     fn test_language_spanish_code() {
-        assert_eq!(Language::Spanish.code(), "es");
+        assert_eq!(Language::SPANISH.code(), "es");
     }
 
     #[test]
     fn test_language_english_name() {
-        assert_eq!(Language::English.name(), "English");
+        assert_eq!(Language::ENGLISH.name(), "English");
     }
 
     #[test]
     fn test_language_spanish_name() {
-        assert_eq!(Language::Spanish.name(), "Spanish");
+        assert_eq!(Language::SPANISH.name(), "Spanish");
     }
 
     #[test]
     fn test_language_from_code_english() {
-        assert_eq!(Language::from_code("en"), Some(Language::English));
+        assert_eq!(Language::from_code("en").ok(), Some(Language::ENGLISH));
     }
 
     #[test]
     fn test_language_from_code_spanish() {
-        assert_eq!(Language::from_code("es"), Some(Language::Spanish));
+        assert_eq!(Language::from_code("es").ok(), Some(Language::SPANISH));
     }
 
     #[test]
     fn test_language_from_code_invalid() {
-        assert_eq!(Language::from_code("fr"), None);
-        assert_eq!(Language::from_code("de"), None);
-        assert_eq!(Language::from_code(""), None);
+        assert!(Language::from_code("fr").is_err());
+        assert!(Language::from_code("de").is_err());
+        assert!(Language::from_code("").is_err());
     }
 
     #[test]
     fn test_language_is_canonical_english() {
-        assert!(Language::English.is_canonical());
+        assert!(Language::ENGLISH.is_canonical());
     }
 
     #[test]
     fn test_language_is_canonical_spanish() {
-        assert!(!Language::Spanish.is_canonical());
+        assert!(!Language::SPANISH.is_canonical());
     }
 
     #[test]
     fn test_language_clone() {
-        let lang = Language::Spanish;
+        let lang = Language::SPANISH;
         let cloned = lang;
         assert_eq!(lang, cloned);
     }
 
     #[test]
     fn test_language_equality() {
-        assert_eq!(Language::English, Language::English);
-        assert_ne!(Language::English, Language::Spanish);
+        assert_eq!(Language::ENGLISH, Language::ENGLISH);
+        assert_ne!(Language::ENGLISH, Language::SPANISH);
     }
 
     // ==================== System Prompt Tests ====================
@@ -306,26 +277,26 @@ mod tests {
 
     #[test]
     fn test_get_summary_header_english() {
-        assert_eq!(get_summary_header(Language::English), "Twitter Summary");
+        assert_eq!(get_summary_header(Language::ENGLISH), "Twitter Summary");
     }
 
     #[test]
     fn test_get_summary_header_spanish() {
-        assert_eq!(get_summary_header(Language::Spanish), "Resumen de Twitter");
+        assert_eq!(get_summary_header(Language::SPANISH), "Resumen de Twitter");
     }
 
     // ==================== Failure Notice Tests ====================
 
     #[test]
     fn test_get_translation_failure_notice_spanish() {
-        let notice = get_translation_failure_notice(Language::Spanish);
+        let notice = get_translation_failure_notice(Language::SPANISH);
         assert!(notice.contains("traducción no está disponible"));
         assert!(notice.contains("inglés"));
     }
 
     #[test]
     fn test_get_translation_failure_notice_english() {
-        let notice = get_translation_failure_notice(Language::English);
+        let notice = get_translation_failure_notice(Language::ENGLISH);
         assert!(notice.is_empty());
     }
 
@@ -379,7 +350,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let summary = "This is a test summary in English.";
-        let result = translate_summary(&client, &config, summary, Language::English)
+        let result = translate_summary(&client, &config, summary, Language::ENGLISH)
             .await
             .expect("Should succeed");
 
@@ -403,7 +374,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let summary = "This is a test summary.";
-        let result = translate_summary(&client, &config, summary, Language::Spanish)
+        let result = translate_summary(&client, &config, summary, Language::SPANISH)
             .await
             .expect("Should succeed");
 
@@ -423,7 +394,7 @@ mod tests {
         let config = create_test_config(&format!("{}/v1/chat/completions", mock_server.uri()));
         let client = reqwest::Client::new();
 
-        let result = translate_summary(&client, &config, "Test summary", Language::Spanish).await;
+        let result = translate_summary(&client, &config, "Test summary", Language::SPANISH).await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("500"));
@@ -446,7 +417,7 @@ mod tests {
         let config = create_test_config(&format!("{}/v1/chat/completions", mock_server.uri()));
         let client = reqwest::Client::new();
 
-        translate_summary(&client, &config, "Test", Language::Spanish)
+        translate_summary(&client, &config, "Test", Language::SPANISH)
             .await
             .expect("Should succeed");
 
@@ -471,7 +442,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let summary = "Original summary";
-        let result = translate_summary(&client, &config, summary, Language::Spanish).await;
+        let result = translate_summary(&client, &config, summary, Language::SPANISH).await;
 
         // Should return an error on empty choices
         assert!(result.is_err());
@@ -511,14 +482,14 @@ mod tests {
 
     #[test]
     fn test_language_debug_format() {
-        let lang = Language::Spanish;
+        let lang = Language::SPANISH;
         let debug = format!("{:?}", lang);
-        assert!(debug.contains("Spanish"));
+        assert!(debug.contains("es"));
     }
 
     #[test]
     fn test_language_copy_trait() {
-        let lang1 = Language::English;
+        let lang1 = Language::ENGLISH;
         let lang2 = lang1; // Copy
         assert_eq!(lang1, lang2); // Both still valid
     }

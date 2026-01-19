@@ -442,8 +442,9 @@ pub async fn send_to_subscribers(
     summary: &str,
     summary_id: i64,
 ) -> Result<()> {
+    use crate::i18n::Language;
     use crate::translation::{
-        get_summary_header, get_translation_failure_notice, translate_summary, Language,
+        get_summary_header, get_translation_failure_notice, translate_summary,
     };
 
     let subscribers = db.list_subscribers().await?;
@@ -471,7 +472,7 @@ pub async fn send_to_subscribers(
 
     for subscriber in subscribers {
         let lang_code = subscriber.language_code.clone();
-        let language = Language::from_code(&lang_code).unwrap_or(Language::English);
+        let language = Language::from_code(&lang_code).unwrap_or(Language::ENGLISH);
 
         // Get or create translation for this language
         let content = if let Some(cached) = translation_cache.get(&lang_code) {
