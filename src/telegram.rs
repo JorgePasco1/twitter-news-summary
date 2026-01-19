@@ -183,12 +183,23 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
             let is_admin =
                 !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
 
+            // Get user's preferred language if they're already subscribed
+            let user_lang = if db.is_subscribed(chat_id).await? {
+                let lang_code = db
+                    .get_subscriber_language(chat_id)
+                    .await?
+                    .unwrap_or_else(|| "en".to_string());
+                Language::from_code(&lang_code).unwrap_or(Language::ENGLISH)
+            } else {
+                Language::ENGLISH
+            };
+
             // Get welcome message from registry based on admin status
             // Templates are pre-escaped for MarkdownV2, no need to escape again
             let welcome = if is_admin {
-                Language::ENGLISH.config().strings.welcome_admin
+                user_lang.config().strings.welcome_admin
             } else {
-                Language::ENGLISH.config().strings.welcome_user
+                user_lang.config().strings.welcome_user
             };
 
             send_message(config, chat_id, welcome).await?;
@@ -5032,6 +5043,34 @@ For details: [OpenAI Blog](https://openai.com/blog)"#;
         assert_eq!(
             fallback.config().strings.status_subscribed_user,
             Language::ENGLISH.config().strings.status_subscribed_user
+        );
+    }
+
+    #[test]
+    fn test_start_response_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber should get English welcome
+        let en_msg = Language::ENGLISH.config().strings.welcome_user;
+        assert!(en_msg.contains("Welcome"), "English should say 'Welcome'");
+
+        // Spanish subscriber should get Spanish welcome
+        let es_msg = Language::SPANISH.config().strings.welcome_user;
+        assert!(
+            es_msg.contains("Bienvenido"),
+            "Spanish should say 'Bienvenido'"
+        );
+
+        // Admin messages should also be language-aware
+        let en_admin = Language::ENGLISH.config().strings.welcome_admin;
+        let es_admin = Language::SPANISH.config().strings.welcome_admin;
+        assert!(
+            en_admin.contains("Welcome"),
+            "English admin should say 'Welcome'"
+        );
+        assert!(
+            es_admin.contains("Bienvenido"),
+            "Spanish admin should say 'Bienvenido'"
         );
     }
 }

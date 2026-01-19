@@ -138,8 +138,11 @@ async fn webhook_handler(
     match telegram::handle_webhook(&state.config, &state.db, update).await {
         Ok(_) => StatusCode::OK,
         Err(e) => {
+            // Log the error but return OK to prevent Telegram from retrying.
+            // Returning non-200 causes Telegram to retry the same update indefinitely,
+            // which can cause the bot to get "stuck" on a failing update.
             warn!("Webhook handler error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
+            StatusCode::OK
         }
     }
 }
