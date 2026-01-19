@@ -1,7 +1,8 @@
 use crate::config::Config;
-use crate::i18n::Language;
+use crate::i18n::{Language, TranslationValidator};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 /// OpenAI Chat Completion request for translation
 #[derive(Debug, Serialize)]
@@ -134,31 +135,40 @@ pub async fn translate_summary(
         .map(|c| c.message.content.clone())
         .context("OpenAI translation response contained no choices")?;
 
+    // Validate translation quality
+    let validation = TranslationValidator::validate(summary, &translated);
+    if !validation.warnings.is_empty() {
+        warn!(
+            "Translation validation warnings for {} ({}): {:?}",
+            target_language.name(),
+            target_language.code(),
+            validation.warnings
+        );
+    }
+    if !validation.errors.is_empty() {
+        warn!(
+            "Translation validation errors for {} ({}): {:?}",
+            target_language.name(),
+            target_language.code(),
+            validation.errors
+        );
+    }
+
     Ok(translated)
 }
 
 /// Get the message header for a given language
 pub fn get_summary_header(language: Language) -> &'static str {
-    if language == Language::ENGLISH {
-        "Twitter Summary"
-    } else if language == Language::SPANISH {
-        "Resumen de Twitter"
-    } else {
-        // Default to English for any other language
-        "Twitter Summary"
-    }
+    language.config().strings.summary_header
 }
 
 /// Get the translation failure notice for a given target language
 pub fn get_translation_failure_notice(target_language: Language) -> String {
-    if target_language == Language::SPANISH {
-        "[Nota: La traducción no está disponible. Enviando en inglés.]\n\n".to_string()
-    } else if target_language == Language::ENGLISH {
-        String::new() // No notice needed for English
-    } else {
-        // Default: no notice for unknown languages
-        String::new()
-    }
+    target_language
+        .config()
+        .strings
+        .translation_failure_notice
+        .to_string()
 }
 
 #[cfg(test)]

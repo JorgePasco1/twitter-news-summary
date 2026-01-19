@@ -28,7 +28,13 @@
 //! ```
 
 mod language;
+mod metrics;
 mod registry;
+mod strings;
+mod validator;
 
 pub use language::Language;
+pub use metrics::{MetricsReport, TranslationMetrics};
 pub use registry::{LanguageConfig, LanguageRegistry};
+pub use strings::LanguageStrings;
+pub use validator::{TranslationValidator, ValidationReport};
