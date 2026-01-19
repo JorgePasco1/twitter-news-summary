@@ -286,7 +286,8 @@ impl Database {
         )
         .bind(chat_id)
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .context("Failed to get subscriber language")?;
 
         Ok(result.map(|(lang,)| lang))
     }
@@ -329,7 +330,8 @@ impl Database {
         .bind(summary_id)
         .bind(language_code)
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .context("Failed to get translation")?;
 
         Ok(translation)
     }

@@ -105,10 +105,10 @@ fn build_translation_system_prompt(target_language: &str) -> String {
 }
 
 /// Build the user prompt for translation
-fn build_translation_user_prompt(summary: &str) -> String {
+fn build_translation_user_prompt(summary: &str, target_language: &str) -> String {
     format!(
-        "Please translate the following Twitter/X news summary to Spanish:\n\n{}",
-        summary
+        "Please translate the following Twitter/X news summary to {}:\n\n{}",
+        target_language, summary
     )
 }
 
@@ -135,7 +135,7 @@ pub async fn translate_summary(
             },
             Message {
                 role: "user".to_string(),
-                content: build_translation_user_prompt(summary),
+                content: build_translation_user_prompt(summary, target_language.name()),
             },
         ],
         max_tokens: config.summary_max_tokens,
@@ -183,7 +183,7 @@ pub fn get_summary_header(language: Language) -> &'static str {
 pub fn get_translation_failure_notice(target_language: Language) -> String {
     match target_language {
         Language::Spanish => {
-            "[Nota: La traduccion no esta disponible. Enviando en ingles.]\n\n".to_string()
+            "[Nota: La traducción no está disponible. Enviando en inglés.]\n\n".to_string()
         }
         Language::English => String::new(), // No notice needed for English
     }
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn test_build_translation_user_prompt() {
         let summary = "This is a test summary.";
-        let prompt = build_translation_user_prompt(summary);
+        let prompt = build_translation_user_prompt(summary, "Spanish");
 
         assert!(prompt.contains("translate"));
         assert!(prompt.contains("Spanish"));
@@ -318,8 +318,8 @@ mod tests {
     #[test]
     fn test_get_translation_failure_notice_spanish() {
         let notice = get_translation_failure_notice(Language::Spanish);
-        assert!(notice.contains("traduccion no esta disponible"));
-        assert!(notice.contains("ingles"));
+        assert!(notice.contains("traducción no está disponible"));
+        assert!(notice.contains("inglés"));
     }
 
     #[test]

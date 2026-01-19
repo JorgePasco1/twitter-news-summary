@@ -277,7 +277,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                         send_message(
                             config,
                             chat_id,
-                            "✅ Language changed to English. You'll receive summaries in English.",
+                            "✅ Language changed to English\\. You'll receive summaries in English\\.",
                         )
                         .await?;
                     }
@@ -287,7 +287,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                         send_message(
                             config,
                             chat_id,
-                            "✅ Idioma cambiado a espanol. Recibiras los resumenes en espanol.",
+                            "✅ Idioma cambiado a español\\. Recibirás los resúmenes en español\\.",
                         )
                         .await?;
                     }
@@ -295,7 +295,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                         send_message(
                             config,
                             chat_id,
-                            "Invalid language. Available options:\n/language en - English\n/language es - Spanish",
+                            "Invalid language\\. Available options:\n/language en \\- English\n/language es \\- Spanish",
                         )
                         .await?;
                     }
@@ -312,7 +312,7 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                 };
 
                 let msg = format!(
-                    "🌐 <b>Language Settings</b>\n\nCurrent: {}\n\nTo change, use:\n/language en - English\n/language es - Spanish",
+                    "🌐 *Language Settings*\n\nCurrent: {}\n\nTo change, use:\n/language en \\- English\n/language es \\- Spanish",
                     current_name
                 );
                 send_message(config, chat_id, &msg).await?;
@@ -2028,8 +2028,8 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
 
     #[test]
     fn test_language_change_confirmation_spanish() {
-        let msg = "Idioma cambiado a espanol. Recibiras los resumenes en espanol.";
-        assert!(msg.contains("espanol"));
+        let msg = "Idioma cambiado a español. Recibirás los resúmenes en español.";
+        assert!(msg.contains("español"));
     }
 
     #[test]
