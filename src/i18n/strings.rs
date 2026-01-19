@@ -91,123 +91,128 @@ pub struct LanguageStrings {
 // ==================== English Strings ====================
 
 /// English language strings (canonical)
+/// NOTE: These strings are pre-escaped for Telegram MarkdownV2 format.
+/// Special chars escaped: - . ! ( ) but NOT * which is used for bold formatting.
 pub const ENGLISH_STRINGS: LanguageStrings = LanguageStrings {
     // Summary headers
     summary_header: "Twitter Summary",
     translation_failure_notice: "", // No notice needed for English
 
     // Welcome messages
-    welcome_admin: "👋 Welcome to Twitter News Summary Bot!\n\n\
+    welcome_admin: "👋 Welcome to Twitter News Summary Bot\\!\n\n\
 Commands:\n\
-/subscribe - Get daily AI-powered summaries of Twitter/X news\n\
-/unsubscribe - Stop receiving summaries\n\
-/status - Check your subscription status\n\
-/language - Change summary language (en/es)\n\
-/broadcast - Send a message to all subscribers (admin only)\n\n\
-Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers.",
+/subscribe \\- Get daily AI\\-powered summaries of Twitter/X news\n\
+/unsubscribe \\- Stop receiving summaries\n\
+/status \\- Check your subscription status\n\
+/language \\- Change summary language \\(en/es\\)\n\
+/broadcast \\- Send a message to all subscribers \\(admin only\\)\n\n\
+Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers\\.",
 
-    welcome_user: "👋 Welcome to Twitter News Summary Bot!\n\n\
+    welcome_user: "👋 Welcome to Twitter News Summary Bot\\!\n\n\
 Commands:\n\
-/subscribe - Get daily AI-powered summaries of Twitter/X news\n\
-/unsubscribe - Stop receiving summaries\n\
-/status - Check your subscription status\n\
-/language - Change summary language (en/es)\n\n\
-Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers.",
+/subscribe \\- Get daily AI\\-powered summaries of Twitter/X news\n\
+/unsubscribe \\- Stop receiving summaries\n\
+/status \\- Check your subscription status\n\
+/language \\- Change summary language \\(en/es\\)\n\n\
+Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers\\.",
 
     // Subscription messages
-    subscribe_already: "✅ You're already subscribed!",
-    subscribe_success: "✅ Successfully subscribed! You'll receive summaries twice daily.\n\n\
-Want summaries in Spanish? Use /language es to switch.",
-    unsubscribe_success: "👋 Successfully unsubscribed. You won't receive any more summaries.",
-    unsubscribe_not_subscribed: "You're not currently subscribed.",
+    subscribe_already: "✅ You're already subscribed\\!",
+    subscribe_success: "✅ Successfully subscribed\\! You'll receive summaries twice daily\\.\n\n\
+Want summaries in Spanish? Use /language es to switch\\.",
+    unsubscribe_success: "👋 Successfully unsubscribed\\. You won't receive any more summaries\\.",
+    unsubscribe_not_subscribed: "You're not currently subscribed\\.",
 
     // Status messages
     status_subscribed_admin:
         "✅ You are subscribed\n🌐 Language: {language}\n📊 Total subscribers: {count}",
     status_subscribed_user: "✅ You are subscribed\n🌐 Language: {language}",
     status_not_subscribed:
-        "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries.",
+        "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries\\.",
 
     // Language messages
-    language_not_subscribed: "You need to subscribe first. Use /subscribe to get started.",
+    language_not_subscribed: "You need to subscribe first\\. Use /subscribe to get started\\.",
     language_changed_english:
-        "✅ Language changed to English. You'll receive summaries in English.",
-    language_changed_spanish: "✅ Idioma cambiado a español. Recibirás los resúmenes en español.",
+        "✅ Language changed to English\\. You'll receive summaries in English\\.",
+    language_changed_spanish:
+        "✅ Idioma cambiado a español\\. Recibirás los resúmenes en español\\.",
     language_invalid:
-        "Invalid language. Available options:\n/language en - English\n/language es - Spanish",
+        "Invalid language\\. Available options:\n/language en \\- English\n/language es \\- Spanish",
     language_settings: "🌐 *Language Settings*\n\nCurrent: {current}\n\n\
-To change, use:\n/language en - English\n/language es - Spanish",
+To change, use:\n/language en \\- English\n/language es \\- Spanish",
 
     // Broadcast messages
-    broadcast_admin_only: "⛔ This command is only available to the bot administrator.",
-    broadcast_success: "✅ *Broadcast sent successfully*!\n\n📊 Delivered to {count} subscribers",
+    broadcast_admin_only: "⛔ This command is only available to the bot administrator\\.",
+    broadcast_success: "✅ *Broadcast sent successfully*\\!\n\n📊 Delivered to {count} subscribers",
     broadcast_partial:
         "📡 *Broadcast completed*\n\n✅ Sent: {sent}\n❌ Failed: {failed}\n📊 Total: {total}",
     broadcast_failed: "❌ Broadcast failed: {error}",
     broadcast_usage:
-        "Usage: /broadcast Your message here\n\nSends a plain text message to all subscribers.",
+        "Usage: /broadcast Your message here\n\nSends a plain text message to all subscribers\\.",
 
     // Other
-    unknown_command: "Unknown command. Use /start to see available commands.",
-    welcome_summary_header: "📰 *Hey! Here's what you missed* 😉",
+    unknown_command: "Unknown command\\. Use /start to see available commands\\.",
+    welcome_summary_header: "📰 *Hey\\! Here's what you missed* 😉",
 };
 
 // ==================== Spanish Strings ====================
 
 /// Spanish language strings
+/// NOTE: These strings are pre-escaped for Telegram MarkdownV2 format.
+/// Special chars escaped: - . ! ( ) but NOT * which is used for bold formatting.
 pub const SPANISH_STRINGS: LanguageStrings = LanguageStrings {
     // Summary headers
     summary_header: "Resumen de Twitter",
-    translation_failure_notice: "[Nota: La traducción no está disponible. Enviando en inglés.]\n\n",
+    translation_failure_notice: "\\[Nota: La traducción no está disponible\\. Enviando en inglés\\.\\]\n\n",
 
     // Welcome messages
-    welcome_admin: "👋 ¡Bienvenido al Bot de Resumen de Noticias de Twitter!\n\n\
+    welcome_admin: "👋 ¡Bienvenido al Bot de Resumen de Noticias de Twitter\\!\n\n\
 Comandos:\n\
-/subscribe - Recibe resúmenes diarios de noticias de Twitter/X con IA\n\
-/unsubscribe - Deja de recibir resúmenes\n\
-/status - Consulta tu estado de suscripción\n\
-/language - Cambia el idioma de los resúmenes (en/es)\n\
-/broadcast - Envía un mensaje a todos los suscriptores (solo admin)\n\n\
-Los resúmenes se envían dos veces al día con los últimos tweets de líderes tecnológicos e investigadores de IA.",
+/subscribe \\- Recibe resúmenes diarios de noticias de Twitter/X con IA\n\
+/unsubscribe \\- Deja de recibir resúmenes\n\
+/status \\- Consulta tu estado de suscripción\n\
+/language \\- Cambia el idioma de los resúmenes \\(en/es\\)\n\
+/broadcast \\- Envía un mensaje a todos los suscriptores \\(solo admin\\)\n\n\
+Los resúmenes se envían dos veces al día con los últimos tweets de líderes tecnológicos e investigadores de IA\\.",
 
-    welcome_user: "👋 ¡Bienvenido al Bot de Resumen de Noticias de Twitter!\n\n\
+    welcome_user: "👋 ¡Bienvenido al Bot de Resumen de Noticias de Twitter\\!\n\n\
 Comandos:\n\
-/subscribe - Recibe resúmenes diarios de noticias de Twitter/X con IA\n\
-/unsubscribe - Deja de recibir resúmenes\n\
-/status - Consulta tu estado de suscripción\n\
-/language - Cambia el idioma de los resúmenes (en/es)\n\n\
-Los resúmenes se envían dos veces al día con los últimos tweets de líderes tecnológicos e investigadores de IA.",
+/subscribe \\- Recibe resúmenes diarios de noticias de Twitter/X con IA\n\
+/unsubscribe \\- Deja de recibir resúmenes\n\
+/status \\- Consulta tu estado de suscripción\n\
+/language \\- Cambia el idioma de los resúmenes \\(en/es\\)\n\n\
+Los resúmenes se envían dos veces al día con los últimos tweets de líderes tecnológicos e investigadores de IA\\.",
 
     // Subscription messages
-    subscribe_already: "✅ ¡Ya estás suscrito!",
-    subscribe_success: "✅ ¡Suscripción exitosa! Recibirás resúmenes dos veces al día.\n\n\
-¿Prefieres los resúmenes en inglés? Usa /language en para cambiar.",
-    unsubscribe_success: "👋 Suscripción cancelada exitosamente. No recibirás más resúmenes.",
-    unsubscribe_not_subscribed: "No estás suscrito actualmente.",
+    subscribe_already: "✅ ¡Ya estás suscrito\\!",
+    subscribe_success: "✅ ¡Suscripción exitosa\\! Recibirás resúmenes dos veces al día\\.\n\n\
+¿Prefieres los resúmenes en inglés? Usa /language en para cambiar\\.",
+    unsubscribe_success: "👋 Suscripción cancelada exitosamente\\. No recibirás más resúmenes\\.",
+    unsubscribe_not_subscribed: "No estás suscrito actualmente\\.",
 
     // Status messages
     status_subscribed_admin: "✅ Estás suscrito\n🌐 Idioma: {language}\n📊 Total de suscriptores: {count}",
     status_subscribed_user: "✅ Estás suscrito\n🌐 Idioma: {language}",
-    status_not_subscribed: "❌ No estás suscrito\n\nUsa /subscribe para comenzar a recibir resúmenes.",
+    status_not_subscribed: "❌ No estás suscrito\n\nUsa /subscribe para comenzar a recibir resúmenes\\.",
 
     // Language messages
-    language_not_subscribed: "Primero necesitas suscribirte. Usa /subscribe para comenzar.",
-    language_changed_english: "✅ Language changed to English. You'll receive summaries in English.",
-    language_changed_spanish: "✅ Idioma cambiado a español. Recibirás los resúmenes en español.",
-    language_invalid: "Idioma inválido. Opciones disponibles:\n/language en - English\n/language es - Español",
+    language_not_subscribed: "Primero necesitas suscribirte\\. Usa /subscribe para comenzar\\.",
+    language_changed_english: "✅ Language changed to English\\. You'll receive summaries in English\\.",
+    language_changed_spanish: "✅ Idioma cambiado a español\\. Recibirás los resúmenes en español\\.",
+    language_invalid: "Idioma inválido\\. Opciones disponibles:\n/language en \\- English\n/language es \\- Español",
     language_settings: "🌐 *Configuración de Idioma*\n\nActual: {current}\n\n\
-Para cambiar, usa:\n/language en - English\n/language es - Español",
+Para cambiar, usa:\n/language en \\- English\n/language es \\- Español",
 
     // Broadcast messages
-    broadcast_admin_only: "⛔ Este comando solo está disponible para el administrador del bot.",
-    broadcast_success: "✅ *¡Difusión enviada exitosamente*!\n\n📊 Entregado a {count} suscriptores",
+    broadcast_admin_only: "⛔ Este comando solo está disponible para el administrador del bot\\.",
+    broadcast_success: "✅ *¡Difusión enviada exitosamente*\\!\n\n📊 Entregado a {count} suscriptores",
     broadcast_partial: "📡 *Difusión completada*\n\n✅ Enviados: {sent}\n❌ Fallidos: {failed}\n📊 Total: {total}",
     broadcast_failed: "❌ Difusión fallida: {error}",
-    broadcast_usage: "Uso: /broadcast Tu mensaje aquí\n\nEnvía un mensaje de texto plano a todos los suscriptores.",
+    broadcast_usage: "Uso: /broadcast Tu mensaje aquí\n\nEnvía un mensaje de texto plano a todos los suscriptores\\.",
 
     // Other
-    unknown_command: "Comando desconocido. Usa /start para ver los comandos disponibles.",
-    welcome_summary_header: "📰 *¡Hey! Esto es lo que te perdiste* 😉",
+    unknown_command: "Comando desconocido\\. Usa /start para ver los comandos disponibles\\.",
+    welcome_summary_header: "📰 *¡Hey\\! Esto es lo que te perdiste* 😉",
 };
 
 #[cfg(test)]

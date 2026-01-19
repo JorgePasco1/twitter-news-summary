@@ -196,13 +196,13 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
         }
         "/subscribe" => {
             if db.is_subscribed(chat_id).await? {
-                let msg = escape_markdownv2(Language::ENGLISH.config().strings.subscribe_already);
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH.config().strings.subscribe_already;
+                send_message(config, chat_id, msg).await?;
             } else {
                 let (_, needs_welcome) = db.add_subscriber(chat_id, username.as_deref()).await?;
                 info!("New subscriber: {} (username: {:?})", chat_id, username);
-                let msg = escape_markdownv2(Language::ENGLISH.config().strings.subscribe_success);
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH.config().strings.subscribe_success;
+                send_message(config, chat_id, msg).await?;
 
                 // Send welcome summary for first-time subscribers
                 if needs_welcome {
@@ -217,16 +217,14 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
         "/unsubscribe" => {
             if db.remove_subscriber(chat_id).await? {
                 info!("Unsubscribed: {}", chat_id);
-                let msg = escape_markdownv2(Language::ENGLISH.config().strings.unsubscribe_success);
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH.config().strings.unsubscribe_success;
+                send_message(config, chat_id, msg).await?;
             } else {
-                let msg = escape_markdownv2(
-                    Language::ENGLISH
-                        .config()
-                        .strings
-                        .unsubscribe_not_subscribed,
-                );
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH
+                    .config()
+                    .strings
+                    .unsubscribe_not_subscribed;
+                send_message(config, chat_id, msg).await?;
             }
         }
         "/status" => {
@@ -259,7 +257,11 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
                     template.replace("{language}", lang_name)
                 }
             } else {
-                escape_markdownv2(Language::ENGLISH.config().strings.status_not_subscribed)
+                Language::ENGLISH
+                    .config()
+                    .strings
+                    .status_not_subscribed
+                    .to_string()
             };
             send_message(config, chat_id, &status_msg).await?;
         }
@@ -268,32 +270,26 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
             let is_subscribed = db.is_subscribed(chat_id).await?;
 
             if !is_subscribed {
-                let msg =
-                    escape_markdownv2(Language::ENGLISH.config().strings.language_not_subscribed);
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH.config().strings.language_not_subscribed;
+                send_message(config, chat_id, msg).await?;
             } else if let Some(lang_arg) = arg {
                 // User specified a language: /language en or /language es
                 match lang_arg {
                     "en" => {
                         db.set_subscriber_language(chat_id, "en").await?;
                         info!("Language changed to English for {}", chat_id);
-                        let msg = escape_markdownv2(
-                            Language::ENGLISH.config().strings.language_changed_english,
-                        );
-                        send_message(config, chat_id, &msg).await?;
+                        let msg = Language::ENGLISH.config().strings.language_changed_english;
+                        send_message(config, chat_id, msg).await?;
                     }
                     "es" => {
                         db.set_subscriber_language(chat_id, "es").await?;
                         info!("Language changed to Spanish for {}", chat_id);
-                        let msg = escape_markdownv2(
-                            Language::SPANISH.config().strings.language_changed_spanish,
-                        );
-                        send_message(config, chat_id, &msg).await?;
+                        let msg = Language::SPANISH.config().strings.language_changed_spanish;
+                        send_message(config, chat_id, msg).await?;
                     }
                     _ => {
-                        let msg =
-                            escape_markdownv2(Language::ENGLISH.config().strings.language_invalid);
-                        send_message(config, chat_id, &msg).await?;
+                        let msg = Language::ENGLISH.config().strings.language_invalid;
+                        send_message(config, chat_id, msg).await?;
                     }
                 }
             } else {
@@ -319,9 +315,8 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
                 !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
 
             if !is_admin {
-                let msg =
-                    escape_markdownv2(Language::ENGLISH.config().strings.broadcast_admin_only);
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH.config().strings.broadcast_admin_only;
+                send_message(config, chat_id, msg).await?;
             } else if let Some(broadcast_msg) = arg {
                 // Send broadcast to all subscribers
                 info!(
@@ -334,35 +329,33 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
                         let total = sent + failures.len();
                         let msg = if failures.is_empty() {
                             let template = Language::ENGLISH.config().strings.broadcast_success;
-                            template.replace("{count}", &escape_markdownv2(&sent.to_string()))
+                            template.replace("{count}", &sent.to_string())
                         } else {
                             let template = Language::ENGLISH.config().strings.broadcast_partial;
                             template
-                                .replace("{sent}", &escape_markdownv2(&sent.to_string()))
-                                .replace(
-                                    "{failed}",
-                                    &escape_markdownv2(&failures.len().to_string()),
-                                )
-                                .replace("{total}", &escape_markdownv2(&total.to_string()))
+                                .replace("{sent}", &sent.to_string())
+                                .replace("{failed}", &failures.len().to_string())
+                                .replace("{total}", &total.to_string())
                         };
                         send_message(config, chat_id, &msg).await?;
                     }
                     Err(e) => {
                         warn!("Broadcast failed: {}", e);
                         let template = Language::ENGLISH.config().strings.broadcast_failed;
+                        // Error messages may contain special chars, so escape them
                         let msg = template.replace("{error}", &escape_markdownv2(&e.to_string()));
                         send_message(config, chat_id, &msg).await?;
                     }
                 }
             } else {
-                let msg = escape_markdownv2(Language::ENGLISH.config().strings.broadcast_usage);
-                send_message(config, chat_id, &msg).await?;
+                let msg = Language::ENGLISH.config().strings.broadcast_usage;
+                send_message(config, chat_id, msg).await?;
             }
         }
         _ => {
             // Unknown command, send help
-            let msg = escape_markdownv2(Language::ENGLISH.config().strings.unknown_command);
-            send_message(config, chat_id, &msg).await?;
+            let msg = Language::ENGLISH.config().strings.unknown_command;
+            send_message(config, chat_id, msg).await?;
         }
     }
 
@@ -378,7 +371,7 @@ async fn send_welcome_summary(
 ) -> Result<()> {
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
     let escaped_timestamp = escape_markdownv2(&timestamp);
-    let header = escape_markdownv2(Language::ENGLISH.config().strings.welcome_summary_header);
+    let header = Language::ENGLISH.config().strings.welcome_summary_header;
     let message = format!(
         "{}\n_{}_\n\n{}",
         header,
