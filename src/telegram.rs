@@ -165,15 +165,13 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
     // Handle bot commands - check for commands with arguments
     // Note: All plain text messages must be escaped for MarkdownV2 mode
     let (command, arg) = if text.starts_with("/language ") {
-        (
-            "/language",
-            Some(text.strip_prefix("/language ").unwrap().trim()),
-        )
+        let arg = text.strip_prefix("/language ").unwrap().trim();
+        let arg = if arg.is_empty() { None } else { Some(arg) };
+        ("/language", arg)
     } else if text.starts_with("/broadcast ") {
-        (
-            "/broadcast",
-            Some(text.strip_prefix("/broadcast ").unwrap().trim()),
-        )
+        let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+        let arg = if arg.is_empty() { None } else { Some(arg) };
+        ("/broadcast", arg)
     } else {
         (text.as_str(), None)
     };
