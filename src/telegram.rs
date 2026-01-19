@@ -162,12 +162,17 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
 
     info!("Received message from {}: {}", chat_id, text);
 
-    // Handle bot commands - check for /language with argument first
+    // Handle bot commands - check for commands with arguments
     // Note: All plain text messages must be escaped for MarkdownV2 mode
     let (command, arg) = if text.starts_with("/language ") {
         (
             "/language",
             Some(text.strip_prefix("/language ").unwrap().trim()),
+        )
+    } else if text.starts_with("/broadcast ") {
+        (
+            "/broadcast",
+            Some(text.strip_prefix("/broadcast ").unwrap().trim()),
         )
     } else {
         (text.as_str(), None)
@@ -175,14 +180,30 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
 
     match command {
         "/start" => {
+            // Check if user is admin
+            let chat_id_str = chat_id.to_string();
+            let is_admin =
+                !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
+
             // Pre-escaped for MarkdownV2 (escaped: ! - . )
-            let welcome = "👋 Welcome to Twitter News Summary Bot\\!\n\n\
+            let welcome = if is_admin {
+                "👋 Welcome to Twitter News Summary Bot\\!\n\n\
+Commands:\n\
+/subscribe \\- Get daily AI\\-powered summaries of Twitter/X news\n\
+/unsubscribe \\- Stop receiving summaries\n\
+/status \\- Check your subscription status\n\
+/language \\- Change summary language \\(en/es\\)\n\
+/broadcast \\- Send a message to all subscribers \\(admin only\\)\n\n\
+Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers\\."
+            } else {
+                "👋 Welcome to Twitter News Summary Bot\\!\n\n\
 Commands:\n\
 /subscribe \\- Get daily AI\\-powered summaries of Twitter/X news\n\
 /unsubscribe \\- Stop receiving summaries\n\
 /status \\- Check your subscription status\n\
 /language \\- Change summary language \\(en/es\\)\n\n\
-Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers\\.";
+Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers\\."
+            };
 
             send_message(config, chat_id, welcome).await?;
         }
@@ -316,6 +337,60 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                     current_name
                 );
                 send_message(config, chat_id, &msg).await?;
+            }
+        }
+        "/broadcast" => {
+            // Admin-only command to broadcast a message to all subscribers
+            let chat_id_str = chat_id.to_string();
+            let is_admin =
+                !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
+
+            if !is_admin {
+                send_message(
+                    config,
+                    chat_id,
+                    "⛔ This command is only available to the bot administrator\\.",
+                )
+                .await?;
+            } else if let Some(broadcast_msg) = arg {
+                // Send broadcast to all subscribers
+                info!("Broadcasting message from admin {}: {}", chat_id, broadcast_msg);
+
+                match broadcast_message(config, db, broadcast_msg, None).await {
+                    Ok((sent, failures)) => {
+                        let total = sent + failures.len();
+                        let msg = if failures.is_empty() {
+                            format!(
+                                "✅ *Broadcast sent successfully*\\!\n\n📊 Delivered to {} subscribers",
+                                escape_markdownv2(&sent.to_string())
+                            )
+                        } else {
+                            format!(
+                                "📡 *Broadcast completed*\n\n✅ Sent: {}\n❌ Failed: {}\n📊 Total: {}",
+                                escape_markdownv2(&sent.to_string()),
+                                escape_markdownv2(&failures.len().to_string()),
+                                escape_markdownv2(&total.to_string())
+                            )
+                        };
+                        send_message(config, chat_id, &msg).await?;
+                    }
+                    Err(e) => {
+                        warn!("Broadcast failed: {}", e);
+                        send_message(
+                            config,
+                            chat_id,
+                            &format!("❌ Broadcast failed: {}", escape_markdownv2(&e.to_string())),
+                        )
+                        .await?;
+                    }
+                }
+            } else {
+                send_message(
+                    config,
+                    chat_id,
+                    "Usage: /broadcast Your message here\n\nSends a plain text message to all subscribers\\.",
+                )
+                .await?;
             }
         }
         _ => {
