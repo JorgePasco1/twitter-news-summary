@@ -501,9 +501,11 @@ pub async fn send_to_subscribers(
                     Err(e) => {
                         TranslationMetrics::global().record_api_failure();
                         warn!("Translation failed for {}: {}", lang_code, e);
-                        // Use English with failure notice
+                        // Use English with failure notice, cache to prevent repeated API calls
                         let notice = get_translation_failure_notice(language);
-                        format!("{}{}", notice, summary)
+                        let fallback = format!("{}{}", notice, summary);
+                        translation_cache.insert(lang_code.clone(), fallback.clone());
+                        fallback
                     }
                 }
             }

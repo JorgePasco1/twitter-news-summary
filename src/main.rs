@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
     // Warn if API_KEY is not configured
     if config.api_key.is_none() {
         warn!(
-            "⚠️  API_KEY not configured - /trigger, /subscribers, and /broadcast endpoints will be unprotected"
+            "⚠️  API_KEY not configured - /trigger, /subscribers, /broadcast, and /translation-metrics endpoints will be unprotected"
         );
     }
 
