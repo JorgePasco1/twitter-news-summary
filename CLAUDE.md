@@ -46,25 +46,9 @@ git config core.hooksPath .githooks
 ```bash
 # Copy environment template and fill in credentials
 cp .env.example .env
-
-# Required environment variables (see .env.example for formats):
-# - OPENAI_API_KEY
-# - TELEGRAM_BOT_TOKEN (from @BotFather on Telegram)
-# - TELEGRAM_CHAT_ID (numeric chat/user ID)
-# - NITTER_INSTANCE (self-hosted instance URL, see nitter-selfhost/FLY_IO_SETUP.md)
-#
-# Optional (with defaults):
-# - USERNAMES_FILE (defaults to data/usernames.txt)
-# - NITTER_API_KEY (if your Nitter instance requires authentication)
-# - OPENAI_MODEL (defaults to gpt-4o-mini)
-# - MAX_TWEETS (defaults to 50) - Maximum tweets to return per run
-# - HOURS_LOOKBACK (defaults to 12) - Time window for tweet filtering
-# - RUST_LOG (defaults to info)
-#
-# Optional - Only for `make export` command:
-# - TWITTER_BEARER_TOKEN (OAuth 2.0 App-Only)
-# - TWITTER_LIST_ID (numeric ID from list URL)
 ```
+
+See **Environment Variables Reference** section below for complete details.
 
 ### GitHub Actions
 ```bash
@@ -211,3 +195,110 @@ The release profile is highly optimized for binary size:
 - `dotenvy` - .env file loading
 - `rss` - RSS/Atom feed parsing
 - `futures` - parallel async operations
+
+## Environment Variables Reference
+
+### Overview: Where Variables Go
+
+| Location | Purpose | Variables |
+|----------|---------|-----------|
+| **Local `.env`** | Local development | All app runtime variables |
+| **Fly.io Secrets** | Production/Test app runtime | All app runtime variables |
+| **GitHub Secrets** | Deployment & triggering | `FLY_API_TOKEN`, `API_KEY` |
+
+### App Runtime Variables (Local .env + Fly.io Secrets)
+
+These variables are used by the running Rust application.
+
+#### Required Variables
+
+| Variable | Description | How to Get |
+|----------|-------------|------------|
+| `OPENAI_API_KEY` | OpenAI API key for summarization | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token | Create bot via [@BotFather](https://t.me/BotFather) |
+| `TELEGRAM_WEBHOOK_SECRET` | Verifies webhook requests from Telegram | `openssl rand -hex 32` |
+| `NITTER_INSTANCE` | Your self-hosted Nitter URL | See `nitter-selfhost/FLY_IO_SETUP.md` |
+| `DATABASE_URL` | PostgreSQL connection string | Neon.tech or other provider |
+
+#### Optional Variables (with defaults)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TELEGRAM_CHAT_ID` | `""` | Admin chat ID for notifications |
+| `API_KEY` | None | Protects `/trigger`, `/test`, `/subscribers` endpoints |
+| `NITTER_API_KEY` | None | Auth key for secured Nitter instance |
+| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model to use |
+| `MAX_TWEETS` | `100` | Max tweets to fetch per run |
+| `HOURS_LOOKBACK` | `12` | Time window for tweets (hours) |
+| `SCHEDULE_TIMES` | `08:00,20:00` | Summary schedule (Peru time UTC-5) |
+| `PORT` | `8080` | Server port |
+| `RUST_LOG` | `info` | Log level |
+
+#### Export Binary Only (optional)
+
+| Variable | Description |
+|----------|-------------|
+| `TWITTER_BEARER_TOKEN` | Twitter API bearer token |
+| `TWITTER_LIST_ID` | Twitter list ID to export |
+
+### GitHub Actions Secrets
+
+These are NOT used by the app - only by GitHub Actions workflows.
+
+| Secret | Environment | Description | How to Get |
+|--------|-------------|-------------|------------|
+| `FLY_API_TOKEN` | `prod` | Deploy token for production | `fly tokens create deploy -a twitter-summary-bot` |
+| `FLY_API_TOKEN` | `test` | Deploy token for test | `fly tokens create deploy -a twitter-summary-bot-test` |
+| `API_KEY` | Both | To call `/trigger` endpoint | Same value as in Fly.io secrets |
+
+### Setup Checklist
+
+#### Production Environment
+
+**Fly.io Secrets** (`fly secrets set -a twitter-summary-bot`):
+```bash
+fly secrets set -a twitter-summary-bot \
+  OPENAI_API_KEY="sk-..." \
+  TELEGRAM_BOT_TOKEN="123456:ABC..." \
+  TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)" \
+  TELEGRAM_CHAT_ID="your_admin_chat_id" \
+  NITTER_INSTANCE="https://your-nitter.fly.dev" \
+  NITTER_API_KEY="your_nitter_key" \
+  DATABASE_URL="postgres://..." \
+  API_KEY="$(openssl rand -hex 32)"
+```
+
+**GitHub Environment `prod`**:
+- `FLY_API_TOKEN` = output of `fly tokens create deploy -a twitter-summary-bot`
+- `API_KEY` = same value you set in Fly.io secrets above
+
+#### Test Environment
+
+**Fly.io Secrets** (`fly secrets set -a twitter-summary-bot-test`):
+```bash
+fly secrets set -a twitter-summary-bot-test \
+  OPENAI_API_KEY="sk-..." \
+  TELEGRAM_BOT_TOKEN="test_bot_token" \
+  TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)" \
+  TELEGRAM_CHAT_ID="your_chat_id" \
+  NITTER_INSTANCE="https://your-nitter.fly.dev" \
+  NITTER_API_KEY="your_nitter_key" \
+  DATABASE_URL="postgres://test_db_url..." \
+  API_KEY="$(openssl rand -hex 32)"
+```
+
+**GitHub Environment `test`**:
+- `FLY_API_TOKEN` = output of `fly tokens create deploy -a twitter-summary-bot-test`
+- `API_KEY` = same value you set in Fly.io secrets above
+
+### Common Mistakes
+
+1. **`FLY_API_TOKEN` in .env file** - This is WRONG. The app doesn't use this variable. It's only for GitHub Actions deployment.
+
+2. **Self-generated `FLY_API_TOKEN`** - This is WRONG. It must come from Fly.io via `fly tokens create deploy`.
+
+3. **Different `API_KEY` in GitHub vs Fly.io** - These must match! GitHub uses it to call the endpoint, Fly.io app validates it.
+
+4. **Confusing `NITTER_API_KEY` with `API_KEY`**:
+   - `NITTER_API_KEY` = protects your Nitter instance (X-API-Key header to Nitter)
+   - `API_KEY` = protects your app's endpoints (X-API-Key header to your app)
