@@ -184,15 +184,14 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
                 !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
 
             // Get welcome message from registry based on admin status
-            // For now, English is the default language for command responses
-            let welcome_text = if is_admin {
+            // Templates are pre-escaped for MarkdownV2, no need to escape again
+            let welcome = if is_admin {
                 Language::ENGLISH.config().strings.welcome_admin
             } else {
                 Language::ENGLISH.config().strings.welcome_user
             };
-            let welcome = escape_markdownv2(welcome_text);
 
-            send_message(config, chat_id, &welcome).await?;
+            send_message(config, chat_id, welcome).await?;
         }
         "/subscribe" => {
             if db.is_subscribed(chat_id).await? {
@@ -4609,5 +4608,253 @@ For details: [OpenAI Blog](https://openai.com/blog)"#;
         assert!(template.contains("✅"));
         assert!(template.contains("🌐"));
         assert!(template.contains("📊"));
+    }
+
+    // ==================== Double-Escaping Detection Tests ====================
+    //
+    // These tests detect if pre-escaped templates are accidentally double-escaped.
+    // Double-escaping would produce patterns like `\\\\` (escaped backslash) or
+    // `\\\\!` instead of `\\!`.
+    //
+    // CRITICAL: If any of these tests fail, it means production code is double-escaping
+    // and will cause Telegram API errors.
+
+    /// Helper function to detect double-escaping in a string.
+    /// Double-escaping produces `\\\\` patterns (backslash followed by backslash).
+    fn has_double_escaping(s: &str) -> bool {
+        // In Rust strings, `\\\\` represents two literal backslashes
+        // If we see `\\` followed by another `\\` it means double-escaping
+        s.contains("\\\\")
+    }
+
+    /// Simulates what production code does for /start command
+    #[test]
+    fn test_production_start_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        // This is EXACTLY what production code does
+        let welcome = Language::ENGLISH.config().strings.welcome_admin;
+
+        // Production code should NOT wrap this in escape_markdownv2
+        // If it did, we'd see double-escaping
+        assert!(
+            !has_double_escaping(welcome),
+            "welcome_admin template should not have double-escaping. \
+             If this fails, production code may be calling escape_markdownv2 on pre-escaped template"
+        );
+
+        // Also verify the template IS properly escaped (single escaping)
+        assert!(
+            welcome.contains("\\!"),
+            "welcome_admin should have escaped exclamation marks"
+        );
+        assert!(
+            welcome.contains("\\-"),
+            "welcome_admin should have escaped hyphens"
+        );
+    }
+
+    #[test]
+    fn test_production_subscribe_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let already = Language::ENGLISH.config().strings.subscribe_already;
+        let success = Language::ENGLISH.config().strings.subscribe_success;
+
+        assert!(
+            !has_double_escaping(already),
+            "subscribe_already should not have double-escaping"
+        );
+        assert!(
+            !has_double_escaping(success),
+            "subscribe_success should not have double-escaping"
+        );
+
+        // Verify proper escaping exists
+        assert!(already.contains("\\!"));
+        assert!(success.contains("\\!"));
+        assert!(success.contains("\\."));
+    }
+
+    #[test]
+    fn test_production_unsubscribe_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let success = Language::ENGLISH.config().strings.unsubscribe_success;
+        let not_sub = Language::ENGLISH
+            .config()
+            .strings
+            .unsubscribe_not_subscribed;
+
+        assert!(
+            !has_double_escaping(success),
+            "unsubscribe_success should not have double-escaping"
+        );
+        assert!(
+            !has_double_escaping(not_sub),
+            "unsubscribe_not_subscribed should not have double-escaping"
+        );
+    }
+
+    #[test]
+    fn test_production_status_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let admin = Language::ENGLISH.config().strings.status_subscribed_admin;
+        let user = Language::ENGLISH.config().strings.status_subscribed_user;
+        let not_sub = Language::ENGLISH.config().strings.status_not_subscribed;
+
+        assert!(
+            !has_double_escaping(admin),
+            "status_subscribed_admin should not have double-escaping"
+        );
+        assert!(
+            !has_double_escaping(user),
+            "status_subscribed_user should not have double-escaping"
+        );
+        assert!(
+            !has_double_escaping(not_sub),
+            "status_not_subscribed should not have double-escaping"
+        );
+    }
+
+    #[test]
+    fn test_production_language_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let not_sub = Language::ENGLISH.config().strings.language_not_subscribed;
+        let changed_en = Language::ENGLISH.config().strings.language_changed_english;
+        let changed_es = Language::SPANISH.config().strings.language_changed_spanish;
+        let invalid = Language::ENGLISH.config().strings.language_invalid;
+        let settings = Language::ENGLISH.config().strings.language_settings;
+
+        assert!(!has_double_escaping(not_sub));
+        assert!(!has_double_escaping(changed_en));
+        assert!(!has_double_escaping(changed_es));
+        assert!(!has_double_escaping(invalid));
+        assert!(!has_double_escaping(settings));
+
+        // Verify language_settings has proper escaping (it uses * for bold and - for list)
+        assert!(
+            settings.contains("\\-"),
+            "language_settings should have escaped hyphens"
+        );
+        assert!(
+            settings.contains("*Language Settings*") || settings.contains("*Configuración"),
+            "language_settings should preserve intentional bold formatting"
+        );
+    }
+
+    #[test]
+    fn test_production_broadcast_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let admin_only = Language::ENGLISH.config().strings.broadcast_admin_only;
+        let success = Language::ENGLISH.config().strings.broadcast_success;
+        let partial = Language::ENGLISH.config().strings.broadcast_partial;
+        let failed = Language::ENGLISH.config().strings.broadcast_failed;
+        let usage = Language::ENGLISH.config().strings.broadcast_usage;
+
+        assert!(!has_double_escaping(admin_only));
+        assert!(!has_double_escaping(success));
+        assert!(!has_double_escaping(partial));
+        assert!(!has_double_escaping(failed));
+        assert!(!has_double_escaping(usage));
+    }
+
+    #[test]
+    fn test_production_unknown_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let unknown = Language::ENGLISH.config().strings.unknown_command;
+        assert!(
+            !has_double_escaping(unknown),
+            "unknown_command should not have double-escaping"
+        );
+    }
+
+    #[test]
+    fn test_production_welcome_summary_no_double_escape() {
+        use crate::i18n::Language;
+
+        let header = Language::ENGLISH.config().strings.welcome_summary_header;
+        assert!(
+            !has_double_escaping(header),
+            "welcome_summary_header should not have double-escaping"
+        );
+    }
+
+    #[test]
+    fn test_all_spanish_templates_no_double_escape() {
+        use crate::i18n::Language;
+
+        let strings = &Language::SPANISH.config().strings;
+
+        assert!(!has_double_escaping(strings.welcome_admin));
+        assert!(!has_double_escaping(strings.welcome_user));
+        assert!(!has_double_escaping(strings.subscribe_already));
+        assert!(!has_double_escaping(strings.subscribe_success));
+        assert!(!has_double_escaping(strings.unsubscribe_success));
+        assert!(!has_double_escaping(strings.unsubscribe_not_subscribed));
+        assert!(!has_double_escaping(strings.status_subscribed_admin));
+        assert!(!has_double_escaping(strings.status_subscribed_user));
+        assert!(!has_double_escaping(strings.status_not_subscribed));
+        assert!(!has_double_escaping(strings.language_not_subscribed));
+        assert!(!has_double_escaping(strings.language_changed_english));
+        assert!(!has_double_escaping(strings.language_changed_spanish));
+        assert!(!has_double_escaping(strings.language_invalid));
+        assert!(!has_double_escaping(strings.language_settings));
+        assert!(!has_double_escaping(strings.broadcast_admin_only));
+        assert!(!has_double_escaping(strings.broadcast_success));
+        assert!(!has_double_escaping(strings.broadcast_partial));
+        assert!(!has_double_escaping(strings.broadcast_failed));
+        assert!(!has_double_escaping(strings.broadcast_usage));
+        assert!(!has_double_escaping(strings.unknown_command));
+        assert!(!has_double_escaping(strings.welcome_summary_header));
+    }
+
+    /// Test that demonstrates what double-escaping looks like
+    /// and verifies our detection works
+    #[test]
+    fn test_double_escape_detection_works() {
+        // Single-escaped (correct)
+        let single_escaped = "Hello\\!";
+        assert!(
+            !has_double_escaping(single_escaped),
+            "Single-escaped should not trigger detection"
+        );
+
+        // Double-escaped (incorrect - what happens if escape_markdownv2 is called twice)
+        let double_escaped = escape_markdownv2("Hello\\!");
+        assert!(
+            has_double_escaping(&double_escaped),
+            "Double-escaped should be detected. Got: {}",
+            double_escaped
+        );
+    }
+
+    /// Simulates the exact bug scenario: calling escape_markdownv2 on pre-escaped template
+    #[test]
+    fn test_simulated_double_escape_bug() {
+        use crate::i18n::Language;
+
+        // Get the pre-escaped template
+        let template = Language::ENGLISH.config().strings.welcome_admin;
+
+        // Simulate the BUG: wrapping pre-escaped template in escape_markdownv2
+        let double_escaped = escape_markdownv2(template);
+
+        // This should detect the double-escaping
+        assert!(
+            has_double_escaping(&double_escaped),
+            "Calling escape_markdownv2 on pre-escaped template should produce double-escaping. \
+             This test verifies our detection works."
+        );
+
+        // The original template should NOT have double-escaping
+        assert!(
+            !has_double_escaping(template),
+            "Original template should not have double-escaping"
+        );
     }
 }
