@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::retry::{with_retry_if, RetryConfig};
 use crate::twitter::Tweet;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -179,33 +180,67 @@ pub async fn summarize_tweets(
 ) -> Result<String> {
     let request = build_chat_request(config, tweets);
 
-    let response = client
-        .post(&config.openai_api_url)
-        .header("Authorization", format!("Bearer {}", config.openai_api_key))
-        .header("Content-Type", "application/json")
-        .json(&request)
-        .send()
-        .await
-        .context("Failed to send request to OpenAI API")?;
+    with_retry_if(
+        &RetryConfig::api_call(),
+        "OpenAI summarization",
+        || async {
+            let response = client
+                .post(&config.openai_api_url)
+                .header("Authorization", format!("Bearer {}", config.openai_api_key))
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
+                .await
+                .context("Failed to send request to OpenAI API")?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("OpenAI API error ({}): {}", status, body);
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                anyhow::bail!("OpenAI API error ({}): {}", status, body);
+            }
+
+            let chat_response: ChatResponse = response
+                .json()
+                .await
+                .context("Failed to parse OpenAI response")?;
+
+            let summary = chat_response
+                .choices
+                .first()
+                .map(|c| c.message.content.clone())
+                .unwrap_or_else(|| "No summary generated".to_string());
+
+            Ok(summary)
+        },
+        is_retryable_error,
+    )
+    .await
+}
+
+/// Determine if an error is retryable (5xx errors, 429 rate limit, network errors)
+/// Other 4xx client errors should not be retried
+fn is_retryable_error(error: &anyhow::Error) -> bool {
+    let error_str = error.to_string();
+
+    // Check if it's an OpenAI API error with a status code
+    // Error format: "OpenAI API error (400 Bad Request): ..."
+    if error_str.contains("OpenAI API error") {
+        if let Some(start) = error_str.find('(') {
+            if let Some(end) = error_str[start..].find(')') {
+                let status_str = &error_str[start + 1..start + end];
+                // Extract just the numeric status code (e.g., "400" from "400 Bad Request")
+                let status_num = status_str.split_whitespace().next().unwrap_or("");
+                if let Ok(status) = status_num.parse::<u16>() {
+                    // Retry 429 (rate limit) and 5xx errors
+                    // Don't retry other 4xx errors (400, 401, 403, etc.)
+                    return status == 429 || status >= 500;
+                }
+            }
+        }
     }
 
-    let chat_response: ChatResponse = response
-        .json()
-        .await
-        .context("Failed to parse OpenAI response")?;
-
-    let summary = chat_response
-        .choices
-        .first()
-        .map(|c| c.message.content.clone())
-        .unwrap_or_else(|| "No summary generated".to_string());
-
-    Ok(summary)
+    // Retry network errors, timeouts, and other transient failures
+    true
 }
 
 #[cfg(test)]
@@ -1013,5 +1048,377 @@ mod tests {
         let cloned = original.clone();
 
         assert_eq!(original, cloned);
+    }
+
+    // ==================== Retry Integration Tests ====================
+
+    #[tokio::test]
+    async fn test_summarize_tweets_retries_on_500_error() {
+        let mock_server = MockServer::start().await;
+
+        // First two requests fail with 500, third succeeds
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_string(r#"{"error": {"message": "Internal Server Error"}}"#),
+            )
+            .up_to_n_times(2)
+            .mount(&mock_server)
+            .await;
+
+        let response_body = create_openai_response("Summary after retry");
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_ok(), "Should succeed after retries: {:?}", result);
+        assert_eq!(result.unwrap(), "Summary after retry");
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_retries_on_503_error() {
+        let mock_server = MockServer::start().await;
+
+        // First request fails with 503 Service Unavailable
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(503).set_body_string("Service temporarily unavailable"),
+            )
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        let response_body = create_openai_response("Summary after 503 retry");
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(
+            result.is_ok(),
+            "Should succeed after 503 retry: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_no_retry_on_400_error() {
+        let mock_server = MockServer::start().await;
+
+        // 400 Bad Request should NOT be retried
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_string(r#"{"error": {"message": "Bad request"}}"#),
+            )
+            .expect(1) // Should only be called once - no retries
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let start = std::time::Instant::now();
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "400 error should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("400"),
+            "Error should mention 400 status: {}",
+            err
+        );
+
+        // Should fail quickly without retry delays
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "400 error should fail immediately without retries, took {:?}",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_no_retry_on_401_error() {
+        let mock_server = MockServer::start().await;
+
+        // 401 Unauthorized should NOT be retried
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_string(r#"{"error": {"message": "Invalid API key"}}"#),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_err(), "401 error should fail immediately");
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_no_retry_on_403_error() {
+        let mock_server = MockServer::start().await;
+
+        // 403 Forbidden should NOT be retried
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_string(r#"{"error": {"message": "Access denied"}}"#),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_err(), "403 error should fail immediately");
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_no_retry_on_422_error() {
+        let mock_server = MockServer::start().await;
+
+        // 422 Unprocessable Entity should NOT be retried
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(422)
+                    .set_body_string(r#"{"error": {"message": "Invalid parameters"}}"#),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(result.is_err(), "422 error should fail immediately");
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_exhausts_retries_on_persistent_500() {
+        let mock_server = MockServer::start().await;
+
+        // All requests fail with 500
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_string(r#"{"error": {"message": "Persistent failure"}}"#),
+            )
+            .expect(3) // api_call() preset has 3 attempts
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let start = std::time::Instant::now();
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "Should fail after exhausting retries");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("500"), "Error should mention 500: {}", err);
+
+        // api_call() preset: 3 attempts with 1s, 2s delays = 3s minimum
+        assert!(
+            elapsed >= std::time::Duration::from_secs(2),
+            "Should have spent time retrying, got {:?}",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_retries_on_rate_limit_429() {
+        let mock_server = MockServer::start().await;
+
+        // 429 Rate Limit IS retryable (transient error)
+        // First two requests fail with 429, third succeeds
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .set_body_string(r#"{"error": {"message": "Rate limit exceeded"}}"#),
+            )
+            .up_to_n_times(2)
+            .mount(&mock_server)
+            .await;
+
+        let response_body = create_openai_response("Success after rate limit");
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        assert!(
+            result.is_ok(),
+            "429 errors should be retried and succeed: {:?}",
+            result
+        );
+        assert_eq!(result.unwrap(), "Success after rate limit");
+    }
+
+    #[tokio::test]
+    async fn test_summarize_tweets_success_on_first_attempt_no_delay() {
+        let mock_server = MockServer::start().await;
+
+        let response_body = create_openai_response("Immediate success");
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config =
+            create_test_config_with_url(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let start = std::time::Instant::now();
+        let result = summarize_tweets(&client, &config, &tweets).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "Immediate success");
+
+        // Should complete very quickly
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "Should complete quickly on immediate success, got {:?}",
+            elapsed
+        );
+    }
+
+    // ==================== is_retryable_error Tests ====================
+
+    #[test]
+    fn test_is_retryable_error_500_error() {
+        let error = anyhow::anyhow!("OpenAI API error (500): Internal Server Error");
+        assert!(is_retryable_error(&error), "500 errors should be retryable");
+    }
+
+    #[test]
+    fn test_is_retryable_error_503_error() {
+        let error = anyhow::anyhow!("OpenAI API error (503): Service Unavailable");
+        assert!(is_retryable_error(&error), "503 errors should be retryable");
+    }
+
+    #[test]
+    fn test_is_retryable_error_400_error() {
+        let error = anyhow::anyhow!("OpenAI API error (400): Bad Request");
+        assert!(
+            !is_retryable_error(&error),
+            "400 errors should NOT be retryable"
+        );
+    }
+
+    #[test]
+    fn test_is_retryable_error_401_error() {
+        let error = anyhow::anyhow!("OpenAI API error (401): Unauthorized");
+        assert!(
+            !is_retryable_error(&error),
+            "401 errors should NOT be retryable"
+        );
+    }
+
+    #[test]
+    fn test_is_retryable_error_403_error() {
+        let error = anyhow::anyhow!("OpenAI API error (403): Forbidden");
+        assert!(
+            !is_retryable_error(&error),
+            "403 errors should NOT be retryable"
+        );
+    }
+
+    #[test]
+    fn test_is_retryable_error_429_error() {
+        let error = anyhow::anyhow!("OpenAI API error (429): Rate Limit Exceeded");
+        assert!(
+            is_retryable_error(&error),
+            "429 errors SHOULD be retryable (rate limit is transient)"
+        );
+    }
+
+    #[test]
+    fn test_is_retryable_error_network_error() {
+        let error = anyhow::anyhow!("Failed to send request to OpenAI API: connection refused");
+        assert!(
+            is_retryable_error(&error),
+            "Network errors should be retryable"
+        );
+    }
+
+    #[test]
+    fn test_is_retryable_error_timeout() {
+        let error = anyhow::anyhow!("Request timed out");
+        assert!(is_retryable_error(&error), "Timeouts should be retryable");
+    }
+
+    #[test]
+    fn test_is_retryable_error_parse_error() {
+        let error = anyhow::anyhow!("Failed to parse OpenAI response: invalid JSON");
+        assert!(
+            is_retryable_error(&error),
+            "Parse errors should be retryable (might be transient)"
+        );
+    }
+
+    #[test]
+    fn test_is_retryable_error_non_api_error() {
+        let error = anyhow::anyhow!("Some random error without status code");
+        assert!(
+            is_retryable_error(&error),
+            "Unknown errors should be retryable by default"
+        );
     }
 }
