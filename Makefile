@@ -1,4 +1,4 @@
-.PHONY: help export run preview preview-cached preview-send preview-cached-send test-send build check test clean trigger
+.PHONY: help export run run-test preview preview-cached preview-send preview-cached-send test-send build check test clean trigger
 
 # Default target - show help
 help:
@@ -7,6 +7,7 @@ help:
 	@echo "Development:"
 	@echo "  make export         - Export Twitter list members (one-time setup)"
 	@echo "  make run            - Run the news summary job locally (uses RSS feeds)"
+	@echo "  make run-test       - Run locally with .env.test settings"
 	@echo "  make preview        - Preview summary without sending (fetches tweets, saves cache)"
 	@echo "  make preview-cached - Preview with cached tweets (fast iteration on formatting)"
 	@echo "  make build          - Build release binary"
@@ -39,6 +40,14 @@ export:
 run:
 	@echo "🚀 Running Twitter news summary..."
 	cargo run --bin twitter-news-summary
+
+# Run with test environment settings
+run-test:
+	@echo "🧪 Running with test environment settings..."
+	@set -a; \
+	  . ./.env.test; \
+	  set +a; \
+	  cargo run --bin twitter-news-summary
 
 # Preview summary without sending to Telegram (for testing)
 preview:

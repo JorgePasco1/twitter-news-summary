@@ -8,7 +8,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tracing::{info, warn};
-use twitter_news_summary::{config, db, scheduler, security, telegram};
+use twitter_news_summary::{config, db, i18n::TranslationMetrics, scheduler, security, telegram};
 
 struct AppState {
     config: Arc<config::Config>,
@@ -19,6 +19,27 @@ struct AppState {
 struct TestParams {
     chat_id: Option<String>,
     fresh: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+struct BroadcastRequest {
+    message: String,
+    parse_mode: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct BroadcastResponse {
+    success: bool,
+    total: usize,
+    sent: usize,
+    failed: usize,
+    failures: Vec<BroadcastFailure>,
+}
+
+#[derive(serde::Serialize)]
+struct BroadcastFailure {
+    chat_id: i64,
+    error: String,
 }
 
 #[tokio::main]
@@ -38,12 +59,15 @@ async fn main() -> Result<()> {
 
     // Load configuration
     let config = Arc::new(config::Config::from_env()?);
-    info!("✓ Configuration loaded");
+    info!(
+        "✓ Configuration loaded (environment: {})",
+        config.environment
+    );
 
     // Warn if API_KEY is not configured
     if config.api_key.is_none() {
         warn!(
-            "⚠️  API_KEY not configured - /trigger and /subscribers endpoints will be unprotected"
+            "⚠️  API_KEY not configured - /trigger, /subscribers, and /broadcast endpoints will be unprotected"
         );
     }
 
@@ -68,6 +92,8 @@ async fn main() -> Result<()> {
         .route("/trigger", post(trigger_handler))
         .route("/test", post(test_handler))
         .route("/subscribers", get(subscribers_handler))
+        .route("/broadcast", post(broadcast_handler))
+        .route("/translation-metrics", get(translation_metrics_handler))
         .with_state(state);
 
     // Start server
@@ -112,8 +138,11 @@ async fn webhook_handler(
     match telegram::handle_webhook(&state.config, &state.db, update).await {
         Ok(_) => StatusCode::OK,
         Err(e) => {
+            // Log the error but return OK to prevent Telegram from retrying.
+            // Returning non-200 causes Telegram to retry the same update indefinitely,
+            // which can cause the bot to get "stuck" on a failing update.
             warn!("Webhook handler error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
+            StatusCode::OK
         }
     }
 }
@@ -292,4 +321,130 @@ async fn subscribers_handler(
                 .into_response()
         }
     }
+}
+
+/// Broadcast message endpoint (API key protected) - sends custom message to all subscribers
+async fn broadcast_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<BroadcastRequest>,
+) -> impl IntoResponse {
+    // Check API key with constant-time comparison
+    if let Some(expected_key) = &state.config.api_key {
+        match headers.get("X-API-Key") {
+            Some(header_value) => {
+                let provided_key = header_value.to_str().unwrap_or("");
+                if !security::constant_time_compare(provided_key, expected_key) {
+                    warn!("Unauthorized broadcast attempt: invalid API key");
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({
+                            "error": "Unauthorized"
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+            None => {
+                warn!("Unauthorized broadcast attempt: missing API key");
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "error": "Unauthorized"
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Validate message is not empty
+    if request.message.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Message cannot be empty"
+            })),
+        )
+            .into_response();
+    }
+
+    info!("Broadcast message requested");
+
+    match telegram::broadcast_message(
+        &state.config,
+        &state.db,
+        &request.message,
+        request.parse_mode.as_deref(),
+    )
+    .await
+    {
+        Ok((sent, failures)) => {
+            let total = sent + failures.len();
+            let response = BroadcastResponse {
+                success: true,
+                total,
+                sent,
+                failed: failures.len(),
+                failures: failures
+                    .into_iter()
+                    .map(|(chat_id, error)| BroadcastFailure { chat_id, error })
+                    .collect(),
+            };
+            info!(
+                "Broadcast completed: {}/{} sent successfully",
+                response.sent, response.total
+            );
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Err(e) => {
+            warn!("Broadcast failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Error: {}", e)
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Translation metrics endpoint (API key protected) - returns translation statistics
+async fn translation_metrics_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    // Check API key with constant-time comparison
+    if let Some(expected_key) = &state.config.api_key {
+        match headers.get("X-API-Key") {
+            Some(header_value) => {
+                let provided_key = header_value.to_str().unwrap_or("");
+                if !security::constant_time_compare(provided_key, expected_key) {
+                    warn!("Unauthorized translation metrics attempt: invalid API key");
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({
+                            "error": "Unauthorized"
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+            None => {
+                warn!("Unauthorized translation metrics attempt: missing API key");
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "error": "Unauthorized"
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Get metrics report
+    let report = TranslationMetrics::global().report();
+    (StatusCode::OK, Json(report)).into_response()
 }

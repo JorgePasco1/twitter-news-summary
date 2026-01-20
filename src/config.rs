@@ -2,6 +2,9 @@ use anyhow::{Context, Result};
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    // Environment name (for logging/debugging)
+    pub environment: String,
+
     // Twitter (optional - only used by export binary)
     #[allow(dead_code)]
     pub twitter_bearer_token: Option<String>,
@@ -49,6 +52,10 @@ impl Config {
             .collect();
 
         Ok(Self {
+            // Environment name
+            environment: std::env::var("ENVIRONMENT")
+                .unwrap_or_else(|_| "development".to_string()),
+
             // Twitter - Bearer Token (OAuth 2.0 App-Only) - Optional, only for export binary
             twitter_bearer_token: std::env::var("TWITTER_BEARER_TOKEN").ok(),
             twitter_list_id: std::env::var("TWITTER_LIST_ID").ok(),
@@ -122,6 +129,7 @@ mod tests {
     /// Helper to clear all config-related environment variables
     fn clear_env_vars() {
         let vars = [
+            "ENVIRONMENT",
             "TWITTER_BEARER_TOKEN",
             "TWITTER_LIST_ID",
             "OPENAI_API_KEY",

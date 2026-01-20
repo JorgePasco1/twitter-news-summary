@@ -5,9 +5,13 @@ set -e
 
 echo "Running pre-push checks..."
 
-# Auto-format code before running checks
-echo "Formatting code..."
-cargo fmt
+# Check if code is formatted
+echo "Checking code formatting..."
+if ! cargo fmt -- --check; then
+    echo ""
+    echo "ERROR: Code is not formatted. Run 'cargo fmt' and commit the changes."
+    exit 1
+fi
 
 # Run clippy
 echo "Running clippy..."

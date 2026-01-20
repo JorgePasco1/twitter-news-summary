@@ -1,0 +1,18 @@
+#!/bin/bash
+# Pre-commit hook: auto-format code and stage changes
+
+set -e
+
+echo "Running pre-commit checks..."
+
+# Auto-format code
+echo "Formatting code..."
+cargo fmt
+
+# Stage any formatting changes
+if ! git diff --quiet; then
+    echo "Code was formatted, staging changes..."
+    git add -u
+fi
+
+echo "Pre-commit checks complete!"

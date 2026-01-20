@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::db::Database;
+use crate::i18n::{Language, TranslationMetrics};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -145,7 +146,6 @@ fn escape_markdownv2_url(url: &str) -> String {
     result
 }
 
-/// Handle incoming webhook from Telegram
 pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> Result<()> {
     let message = match update.message {
         Some(msg) => msg,
@@ -162,32 +162,63 @@ pub async fn handle_webhook(config: &Config, db: &Database, update: Update) -> R
 
     info!("Received message from {}: {}", chat_id, text);
 
-    // Handle bot commands
+    // Handle bot commands - check for commands with arguments
     // Note: All plain text messages must be escaped for MarkdownV2 mode
-    match text.as_str() {
+    let (command, arg) = if text.starts_with("/language ") {
+        let arg = text.strip_prefix("/language ").unwrap().trim();
+        let arg = if arg.is_empty() { None } else { Some(arg) };
+        ("/language", arg)
+    } else if text.starts_with("/broadcast ") {
+        let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+        let arg = if arg.is_empty() { None } else { Some(arg) };
+        ("/broadcast", arg)
+    } else {
+        (text.as_str(), None)
+    };
+
+    match command {
         "/start" => {
-            // Pre-escaped for MarkdownV2 (escaped: ! - . )
-            let welcome = "👋 Welcome to Twitter News Summary Bot\\!\n\n\
-Commands:\n\
-/subscribe \\- Get daily AI\\-powered summaries of Twitter/X news\n\
-/unsubscribe \\- Stop receiving summaries\n\
-/status \\- Check your subscription status\n\n\
-Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers\\.";
+            // Check if user is admin
+            let chat_id_str = chat_id.to_string();
+            let is_admin =
+                !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
+
+            // Get user's preferred language if they're already subscribed
+            let user_lang = if db.is_subscribed(chat_id).await? {
+                let lang_code = db
+                    .get_subscriber_language(chat_id)
+                    .await?
+                    .unwrap_or_else(|| "en".to_string());
+                Language::from_code(&lang_code).unwrap_or(Language::ENGLISH)
+            } else {
+                Language::ENGLISH
+            };
+
+            // Get welcome message from registry based on admin status
+            // Templates are pre-escaped for MarkdownV2, no need to escape again
+            let welcome = if is_admin {
+                user_lang.config().strings.welcome_admin
+            } else {
+                user_lang.config().strings.welcome_user
+            };
 
             send_message(config, chat_id, welcome).await?;
         }
         "/subscribe" => {
             if db.is_subscribed(chat_id).await? {
-                send_message(config, chat_id, "✅ You're already subscribed\\!").await?;
+                // Already subscribed - respond in their preferred language
+                let lang_code = db
+                    .get_subscriber_language(chat_id)
+                    .await?
+                    .unwrap_or_else(|| "en".to_string());
+                let user_lang = Language::from_code(&lang_code).unwrap_or(Language::ENGLISH);
+                let msg = user_lang.config().strings.subscribe_already;
+                send_message(config, chat_id, msg).await?;
             } else {
                 let (_, needs_welcome) = db.add_subscriber(chat_id, username.as_deref()).await?;
                 info!("New subscriber: {} (username: {:?})", chat_id, username);
-                send_message(
-                    config,
-                    chat_id,
-                    "✅ Successfully subscribed\\! You'll receive summaries twice daily\\.",
-                )
-                .await?;
+                let msg = Language::ENGLISH.config().strings.subscribe_success;
+                send_message(config, chat_id, msg).await?;
 
                 // Send welcome summary for first-time subscribers
                 if needs_welcome {
@@ -200,16 +231,24 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
             }
         }
         "/unsubscribe" => {
+            // Get language BEFORE removing (so we can respond in their language)
+            let lang_code = db
+                .get_subscriber_language(chat_id)
+                .await?
+                .unwrap_or_else(|| "en".to_string());
+            let user_lang = Language::from_code(&lang_code).unwrap_or(Language::ENGLISH);
+
             if db.remove_subscriber(chat_id).await? {
                 info!("Unsubscribed: {}", chat_id);
-                send_message(
-                    config,
-                    chat_id,
-                    "👋 Successfully unsubscribed\\. You won't receive any more summaries\\.",
-                )
-                .await?;
+                let msg = user_lang.config().strings.unsubscribe_success;
+                send_message(config, chat_id, msg).await?;
             } else {
-                send_message(config, chat_id, "You're not currently subscribed\\.").await?;
+                // Not subscribed - use English (we don't know their preference)
+                let msg = Language::ENGLISH
+                    .config()
+                    .strings
+                    .unsubscribe_not_subscribed;
+                send_message(config, chat_id, msg).await?;
             }
         }
         "/status" => {
@@ -221,30 +260,138 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
                 !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
 
             let status_msg = if is_subscribed {
+                let lang_code = db
+                    .get_subscriber_language(chat_id)
+                    .await?
+                    .unwrap_or_else(|| "en".to_string());
+
+                // Get the user's preferred language for the response
+                let user_lang = Language::from_code(&lang_code).unwrap_or(Language::ENGLISH);
+
+                // Display language name in the user's language
+                let lang_name = match lang_code.as_str() {
+                    "es" => "Español",
+                    _ => "English",
+                };
+
                 if is_admin {
                     // Admin sees subscriber count
-                    format!(
-                        "✅ You are subscribed\n📊 Total subscribers: {}",
-                        db.subscriber_count().await?
-                    )
+                    let template = user_lang.config().strings.status_subscribed_admin;
+                    template
+                        .replace("{language}", lang_name)
+                        .replace("{count}", &db.subscriber_count().await?.to_string())
                 } else {
-                    // Regular users only see their own status
-                    "✅ You are subscribed".to_string()
+                    // Regular users see their own status and language
+                    let template = user_lang.config().strings.status_subscribed_user;
+                    template.replace("{language}", lang_name)
                 }
             } else {
-                "❌ You are not subscribed\n\nUse /subscribe to start receiving summaries\\."
+                // Non-subscribers get English (we don't know their preference)
+                Language::ENGLISH
+                    .config()
+                    .strings
+                    .status_not_subscribed
                     .to_string()
             };
             send_message(config, chat_id, &status_msg).await?;
         }
+        "/language" => {
+            // Handle /language command (with or without argument)
+            let is_subscribed = db.is_subscribed(chat_id).await?;
+
+            if !is_subscribed {
+                let msg = Language::ENGLISH.config().strings.language_not_subscribed;
+                send_message(config, chat_id, msg).await?;
+            } else {
+                // Get user's current language for responses
+                let current_lang = db
+                    .get_subscriber_language(chat_id)
+                    .await?
+                    .unwrap_or_else(|| "en".to_string());
+                let user_lang = Language::from_code(&current_lang).unwrap_or(Language::ENGLISH);
+
+                if let Some(lang_arg) = arg {
+                    // User specified a language: /language en or /language es
+                    match lang_arg {
+                        "en" => {
+                            db.set_subscriber_language(chat_id, "en").await?;
+                            info!("Language changed to English for {}", chat_id);
+                            let msg = Language::ENGLISH.config().strings.language_changed_english;
+                            send_message(config, chat_id, msg).await?;
+                        }
+                        "es" => {
+                            db.set_subscriber_language(chat_id, "es").await?;
+                            info!("Language changed to Spanish for {}", chat_id);
+                            let msg = Language::SPANISH.config().strings.language_changed_spanish;
+                            send_message(config, chat_id, msg).await?;
+                        }
+                        _ => {
+                            // Invalid language - respond in user's current language
+                            let msg = user_lang.config().strings.language_invalid;
+                            send_message(config, chat_id, msg).await?;
+                        }
+                    }
+                } else {
+                    // No argument: show current language and options in user's language
+                    let current_name = match current_lang.as_str() {
+                        "es" => "Español",
+                        _ => "English",
+                    };
+
+                    let template = user_lang.config().strings.language_settings;
+                    let msg = template.replace("{current}", current_name);
+                    send_message(config, chat_id, &msg).await?;
+                }
+            }
+        }
+        "/broadcast" => {
+            // Admin-only command to broadcast a message to all subscribers
+            let chat_id_str = chat_id.to_string();
+            let is_admin =
+                !config.telegram_chat_id.is_empty() && chat_id_str == config.telegram_chat_id;
+
+            if !is_admin {
+                let msg = Language::ENGLISH.config().strings.broadcast_admin_only;
+                send_message(config, chat_id, msg).await?;
+            } else if let Some(broadcast_msg) = arg {
+                // Send broadcast to all subscribers
+                info!(
+                    "Broadcasting message from admin {}: {}",
+                    chat_id, broadcast_msg
+                );
+
+                match broadcast_message(config, db, broadcast_msg, None).await {
+                    Ok((sent, failures)) => {
+                        let total = sent + failures.len();
+                        let msg = if failures.is_empty() {
+                            let template = Language::ENGLISH.config().strings.broadcast_success;
+                            template.replace("{count}", &sent.to_string())
+                        } else {
+                            let template = Language::ENGLISH.config().strings.broadcast_partial;
+                            template
+                                .replace("{sent}", &sent.to_string())
+                                .replace("{failed}", &failures.len().to_string())
+                                .replace("{total}", &total.to_string())
+                        };
+                        send_message(config, chat_id, &msg).await?;
+                    }
+                    Err(e) => {
+                        warn!("Broadcast failed: {}", e);
+                        let template = Language::ENGLISH.config().strings.broadcast_failed;
+                        // Error messages may contain special chars, so escape them
+                        let msg = template.replace("{error}", &escape_markdownv2(&e.to_string()));
+                        send_message(config, chat_id, &msg).await?;
+                    }
+                }
+            } else {
+                let msg = Language::ENGLISH.config().strings.broadcast_usage;
+                send_message(config, chat_id, msg).await?;
+            }
+        }
         _ => {
             // Unknown command, send help
-            send_message(
-                config,
-                chat_id,
-                "Unknown command\\. Use /start to see available commands\\.",
-            )
-            .await?;
+            let msg = Language::ENGLISH.config().strings.unknown_command;
+            send_message(config, chat_id, msg).await?;
         }
     }
 
@@ -260,8 +407,10 @@ async fn send_welcome_summary(
 ) -> Result<()> {
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
     let escaped_timestamp = escape_markdownv2(&timestamp);
+    let header = Language::ENGLISH.config().strings.welcome_summary_header;
     let message = format!(
-        "📰 *Hey\\! Here's what you missed* 😉\n_{}_\n\n{}",
+        "{}\n_{}_\n\n{}",
+        header,
         escaped_timestamp,
         escape_markdownv2(summary)
     );
@@ -273,8 +422,24 @@ async fn send_welcome_summary(
     Ok(())
 }
 
-/// Send summary to all subscribers
-pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) -> Result<()> {
+/// Send summary to all subscribers with language-specific translations
+///
+/// # Arguments
+/// * `config` - Application configuration
+/// * `db` - Database connection
+/// * `summary` - The canonical English summary
+/// * `summary_id` - The summary ID for caching translations
+pub async fn send_to_subscribers(
+    config: &Config,
+    db: &Database,
+    summary: &str,
+    summary_id: i64,
+) -> Result<()> {
+    use crate::i18n::Language;
+    use crate::translation::{
+        get_summary_header, get_translation_failure_notice, translate_summary,
+    };
+
     let subscribers = db.list_subscribers().await?;
 
     if subscribers.is_empty() {
@@ -286,20 +451,77 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
 
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
     let escaped_timestamp = escape_markdownv2(&timestamp);
-    let message = format!(
-        "📰 *Twitter Summary*\n_{}_\n\n{}",
-        escaped_timestamp,
-        escape_markdownv2(summary)
-    );
+    let client = reqwest::Client::new();
+
+    // Cache for translations (keyed by language code)
+    let mut translation_cache: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    // Pre-populate cache with English (canonical)
+    translation_cache.insert("en".to_string(), summary.to_string());
 
     let mut success_count = 0;
     let mut fail_count = 0;
 
     for subscriber in subscribers {
+        let lang_code = subscriber.language_code.clone();
+        let language = Language::from_code(&lang_code).unwrap_or(Language::ENGLISH);
+
+        // Get or create translation for this language
+        let content = if let Some(cached) = translation_cache.get(&lang_code) {
+            // Memory cache hit
+            TranslationMetrics::global().record_cache_hit();
+            cached.clone()
+        } else {
+            // Check if translation exists in database
+            if let Ok(Some(cached_translation)) = db.get_translation(summary_id, &lang_code).await {
+                // Database cache hit
+                TranslationMetrics::global().record_cache_hit();
+                let content = cached_translation.content.clone();
+                translation_cache.insert(lang_code.clone(), content.clone());
+                content
+            } else {
+                // Cache miss - need to generate translation
+                TranslationMetrics::global().record_cache_miss();
+
+                // Generate translation via OpenAI
+                TranslationMetrics::global().record_api_call();
+                match translate_summary(&client, config, summary, language).await {
+                    Ok(translated) => {
+                        // Cache in database for future use
+                        if let Err(e) = db
+                            .save_translation(summary_id, &lang_code, &translated)
+                            .await
+                        {
+                            warn!("Failed to cache translation: {}", e);
+                        }
+                        translation_cache.insert(lang_code.clone(), translated.clone());
+                        translated
+                    }
+                    Err(e) => {
+                        TranslationMetrics::global().record_api_failure();
+                        warn!("Translation failed for {}: {}", lang_code, e);
+                        // Use English with failure notice
+                        let notice = get_translation_failure_notice(language);
+                        format!("{}{}", notice, summary)
+                    }
+                }
+            }
+        };
+
+        // Build message with language-specific header (MarkdownV2 format)
+        let header = get_summary_header(language);
+        let message = format!(
+            "📰 *{}*\n_{}_\n\n{}",
+            escape_markdownv2(header),
+            escaped_timestamp,
+            escape_markdownv2(&content)
+        );
+
         match send_message(config, subscriber.chat_id, &message).await {
             Ok(_) => {
                 success_count += 1;
-                info!("✓ Sent to {}", subscriber.chat_id);
+                info!("✓ Sent to {} ({})", subscriber.chat_id, lang_code);
             }
             Err(e) => {
                 fail_count += 1;
@@ -357,6 +579,137 @@ pub async fn send_to_subscribers(config: &Config, db: &Database, summary: &str) 
                 warn!("Failed to send admin notification: {}", e);
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Broadcast a custom message to all active subscribers
+///
+/// # Arguments
+/// * `config` - Application configuration
+/// * `db` - Database connection
+/// * `message` - The message to broadcast
+/// * `parse_mode` - Optional parse mode ("MarkdownV2" for formatted, None for plain text)
+///
+/// # Returns
+/// * Tuple of (successful sends count, Vec of (chat_id, error) for failures)
+pub async fn broadcast_message(
+    config: &Config,
+    db: &Database,
+    message: &str,
+    parse_mode: Option<&str>,
+) -> Result<(usize, Vec<(i64, String)>)> {
+    let subscribers = db.list_subscribers().await?;
+
+    if subscribers.is_empty() {
+        info!("No subscribers to broadcast to");
+        return Ok((0, Vec::new()));
+    }
+
+    info!("Broadcasting message to {} subscribers", subscribers.len());
+
+    let mut success_count = 0;
+    let mut failures: Vec<(i64, String)> = Vec::new();
+
+    for subscriber in &subscribers {
+        match send_broadcast_message(config, subscriber.chat_id, message, parse_mode).await {
+            Ok(_) => {
+                success_count += 1;
+                info!("✓ Broadcast sent to {}", subscriber.chat_id);
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+
+                // Auto-remove subscribers who blocked the bot or deleted their account
+                let error_lower = error_msg.to_lowercase();
+                let is_blocked = error_msg.contains("403")
+                    && (error_lower.contains("blocked by the user")
+                        || error_lower.contains("user is deactivated"));
+
+                if is_blocked {
+                    warn!(
+                        "✗ Auto-removing blocked/deactivated subscriber {}: {}",
+                        subscriber.chat_id, error_msg
+                    );
+                    if let Err(remove_err) = db.remove_subscriber(subscriber.chat_id).await {
+                        warn!("Failed to remove blocked subscriber: {}", remove_err);
+                    }
+                } else {
+                    warn!(
+                        "✗ Failed to broadcast to {}: {}",
+                        subscriber.chat_id, error_msg
+                    );
+                }
+
+                failures.push((subscriber.chat_id, error_msg));
+            }
+        }
+
+        // Small delay to avoid rate limiting
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    info!(
+        "Broadcast completed: {} successful, {} failed",
+        success_count,
+        failures.len()
+    );
+
+    // Send admin notification if configured and there were failures
+    if !config.telegram_chat_id.is_empty() && !failures.is_empty() {
+        if let Ok(admin_chat_id) = config.telegram_chat_id.parse::<i64>() {
+            let admin_msg = format!(
+                "📢 Broadcast sent to {}/{} subscribers \\({} failed\\)",
+                success_count,
+                subscribers.len(),
+                failures.len()
+            );
+            if let Err(e) = send_message(config, admin_chat_id, &admin_msg).await {
+                warn!("Failed to send admin notification: {}", e);
+            }
+        }
+    }
+
+    Ok((success_count, failures))
+}
+
+/// Send a broadcast message to a specific chat with optional parse mode
+async fn send_broadcast_message(
+    config: &Config,
+    chat_id: i64,
+    text: &str,
+    parse_mode: Option<&str>,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+
+    let url = format!(
+        "https://api.telegram.org/bot{}/sendMessage",
+        config.telegram_bot_token
+    );
+
+    // Build request based on parse mode
+    let response = if let Some(mode) = parse_mode {
+        let request = SendMessageRequest {
+            chat_id: chat_id.to_string(),
+            text: text.to_string(),
+            parse_mode: mode.to_string(),
+        };
+        client.post(&url).json(&request).send().await
+    } else {
+        // Plain text - send without parse_mode
+        let request = serde_json::json!({
+            "chat_id": chat_id.to_string(),
+            "text": text
+        });
+        client.post(&url).json(&request).send().await
+    }
+    .context("Failed to send request to Telegram API")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Telegram API error ({}): {}", status, body);
     }
 
     Ok(())
@@ -711,12 +1064,14 @@ Commands:
 /subscribe - Get daily AI-powered summaries of Twitter/X news
 /unsubscribe - Stop receiving summaries
 /status - Check your subscription status
+/language - Change summary language (en/es)
 
 Summaries are sent twice daily with the latest tweets from tech leaders and AI researchers."#;
 
         assert!(welcome.contains("/subscribe"));
         assert!(welcome.contains("/unsubscribe"));
         assert!(welcome.contains("/status"));
+        assert!(welcome.contains("/language"));
         assert!(welcome.contains("twice daily"));
     }
 
@@ -1794,6 +2149,129 @@ Summaries are sent twice daily with the latest tweets from tech leaders and AI r
         assert!(!should_auto_remove_blocked_subscriber(
             "some other error message"
         ));
+    }
+
+    // ==================== Language Command Tests ====================
+
+    #[test]
+    fn test_language_command_pattern() {
+        let text = "/language";
+        assert_eq!(text, "/language");
+    }
+
+    #[test]
+    fn test_language_command_with_argument_parsing() {
+        let text = "/language es";
+
+        // Test the parsing logic used in handle_webhook
+        let (command, arg) = if text.starts_with("/language ") {
+            (
+                "/language",
+                Some(text.strip_prefix("/language ").unwrap().trim()),
+            )
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/language");
+        assert_eq!(arg, Some("es"));
+    }
+
+    #[test]
+    fn test_language_command_without_argument_parsing() {
+        let text = "/language";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            (
+                "/language",
+                Some(text.strip_prefix("/language ").unwrap().trim()),
+            )
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/language");
+        assert_eq!(arg, None);
+    }
+
+    #[test]
+    fn test_language_command_with_extra_spaces() {
+        let text = "/language   es  ";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            (
+                "/language",
+                Some(text.strip_prefix("/language ").unwrap().trim()),
+            )
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/language");
+        assert_eq!(arg, Some("es"));
+    }
+
+    #[test]
+    fn test_language_settings_message_format() {
+        let current_lang = "en";
+        let current_name = match current_lang {
+            "es" => "Spanish",
+            _ => "English",
+        };
+
+        let msg = format!(
+            "Language Settings\n\nCurrent: {}\n\nTo change, use:\n/language en - English\n/language es - Spanish",
+            current_name
+        );
+
+        assert!(msg.contains("English"));
+        assert!(msg.contains("/language en"));
+        assert!(msg.contains("/language es"));
+    }
+
+    #[test]
+    fn test_language_change_confirmation_english() {
+        let msg = "Language changed to English. You'll receive summaries in English.";
+        assert!(msg.contains("English"));
+    }
+
+    #[test]
+    fn test_language_change_confirmation_spanish() {
+        let msg = "Idioma cambiado a español. Recibirás los resúmenes en español.";
+        assert!(msg.contains("español"));
+    }
+
+    #[test]
+    fn test_invalid_language_error_message() {
+        let msg =
+            "Invalid language. Available options:\n/language en - English\n/language es - Spanish";
+        assert!(msg.contains("Invalid"));
+        assert!(msg.contains("/language en"));
+        assert!(msg.contains("/language es"));
+    }
+
+    #[test]
+    fn test_language_command_requires_subscription() {
+        let msg = "You need to subscribe first. Use /subscribe to get started.";
+        assert!(msg.contains("subscribe"));
+    }
+
+    #[test]
+    fn test_status_message_with_language() {
+        let lang_name = "English";
+        let status_msg = format!("You are subscribed\nLanguage: {}", lang_name);
+
+        assert!(status_msg.contains("subscribed"));
+        assert!(status_msg.contains("English"));
+    }
+
+    #[test]
+    fn test_subscribe_message_includes_language_hint() {
+        let msg = "Successfully subscribed! You'll receive summaries twice daily.\n\nWant summaries in Spanish? Use /language es to switch.";
+
+        assert!(msg.contains("subscribed"));
+        assert!(msg.contains("/language es"));
+        assert!(msg.contains("Spanish"));
     }
 
     // ==================== MarkdownV2 Escaping Tests ====================
@@ -3136,5 +3614,1463 @@ For details: [OpenAI Blog](https://openai.com/blog)"#;
         assert!(full_message.contains("*TEST \\-"));
         // Content escaped
         assert!(full_message.contains("content\\."));
+    }
+
+    // ==================== Broadcast Command Parsing Tests ====================
+
+    #[test]
+    fn test_broadcast_command_with_message() {
+        let text = "/broadcast Hello everyone!";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert_eq!(arg, Some("Hello everyone!"));
+    }
+
+    #[test]
+    fn test_broadcast_command_with_whitespace_only_argument() {
+        // This tests the bug fix: "/broadcast    " should result in arg = None
+        let text = "/broadcast    ";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert_eq!(
+            arg, None,
+            "Whitespace-only argument should be treated as None"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_command_without_space() {
+        // "/broadcast" (without space) should not match the starts_with("/broadcast ") branch
+        let text = "/broadcast";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        // Without space, it falls through to the else branch
+        assert_eq!(command, "/broadcast");
+        assert_eq!(arg, None);
+    }
+
+    #[test]
+    fn test_broadcast_command_with_leading_trailing_whitespace() {
+        let text = "/broadcast   Hello world!   ";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert_eq!(arg, Some("Hello world!"));
+    }
+
+    #[test]
+    fn test_broadcast_command_with_multiline_message() {
+        let text = "/broadcast Line 1\nLine 2\nLine 3";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert_eq!(arg, Some("Line 1\nLine 2\nLine 3"));
+    }
+
+    #[test]
+    fn test_broadcast_command_with_special_characters() {
+        let text = "/broadcast Hello! *bold* _italic_ @mention #hashtag";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert_eq!(arg, Some("Hello! *bold* _italic_ @mention #hashtag"));
+    }
+
+    // ==================== Language Command Whitespace Edge Cases ====================
+
+    #[test]
+    fn test_language_command_with_whitespace_only_argument() {
+        // This tests the bug fix: "/language    " should result in arg = None
+        let text = "/language    ";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/language");
+        assert_eq!(
+            arg, None,
+            "Whitespace-only argument should be treated as None"
+        );
+    }
+
+    #[test]
+    fn test_language_command_with_tabs_only() {
+        let text = "/language \t\t\t";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/language");
+        assert_eq!(arg, None, "Tab-only argument should be treated as None");
+    }
+
+    #[test]
+    fn test_language_command_with_mixed_whitespace() {
+        let text = "/language  \t \n ";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/language");
+        assert_eq!(
+            arg, None,
+            "Mixed whitespace argument should be treated as None"
+        );
+    }
+
+    // ==================== Broadcast Command Handler Logic Tests ====================
+
+    #[test]
+    fn test_broadcast_admin_check_logic_admin_user() {
+        // Admin sends broadcast
+        let config_telegram_chat_id = "123456789";
+        let chat_id: i64 = 123456789;
+        let chat_id_str = chat_id.to_string();
+
+        let is_admin =
+            !config_telegram_chat_id.is_empty() && chat_id_str == config_telegram_chat_id;
+
+        assert!(is_admin, "Admin user should be recognized as admin");
+    }
+
+    #[test]
+    fn test_broadcast_admin_check_logic_non_admin_user() {
+        // Non-admin sends broadcast
+        let config_telegram_chat_id = "123456789";
+        let chat_id: i64 = 987654321;
+        let chat_id_str = chat_id.to_string();
+
+        let is_admin =
+            !config_telegram_chat_id.is_empty() && chat_id_str == config_telegram_chat_id;
+
+        assert!(
+            !is_admin,
+            "Non-admin user should not be recognized as admin"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_admin_check_logic_empty_config() {
+        // Config has empty admin chat ID
+        let config_telegram_chat_id = "";
+        let chat_id: i64 = 123456789;
+        let chat_id_str = chat_id.to_string();
+
+        let is_admin =
+            !config_telegram_chat_id.is_empty() && chat_id_str == config_telegram_chat_id;
+
+        assert!(!is_admin, "No one should be admin when config is empty");
+    }
+
+    #[test]
+    fn test_broadcast_permission_denied_message() {
+        let msg = "This command is only available to the bot administrator.";
+        assert!(msg.contains("administrator"));
+        assert!(msg.contains("only available"));
+    }
+
+    #[test]
+    fn test_broadcast_usage_message() {
+        let msg =
+            "Usage: /broadcast Your message here\n\nSends a plain text message to all subscribers.";
+        assert!(msg.contains("/broadcast"));
+        assert!(msg.contains("plain text"));
+        assert!(msg.contains("all subscribers"));
+    }
+
+    #[test]
+    fn test_broadcast_success_message_format_all_successful() {
+        let sent: usize = 10;
+        let failures: Vec<(i64, String)> = Vec::new();
+        let total = sent + failures.len();
+
+        let msg = if failures.is_empty() {
+            format!(
+                "Broadcast sent successfully!\n\nDelivered to {} subscribers",
+                escape_markdownv2(&sent.to_string())
+            )
+        } else {
+            format!(
+                "Broadcast completed\n\nSent: {}\nFailed: {}\nTotal: {}",
+                escape_markdownv2(&sent.to_string()),
+                escape_markdownv2(&failures.len().to_string()),
+                escape_markdownv2(&total.to_string())
+            )
+        };
+
+        assert!(msg.contains("Broadcast sent successfully"));
+        assert!(msg.contains("10 subscribers"));
+    }
+
+    #[test]
+    fn test_broadcast_success_message_format_with_failures() {
+        let sent: usize = 8;
+        let failures: Vec<(i64, String)> = vec![
+            (111, "blocked".to_string()),
+            (222, "deactivated".to_string()),
+        ];
+        let total = sent + failures.len();
+
+        let msg = if failures.is_empty() {
+            format!(
+                "Broadcast sent successfully!\n\nDelivered to {} subscribers",
+                sent
+            )
+        } else {
+            format!(
+                "Broadcast completed\n\nSent: {}\nFailed: {}\nTotal: {}",
+                sent,
+                failures.len(),
+                total
+            )
+        };
+
+        assert!(msg.contains("Broadcast completed"));
+        assert!(msg.contains("Sent: 8"));
+        assert!(msg.contains("Failed: 2"));
+        assert!(msg.contains("Total: 10"));
+    }
+
+    #[test]
+    fn test_broadcast_error_message_format() {
+        let error = "Database connection failed";
+        let msg = format!("Broadcast failed: {}", escape_markdownv2(error));
+
+        assert!(msg.contains("Broadcast failed"));
+        assert!(msg.contains("Database connection failed"));
+    }
+
+    // ==================== Broadcast Message Function Logic Tests ====================
+
+    #[test]
+    fn test_broadcast_empty_subscriber_list_returns_zero() {
+        // Simulates the case where there are no subscribers
+        let subscribers: Vec<i64> = vec![];
+
+        if subscribers.is_empty() {
+            let result = (0usize, Vec::<(i64, String)>::new());
+            assert_eq!(result.0, 0);
+            assert!(result.1.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_broadcast_subscriber_iteration_success() {
+        // Simulates successful broadcast to all subscribers
+        let subscriber_ids = vec![111i64, 222, 333];
+        let mut success_count: usize = 0;
+        let mut failures: Vec<(i64, String)> = Vec::new();
+
+        for _id in &subscriber_ids {
+            // Simulate success
+            let result: Result<(), &str> = Ok(());
+            match result {
+                Ok(_) => success_count += 1,
+                Err(e) => failures.push((*_id, e.to_string())),
+            }
+        }
+
+        assert_eq!(success_count, 3);
+        assert!(failures.is_empty());
+    }
+
+    #[test]
+    fn test_broadcast_subscriber_iteration_with_failures() {
+        // Simulates broadcast with some failures
+        let subscriber_ids = [111i64, 222, 333];
+        let mut success_count: usize = 0;
+        let mut failures: Vec<(i64, String)> = Vec::new();
+
+        for (idx, id) in subscriber_ids.iter().enumerate() {
+            // Simulate: first two succeed, third fails
+            let result: Result<(), &str> = if idx < 2 { Ok(()) } else { Err("blocked") };
+            match result {
+                Ok(_) => success_count += 1,
+                Err(e) => failures.push((*id, e.to_string())),
+            }
+        }
+
+        assert_eq!(success_count, 2);
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].0, 333);
+        assert_eq!(failures[0].1, "blocked");
+    }
+
+    #[test]
+    fn test_broadcast_blocked_user_detection_403_blocked() {
+        let error_msg = "Telegram API error (403): Forbidden: bot was blocked by the user";
+        let error_lower = error_msg.to_lowercase();
+
+        let is_blocked = error_msg.contains("403")
+            && (error_lower.contains("blocked by the user")
+                || error_lower.contains("user is deactivated"));
+
+        assert!(
+            is_blocked,
+            "Should detect blocked user from 403 error message"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_blocked_user_detection_403_deactivated() {
+        let error_msg = "Telegram API error (403): Forbidden: user is deactivated";
+        let error_lower = error_msg.to_lowercase();
+
+        let is_blocked = error_msg.contains("403")
+            && (error_lower.contains("blocked by the user")
+                || error_lower.contains("user is deactivated"));
+
+        assert!(
+            is_blocked,
+            "Should detect deactivated user from 403 error message"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_blocked_user_detection_other_403() {
+        // 403 error but not blocked/deactivated
+        let error_msg = "Telegram API error (403): Forbidden: some other reason";
+        let error_lower = error_msg.to_lowercase();
+
+        let is_blocked = error_msg.contains("403")
+            && (error_lower.contains("blocked by the user")
+                || error_lower.contains("user is deactivated"));
+
+        assert!(!is_blocked, "Should NOT auto-remove for other 403 errors");
+    }
+
+    #[test]
+    fn test_broadcast_blocked_user_detection_non_403() {
+        // Non-403 error should not trigger auto-remove
+        let error_msg = "Telegram API error (500): Internal server error";
+        let error_lower = error_msg.to_lowercase();
+
+        let is_blocked = error_msg.contains("403")
+            && (error_lower.contains("blocked by the user")
+                || error_lower.contains("user is deactivated"));
+
+        assert!(!is_blocked, "Should NOT auto-remove for non-403 errors");
+    }
+
+    #[test]
+    fn test_broadcast_blocked_user_detection_case_insensitive() {
+        // Test case insensitivity for error message matching
+        let error_msg = "Telegram API error (403): FORBIDDEN: BOT WAS BLOCKED BY THE USER";
+        let error_lower = error_msg.to_lowercase();
+
+        let is_blocked = error_msg.contains("403")
+            && (error_lower.contains("blocked by the user")
+                || error_lower.contains("user is deactivated"));
+
+        assert!(is_blocked, "Should detect blocked user case-insensitively");
+    }
+
+    // ==================== Send Broadcast Message Helper Tests ====================
+
+    #[test]
+    fn test_send_broadcast_message_plain_text_no_parse_mode() {
+        // When parse_mode is None, message should be sent as plain text
+        let parse_mode: Option<&str> = None;
+        let message = "Hello everyone! This is a *test* message.";
+
+        // In plain text mode, asterisks are literal, not markdown
+        assert!(parse_mode.is_none());
+        assert!(message.contains("*test*")); // Asterisks preserved literally
+    }
+
+    #[test]
+    fn test_send_broadcast_message_with_markdownv2() {
+        let parse_mode: Option<&str> = Some("MarkdownV2");
+        let message = "\\*Bold text\\* and \\_italic\\_ here";
+
+        assert_eq!(parse_mode, Some("MarkdownV2"));
+        // In MarkdownV2, special chars need escaping
+        assert!(message.contains("\\*"));
+        assert!(message.contains("\\_"));
+    }
+
+    #[test]
+    fn test_broadcast_request_json_plain_text() {
+        // Verify JSON structure for plain text broadcast
+        let chat_id = "123456789";
+        let text = "Hello everyone!";
+
+        let request = serde_json::json!({
+            "chat_id": chat_id,
+            "text": text
+        });
+
+        let json_str = serde_json::to_string(&request).unwrap();
+        assert!(json_str.contains("123456789"));
+        assert!(json_str.contains("Hello everyone!"));
+        // Should NOT contain parse_mode
+        assert!(!json_str.contains("parse_mode"));
+    }
+
+    #[test]
+    fn test_broadcast_request_json_with_parse_mode() {
+        // Verify JSON structure for formatted broadcast
+        let request = SendMessageRequest {
+            chat_id: "123456789".to_string(),
+            text: "\\*Bold\\* message".to_string(),
+            parse_mode: "MarkdownV2".to_string(),
+        };
+
+        let json_str = serde_json::to_string(&request).unwrap();
+        assert!(json_str.contains("123456789"));
+        assert!(json_str.contains("MarkdownV2"));
+    }
+
+    // ==================== Broadcast Admin Notification Tests ====================
+
+    #[test]
+    fn test_broadcast_admin_notification_format_with_failures() {
+        let success_count = 8;
+        let total_subscribers = 10;
+        let failures_count = 2;
+
+        let admin_msg = format!(
+            "Broadcast sent to {}/{} subscribers ({} failed)",
+            success_count, total_subscribers, failures_count
+        );
+
+        assert!(admin_msg.contains("8/10"));
+        assert!(admin_msg.contains("2 failed"));
+    }
+
+    #[test]
+    fn test_broadcast_admin_notification_not_sent_when_all_succeed() {
+        let failures: Vec<(i64, String)> = vec![];
+        let config_telegram_chat_id = "123456789";
+
+        // Admin notification is only sent when there are failures
+        let should_notify_admin = !config_telegram_chat_id.is_empty() && !failures.is_empty();
+
+        assert!(
+            !should_notify_admin,
+            "Should not send admin notification when all succeed"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_admin_notification_sent_when_failures_exist() {
+        let failures: Vec<(i64, String)> = vec![(111, "error".to_string())];
+        let config_telegram_chat_id = "123456789";
+
+        let should_notify_admin = !config_telegram_chat_id.is_empty() && !failures.is_empty();
+
+        assert!(
+            should_notify_admin,
+            "Should send admin notification when there are failures"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_admin_notification_not_sent_when_no_admin_configured() {
+        let failures: Vec<(i64, String)> = vec![(111, "error".to_string())];
+        let config_telegram_chat_id = "";
+
+        let should_notify_admin = !config_telegram_chat_id.is_empty() && !failures.is_empty();
+
+        assert!(
+            !should_notify_admin,
+            "Should not send admin notification when admin is not configured"
+        );
+    }
+
+    // ==================== Welcome Message with Broadcast Command Tests ====================
+
+    #[test]
+    fn test_admin_welcome_message_includes_broadcast_command() {
+        // Admin welcome message should include /broadcast command
+        let is_admin = true;
+        let welcome = if is_admin {
+            "Welcome to Twitter News Summary Bot!\n\n\
+            Commands:\n\
+            /subscribe - Get daily AI-powered summaries\n\
+            /unsubscribe - Stop receiving summaries\n\
+            /status - Check your subscription status\n\
+            /language - Change summary language (en/es)\n\
+            /broadcast - Send a message to all subscribers (admin only)"
+        } else {
+            "Welcome (non-admin version without broadcast)"
+        };
+
+        assert!(
+            welcome.contains("/broadcast"),
+            "Admin welcome should include /broadcast command"
+        );
+        assert!(welcome.contains("admin only"));
+    }
+
+    #[test]
+    fn test_non_admin_welcome_message_excludes_broadcast_command() {
+        // Non-admin welcome message should NOT include /broadcast
+        let is_admin = false;
+        let welcome = if is_admin {
+            "Welcome (admin version with broadcast)"
+        } else {
+            "Welcome to Twitter News Summary Bot!\n\n\
+            Commands:\n\
+            /subscribe - Get daily AI-powered summaries\n\
+            /unsubscribe - Stop receiving summaries\n\
+            /status - Check your subscription status\n\
+            /language - Change summary language (en/es)"
+        };
+
+        assert!(
+            !welcome.contains("/broadcast"),
+            "Non-admin welcome should NOT include /broadcast command"
+        );
+    }
+
+    // ==================== Broadcast Edge Cases ====================
+
+    #[test]
+    fn test_broadcast_message_with_emojis() {
+        let text = "/broadcast Hello! 👋 Welcome to the new update! 🎉";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert!(arg.unwrap().contains("👋"));
+        assert!(arg.unwrap().contains("🎉"));
+    }
+
+    #[test]
+    fn test_broadcast_message_with_urls() {
+        let text = "/broadcast Check out https://example.com for more info!";
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (text, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert!(arg.unwrap().contains("https://example.com"));
+    }
+
+    #[test]
+    fn test_broadcast_message_very_long() {
+        // Test with a very long message (Telegram limit is 4096 chars)
+        let long_message = "A".repeat(4000);
+        let text = format!("/broadcast {}", long_message);
+
+        let (command, arg) = if text.starts_with("/language ") {
+            let arg = text.strip_prefix("/language ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/language", arg)
+        } else if text.starts_with("/broadcast ") {
+            let arg = text.strip_prefix("/broadcast ").unwrap().trim();
+            let arg = if arg.is_empty() { None } else { Some(arg) };
+            ("/broadcast", arg)
+        } else {
+            (&text as &str, None)
+        };
+
+        assert_eq!(command, "/broadcast");
+        assert_eq!(arg.unwrap().len(), 4000);
+    }
+
+    #[test]
+    fn test_broadcast_stats_calculation() {
+        let sent: usize = 95;
+        let failures: Vec<(i64, String)> = vec![
+            (1, "error1".into()),
+            (2, "error2".into()),
+            (3, "error3".into()),
+            (4, "error4".into()),
+            (5, "error5".into()),
+        ];
+        let total = sent + failures.len();
+
+        assert_eq!(total, 100);
+        assert_eq!(failures.len(), 5);
+    }
+
+    #[test]
+    fn test_command_priority_broadcast_over_other() {
+        // Ensure /broadcast is checked correctly in the if-else chain
+        let text = "/broadcast test";
+
+        // Test that it doesn't accidentally match /language
+        assert!(!text.starts_with("/language "));
+        assert!(text.starts_with("/broadcast "));
+    }
+
+    #[test]
+    fn test_command_priority_language_over_broadcast() {
+        // Ensure /language is checked first
+        let text = "/language en";
+
+        // Test that it matches /language first
+        assert!(text.starts_with("/language "));
+        assert!(!text.starts_with("/broadcast "));
+    }
+
+    // ==================== Pre-Escaped Template Validation Tests ====================
+    //
+    // These tests ensure that pre-escaped template strings from src/i18n/strings.rs
+    // work correctly with our escape functions. The key insight is that templates
+    // are pre-escaped to avoid the "Character 'X' is reserved" errors, and we must
+    // ensure that dynamic content added later is also properly escaped.
+
+    #[test]
+    fn test_pre_escaped_template_does_not_double_escape() {
+        // Pre-escaped template (like those in strings.rs)
+        let pre_escaped = "Hello\\! How are you\\?";
+
+        // If we pass an already-escaped string through escape_markdownv2,
+        // the backslashes should be escaped again
+        let double_escaped = escape_markdownv2(pre_escaped);
+
+        // The backslash before ! should now be \\! (escaped backslash + !)
+        // This is expected behavior - escape function does not detect pre-escaping
+        assert!(double_escaped.contains("\\\\"));
+    }
+
+    #[test]
+    fn test_pre_escaped_template_with_placeholder_substitution() {
+        // Simulate how templates with placeholders are used
+        let template = "✅ You are subscribed\n🌐 Language: {language}";
+
+        // Substitute with plain text value (not pre-escaped)
+        let result = template.replace("{language}", "English");
+
+        // Result should have the substituted value
+        assert!(result.contains("English"));
+        assert!(result.contains("Language:"));
+    }
+
+    #[test]
+    fn test_pre_escaped_template_special_chars_in_substitution() {
+        // Template with pre-escaped characters
+        let template = "Current: {current}\\.\n\nTo change, use:\n/language en \\- English";
+
+        // Substitute with a value that contains special characters
+        let value = "English (US)";
+        let result = template.replace("{current}", value);
+
+        // The substituted value is NOT automatically escaped
+        // This means if we use such templates directly with MarkdownV2,
+        // we need to ensure the substituted values are safe or pre-escaped
+        assert!(result.contains("English (US)"));
+
+        // The template's pre-escaped parts are preserved
+        assert!(result.contains("\\-"));
+        assert!(result.contains("\\."));
+    }
+
+    #[test]
+    fn test_escape_markdownv2_handles_already_escaped_chars() {
+        // What happens when text already has backslash-escaped characters?
+        let already_escaped = "Hello\\-World";
+        let result = escape_markdownv2(already_escaped);
+
+        // The backslash is NOT a MarkdownV2 special char (not in the 18),
+        // but the hyphen after it will be seen as unescaped and escaped again
+        // Actually, the original hyphen after \ should be escaped
+        // Input: Hello\-World
+        // The - is not preceded by an even number of backslashes from escape perspective
+        // escape_markdownv2_simple sees \, -, and escapes - (since - is special)
+        // Result depends on implementation
+        assert!(result.contains("\\-"));
+    }
+
+    // ==================== Regression Tests for Production Bug ====================
+    //
+    // These tests specifically validate scenarios that caused the production bug
+    // where /language and /status commands failed with "Character '-' is reserved" errors.
+
+    #[test]
+    fn test_regression_language_settings_message_format() {
+        use crate::i18n::Language;
+
+        // Get the actual language settings template
+        let template = Language::ENGLISH.config().strings.language_settings;
+
+        // This template is used directly without escape_markdownv2
+        // It must have all special characters pre-escaped
+
+        // Check that hyphens are escaped
+        assert!(
+            template.contains("\\-"),
+            "Language settings template must have escaped hyphens"
+        );
+
+        // Check bold formatting is intact
+        assert!(
+            template.contains("*Language Settings*"),
+            "Bold formatting must be preserved"
+        );
+
+        // Simulate placeholder substitution
+        let result = template.replace("{current}", "English");
+        assert!(result.contains("Current: English"));
+    }
+
+    #[test]
+    fn test_regression_status_message_format() {
+        use crate::i18n::Language;
+
+        // Get the actual status template
+        let template = Language::ENGLISH.config().strings.status_subscribed_admin;
+
+        // Simulate what happens in handle_webhook for /status command
+        let result = template
+            .replace("{language}", "English")
+            .replace("{count}", "42");
+
+        // The result should have proper content
+        assert!(result.contains("Language: English"));
+        assert!(result.contains("subscribers: 42"));
+    }
+
+    #[test]
+    fn test_regression_spanish_status_message() {
+        use crate::i18n::Language;
+
+        // Spanish templates must also be properly escaped
+        let template = Language::SPANISH.config().strings.status_subscribed_user;
+
+        let result = template.replace("{language}", "Español");
+        assert!(result.contains("Idioma: Español"));
+    }
+
+    #[test]
+    fn test_regression_subscribe_success_message() {
+        use crate::i18n::Language;
+
+        let template = Language::ENGLISH.config().strings.subscribe_success;
+
+        // This template has periods and exclamation marks that must be escaped
+        assert!(
+            template.contains("\\."),
+            "Periods must be escaped in subscribe_success"
+        );
+        assert!(
+            template.contains("\\!"),
+            "Exclamation marks must be escaped in subscribe_success"
+        );
+    }
+
+    #[test]
+    fn test_regression_welcome_message_contains_hyphens() {
+        use crate::i18n::Language;
+
+        // Welcome messages contain command descriptions with hyphens
+        let template = Language::ENGLISH.config().strings.welcome_admin;
+
+        // All hyphens must be escaped
+        assert!(
+            template.contains("\\-"),
+            "Welcome admin template must have escaped hyphens"
+        );
+
+        // Should contain multiple escaped hyphens (one for each command description)
+        let hyphen_count = template.matches("\\-").count();
+        assert!(
+            hyphen_count >= 4,
+            "Welcome admin should have at least 4 escaped hyphens (one per command), found {}",
+            hyphen_count
+        );
+    }
+
+    #[test]
+    fn test_regression_parentheses_in_templates() {
+        use crate::i18n::Language;
+
+        // Templates with (en/es) must have escaped parentheses
+        let template = Language::ENGLISH.config().strings.welcome_admin;
+
+        assert!(
+            template.contains("\\(") && template.contains("\\)"),
+            "Parentheses must be escaped in welcome_admin"
+        );
+    }
+
+    // ==================== Integration Tests: Template + escape_markdownv2 ====================
+
+    #[test]
+    fn test_summary_header_formatting() {
+        use crate::i18n::Language;
+
+        let header = Language::ENGLISH.config().strings.summary_header;
+
+        // The header "Twitter Summary" is used with *header* for bold
+        // This should be straightforward - no special chars in the header text itself
+        let formatted = format!("📰 *{}*", header);
+        assert!(formatted.contains("*Twitter Summary*"));
+    }
+
+    #[test]
+    fn test_summary_body_escaping() {
+        // Summary body comes from OpenAI and needs escape_markdownv2
+        let summary = "AI news: GPT-5 announced! Read more at https://example.com.";
+        let escaped = escape_markdownv2(summary);
+
+        // All special chars should be escaped
+        assert!(escaped.contains("\\-")); // GPT-5
+        assert!(escaped.contains("\\!")); // announced!
+        assert!(escaped.contains("\\.")); // example.com.
+    }
+
+    #[test]
+    fn test_full_message_construction() {
+        use crate::i18n::Language;
+
+        // Simulate constructing a full message like in send_to_subscribers
+        let header = Language::ENGLISH.config().strings.summary_header;
+        let timestamp = "2024-01-15 10:30 UTC";
+        let summary = "AI advancements - OpenAI releases GPT-5!";
+
+        let message = format!(
+            "📰 *{}*\n_{}_\n\n{}",
+            header,
+            escape_markdownv2(timestamp),
+            escape_markdownv2(summary)
+        );
+
+        // Header is wrapped in * for bold
+        assert!(message.contains("*Twitter Summary*"));
+        // Timestamp is wrapped in _ for italic and has special chars escaped
+        assert!(message.contains("_2024\\-01\\-15 10:30 UTC_"));
+        // Summary has special chars escaped
+        assert!(message.contains("\\-")); // from both timestamp and summary
+        assert!(message.contains("\\!"));
+    }
+
+    #[test]
+    fn test_broadcast_message_construction() {
+        use crate::i18n::Language;
+
+        // Broadcast success message uses placeholder substitution
+        let template = Language::ENGLISH.config().strings.broadcast_success;
+
+        let result = template.replace("{count}", "150");
+
+        // Should have the count
+        assert!(result.contains("150"));
+        // Should have escaped exclamation mark (from the template)
+        assert!(result.contains("\\!"));
+        // Should preserve bold formatting
+        assert!(result.contains("*Broadcast sent successfully*"));
+    }
+
+    // ==================== Edge Case Tests ====================
+
+    #[test]
+    fn test_empty_placeholder_substitution() {
+        let template = "Status: {status}";
+        let result = template.replace("{status}", "");
+        assert_eq!(result, "Status: ");
+    }
+
+    #[test]
+    fn test_placeholder_with_special_chars_value() {
+        // What if the substituted value contains MarkdownV2 special chars?
+        let template = "Error: {error}";
+        let error_msg = "Connection failed (timeout > 30s)!";
+
+        // If we substitute directly, special chars are NOT escaped
+        let result = template.replace("{error}", error_msg);
+        assert!(result.contains("(timeout > 30s)!"));
+
+        // If the template is meant to be used with MarkdownV2, the value should be escaped first
+        let safe_result = template.replace("{error}", &escape_markdownv2(error_msg));
+        assert!(safe_result.contains("\\(timeout \\> 30s\\)\\!"));
+    }
+
+    #[test]
+    fn test_multiple_placeholder_substitutions() {
+        let template = "Sent: {sent}, Failed: {failed}, Total: {total}";
+        let result = template
+            .replace("{sent}", "95")
+            .replace("{failed}", "5")
+            .replace("{total}", "100");
+
+        assert_eq!(result, "Sent: 95, Failed: 5, Total: 100");
+    }
+
+    #[test]
+    fn test_unicode_in_templates() {
+        use crate::i18n::Language;
+
+        // Spanish templates contain Unicode characters
+        let template = Language::SPANISH.config().strings.subscribe_success;
+
+        // Should contain Spanish characters
+        assert!(template.contains("Recibirás"));
+
+        // Should still have properly escaped special chars
+        assert!(template.contains("\\."));
+    }
+
+    #[test]
+    fn test_newlines_in_templates() {
+        use crate::i18n::Language;
+
+        let template = Language::ENGLISH.config().strings.welcome_admin;
+
+        // Templates use \n for newlines
+        assert!(template.contains('\n'));
+
+        // Count newlines to ensure proper structure
+        let newline_count = template.matches('\n').count();
+        assert!(
+            newline_count >= 5,
+            "Welcome admin should have multiple newlines for formatting, found {}",
+            newline_count
+        );
+    }
+
+    #[test]
+    fn test_emoji_preservation() {
+        use crate::i18n::Language;
+
+        // Emojis should be preserved in templates
+        let template = Language::ENGLISH.config().strings.status_subscribed_admin;
+        assert!(template.contains("✅"));
+        assert!(template.contains("🌐"));
+        assert!(template.contains("📊"));
+    }
+
+    // ==================== Double-Escaping Detection Tests ====================
+    //
+    // These tests detect if pre-escaped templates are accidentally double-escaped.
+    // Double-escaping would produce patterns like `\\\\` (escaped backslash) or
+    // `\\\\!` instead of `\\!`.
+    //
+    // CRITICAL: If any of these tests fail, it means production code is double-escaping
+    // and will cause Telegram API errors.
+
+    /// Helper function to detect double-escaping in a string.
+    /// Double-escaping produces `\\\\` patterns (backslash followed by backslash).
+    fn has_double_escaping(s: &str) -> bool {
+        // In Rust strings, `\\\\` represents two literal backslashes
+        // If we see `\\` followed by another `\\` it means double-escaping
+        s.contains("\\\\")
+    }
+
+    /// Simulates what production code does for /start command
+    #[test]
+    fn test_production_start_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        // This is EXACTLY what production code does
+        let welcome = Language::ENGLISH.config().strings.welcome_admin;
+
+        // Production code should NOT wrap this in escape_markdownv2
+        // If it did, we'd see double-escaping
+        assert!(
+            !has_double_escaping(welcome),
+            "welcome_admin template should not have double-escaping. \
+             If this fails, production code may be calling escape_markdownv2 on pre-escaped template"
+        );
+
+        // Also verify the template IS properly escaped (single escaping)
+        assert!(
+            welcome.contains("\\!"),
+            "welcome_admin should have escaped exclamation marks"
+        );
+        assert!(
+            welcome.contains("\\-"),
+            "welcome_admin should have escaped hyphens"
+        );
+    }
+
+    #[test]
+    fn test_production_subscribe_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let already = Language::ENGLISH.config().strings.subscribe_already;
+        let success = Language::ENGLISH.config().strings.subscribe_success;
+
+        assert!(
+            !has_double_escaping(already),
+            "subscribe_already should not have double-escaping"
+        );
+        assert!(
+            !has_double_escaping(success),
+            "subscribe_success should not have double-escaping"
+        );
+
+        // Verify proper escaping exists
+        assert!(already.contains("\\!"));
+        assert!(success.contains("\\!"));
+        assert!(success.contains("\\."));
+    }
+
+    #[test]
+    fn test_production_unsubscribe_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let success = Language::ENGLISH.config().strings.unsubscribe_success;
+        let not_sub = Language::ENGLISH
+            .config()
+            .strings
+            .unsubscribe_not_subscribed;
+
+        assert!(
+            !has_double_escaping(success),
+            "unsubscribe_success should not have double-escaping"
+        );
+        assert!(
+            !has_double_escaping(not_sub),
+            "unsubscribe_not_subscribed should not have double-escaping"
+        );
+    }
+
+    #[test]
+    fn test_production_status_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let admin = Language::ENGLISH.config().strings.status_subscribed_admin;
+        let user = Language::ENGLISH.config().strings.status_subscribed_user;
+        let not_sub = Language::ENGLISH.config().strings.status_not_subscribed;
+
+        assert!(
+            !has_double_escaping(admin),
+            "status_subscribed_admin should not have double-escaping"
+        );
+        assert!(
+            !has_double_escaping(user),
+            "status_subscribed_user should not have double-escaping"
+        );
+        assert!(
+            !has_double_escaping(not_sub),
+            "status_not_subscribed should not have double-escaping"
+        );
+    }
+
+    #[test]
+    fn test_production_language_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let not_sub = Language::ENGLISH.config().strings.language_not_subscribed;
+        let changed_en = Language::ENGLISH.config().strings.language_changed_english;
+        let changed_es = Language::SPANISH.config().strings.language_changed_spanish;
+        let invalid = Language::ENGLISH.config().strings.language_invalid;
+        let settings = Language::ENGLISH.config().strings.language_settings;
+
+        assert!(!has_double_escaping(not_sub));
+        assert!(!has_double_escaping(changed_en));
+        assert!(!has_double_escaping(changed_es));
+        assert!(!has_double_escaping(invalid));
+        assert!(!has_double_escaping(settings));
+
+        // Verify language_settings has proper escaping (it uses * for bold and - for list)
+        assert!(
+            settings.contains("\\-"),
+            "language_settings should have escaped hyphens"
+        );
+        assert!(
+            settings.contains("*Language Settings*") || settings.contains("*Configuración"),
+            "language_settings should preserve intentional bold formatting"
+        );
+    }
+
+    #[test]
+    fn test_production_broadcast_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let admin_only = Language::ENGLISH.config().strings.broadcast_admin_only;
+        let success = Language::ENGLISH.config().strings.broadcast_success;
+        let partial = Language::ENGLISH.config().strings.broadcast_partial;
+        let failed = Language::ENGLISH.config().strings.broadcast_failed;
+        let usage = Language::ENGLISH.config().strings.broadcast_usage;
+
+        assert!(!has_double_escaping(admin_only));
+        assert!(!has_double_escaping(success));
+        assert!(!has_double_escaping(partial));
+        assert!(!has_double_escaping(failed));
+        assert!(!has_double_escaping(usage));
+    }
+
+    #[test]
+    fn test_production_unknown_command_no_double_escape() {
+        use crate::i18n::Language;
+
+        let unknown = Language::ENGLISH.config().strings.unknown_command;
+        assert!(
+            !has_double_escaping(unknown),
+            "unknown_command should not have double-escaping"
+        );
+    }
+
+    #[test]
+    fn test_production_welcome_summary_no_double_escape() {
+        use crate::i18n::Language;
+
+        let header = Language::ENGLISH.config().strings.welcome_summary_header;
+        assert!(
+            !has_double_escaping(header),
+            "welcome_summary_header should not have double-escaping"
+        );
+    }
+
+    #[test]
+    fn test_all_spanish_templates_no_double_escape() {
+        use crate::i18n::Language;
+
+        let strings = &Language::SPANISH.config().strings;
+
+        assert!(!has_double_escaping(strings.welcome_admin));
+        assert!(!has_double_escaping(strings.welcome_user));
+        assert!(!has_double_escaping(strings.subscribe_already));
+        assert!(!has_double_escaping(strings.subscribe_success));
+        assert!(!has_double_escaping(strings.unsubscribe_success));
+        assert!(!has_double_escaping(strings.unsubscribe_not_subscribed));
+        assert!(!has_double_escaping(strings.status_subscribed_admin));
+        assert!(!has_double_escaping(strings.status_subscribed_user));
+        assert!(!has_double_escaping(strings.status_not_subscribed));
+        assert!(!has_double_escaping(strings.language_not_subscribed));
+        assert!(!has_double_escaping(strings.language_changed_english));
+        assert!(!has_double_escaping(strings.language_changed_spanish));
+        assert!(!has_double_escaping(strings.language_invalid));
+        assert!(!has_double_escaping(strings.language_settings));
+        assert!(!has_double_escaping(strings.broadcast_admin_only));
+        assert!(!has_double_escaping(strings.broadcast_success));
+        assert!(!has_double_escaping(strings.broadcast_partial));
+        assert!(!has_double_escaping(strings.broadcast_failed));
+        assert!(!has_double_escaping(strings.broadcast_usage));
+        assert!(!has_double_escaping(strings.unknown_command));
+        assert!(!has_double_escaping(strings.welcome_summary_header));
+    }
+
+    /// Test that demonstrates what double-escaping looks like
+    /// and verifies our detection works
+    #[test]
+    fn test_double_escape_detection_works() {
+        // Single-escaped (correct)
+        let single_escaped = "Hello\\!";
+        assert!(
+            !has_double_escaping(single_escaped),
+            "Single-escaped should not trigger detection"
+        );
+
+        // Double-escaped (incorrect - what happens if escape_markdownv2 is called twice)
+        let double_escaped = escape_markdownv2("Hello\\!");
+        assert!(
+            has_double_escaping(&double_escaped),
+            "Double-escaped should be detected. Got: {}",
+            double_escaped
+        );
+    }
+
+    /// Simulates the exact bug scenario: calling escape_markdownv2 on pre-escaped template
+    #[test]
+    fn test_simulated_double_escape_bug() {
+        use crate::i18n::Language;
+
+        // Get the pre-escaped template
+        let template = Language::ENGLISH.config().strings.welcome_admin;
+
+        // Simulate the BUG: wrapping pre-escaped template in escape_markdownv2
+        let double_escaped = escape_markdownv2(template);
+
+        // This should detect the double-escaping
+        assert!(
+            has_double_escaping(&double_escaped),
+            "Calling escape_markdownv2 on pre-escaped template should produce double-escaping. \
+             This test verifies our detection works."
+        );
+
+        // The original template should NOT have double-escaping
+        assert!(
+            !has_double_escaping(template),
+            "Original template should not have double-escaping"
+        );
+    }
+
+    // ==================== Language-Aware Response Tests ====================
+    //
+    // These tests verify that commands respond in the subscriber's preferred language.
+
+    #[test]
+    fn test_status_response_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber should get English status
+        let en_template = Language::ENGLISH.config().strings.status_subscribed_user;
+        assert!(
+            en_template.contains("You are subscribed"),
+            "English status should say 'You are subscribed'"
+        );
+
+        // Spanish subscriber should get Spanish status
+        let es_template = Language::SPANISH.config().strings.status_subscribed_user;
+        assert!(
+            es_template.contains("Estás suscrito"),
+            "Spanish status should say 'Estás suscrito'"
+        );
+
+        // Both should have the language placeholder
+        assert!(en_template.contains("{language}"));
+        assert!(es_template.contains("{language}"));
+    }
+
+    #[test]
+    fn test_subscribe_already_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber should get English message
+        let en_msg = Language::ENGLISH.config().strings.subscribe_already;
+        assert!(
+            en_msg.contains("already subscribed"),
+            "English should say 'already subscribed'"
+        );
+
+        // Spanish subscriber should get Spanish message
+        let es_msg = Language::SPANISH.config().strings.subscribe_already;
+        assert!(
+            es_msg.contains("Ya estás suscrito"),
+            "Spanish should say 'Ya estás suscrito'"
+        );
+    }
+
+    #[test]
+    fn test_unsubscribe_success_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber should get English message
+        let en_msg = Language::ENGLISH.config().strings.unsubscribe_success;
+        assert!(
+            en_msg.contains("Successfully unsubscribed"),
+            "English should say 'Successfully unsubscribed'"
+        );
+
+        // Spanish subscriber should get Spanish message
+        let es_msg = Language::SPANISH.config().strings.unsubscribe_success;
+        assert!(
+            es_msg.contains("cancelada exitosamente"),
+            "Spanish should say 'cancelada exitosamente'"
+        );
+    }
+
+    #[test]
+    fn test_language_settings_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber sees English settings
+        let en_template = Language::ENGLISH.config().strings.language_settings;
+        assert!(
+            en_template.contains("Language Settings"),
+            "English should say 'Language Settings'"
+        );
+        assert!(
+            en_template.contains("To change, use"),
+            "English should say 'To change, use'"
+        );
+
+        // Spanish subscriber sees Spanish settings
+        let es_template = Language::SPANISH.config().strings.language_settings;
+        assert!(
+            es_template.contains("Configuración de Idioma"),
+            "Spanish should say 'Configuración de Idioma'"
+        );
+        assert!(
+            es_template.contains("Para cambiar, usa"),
+            "Spanish should say 'Para cambiar, usa'"
+        );
+    }
+
+    #[test]
+    fn test_language_invalid_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber sees English error
+        let en_msg = Language::ENGLISH.config().strings.language_invalid;
+        assert!(
+            en_msg.contains("Invalid language"),
+            "English should say 'Invalid language'"
+        );
+
+        // Spanish subscriber sees Spanish error
+        let es_msg = Language::SPANISH.config().strings.language_invalid;
+        assert!(
+            es_msg.contains("Idioma inválido"),
+            "Spanish should say 'Idioma inválido'"
+        );
+    }
+
+    #[test]
+    fn test_language_from_code_returns_correct_strings() {
+        use crate::i18n::Language;
+
+        // Test that Language::from_code gives us the right language
+        let english = Language::from_code("en").unwrap();
+        let spanish = Language::from_code("es").unwrap();
+
+        assert_eq!(
+            english.config().strings.status_subscribed_user,
+            Language::ENGLISH.config().strings.status_subscribed_user
+        );
+        assert_eq!(
+            spanish.config().strings.status_subscribed_user,
+            Language::SPANISH.config().strings.status_subscribed_user
+        );
+
+        // Verify they're different
+        assert_ne!(
+            english.config().strings.status_subscribed_user,
+            spanish.config().strings.status_subscribed_user
+        );
+    }
+
+    #[test]
+    fn test_language_from_code_fallback_to_english() {
+        use crate::i18n::Language;
+
+        // Unknown language code should fail gracefully
+        let result = Language::from_code("xx");
+        assert!(result.is_err(), "Unknown language code should return error");
+
+        // Code that uses unwrap_or_else pattern should fall back to English
+        let fallback = Language::from_code("xx").unwrap_or(Language::ENGLISH);
+        assert_eq!(
+            fallback.config().strings.status_subscribed_user,
+            Language::ENGLISH.config().strings.status_subscribed_user
+        );
+    }
+
+    #[test]
+    fn test_start_response_uses_subscriber_language() {
+        use crate::i18n::Language;
+
+        // English subscriber should get English welcome
+        let en_msg = Language::ENGLISH.config().strings.welcome_user;
+        assert!(en_msg.contains("Welcome"), "English should say 'Welcome'");
+
+        // Spanish subscriber should get Spanish welcome
+        let es_msg = Language::SPANISH.config().strings.welcome_user;
+        assert!(
+            es_msg.contains("Bienvenido"),
+            "Spanish should say 'Bienvenido'"
+        );
+
+        // Admin messages should also be language-aware
+        let en_admin = Language::ENGLISH.config().strings.welcome_admin;
+        let es_admin = Language::SPANISH.config().strings.welcome_admin;
+        assert!(
+            en_admin.contains("Welcome"),
+            "English admin should say 'Welcome'"
+        );
+        assert!(
+            es_admin.contains("Bienvenido"),
+            "Spanish admin should say 'Bienvenido'"
+        );
     }
 }

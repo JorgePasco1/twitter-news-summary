@@ -98,7 +98,16 @@ After the user confirms which comments to fix and you've completed the work:
        -f content="-1" -X POST
      ```
 
-3. **Resolve threads** using the GraphQL API (for comments that were addressed):
+3. **Reply with a meaningful message to the thread**:
+   ```bash
+   gh api repos/{owner}/{repo}/pulls/{pr_number}/comments \
+     -f body="Fixed! <brief description of what was done>" \
+     -F in_reply_to={comment_id} \
+     -X POST
+   ```
+   Note: The comment ID can be obtained from the initial GraphQL query (the `id` field in `comments.nodes`).
+
+4. **Resolve threads** using the GraphQL API (for both fixed and skipped comments):
    ```bash
    gh api graphql -f query='
    mutation {
@@ -107,12 +116,6 @@ After the user confirms which comments to fix and you've completed the work:
      }
    }'
    ```
-   Note: The thread node ID can be obtained from the initial GraphQL query (the `id` field in `reviewThreads.nodes`).
-
-4. **Leave threads unresolved** if:
-   - The comment was intentionally skipped with a justification
-   - The issue needs further discussion
-   - You're waiting for the reviewer to verify the fix
 
 ## Example Output
 
