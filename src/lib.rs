@@ -2,6 +2,7 @@ pub mod config;
 pub mod db;
 pub mod i18n;
 pub mod openai;
+pub mod retry;
 pub mod rss;
 pub mod scheduler;
 pub mod security;
