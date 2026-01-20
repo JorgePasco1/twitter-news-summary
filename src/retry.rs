@@ -86,12 +86,15 @@ impl Default for RetryConfig {
 /// Execute an async operation with retries
 ///
 /// # Arguments
-/// * `config` - Retry configuration
+/// * `config` - Retry configuration (max_attempts must be >= 1)
 /// * `operation_name` - Name of the operation for logging
 /// * `operation` - Async closure that returns Result<T, E>
 ///
 /// # Returns
 /// The result of the operation, or the last error if all retries failed
+///
+/// # Panics
+/// Panics if `config.max_attempts` is 0
 pub async fn with_retry<T, E, F, Fut>(
     config: &RetryConfig,
     operation_name: &str,
@@ -102,6 +105,12 @@ where
     Fut: Future<Output = Result<T, E>>,
     E: std::fmt::Display,
 {
+    assert!(
+        config.max_attempts >= 1,
+        "RetryConfig.max_attempts must be >= 1, got {}",
+        config.max_attempts
+    );
+
     let mut last_error: Option<E> = None;
 
     for attempt in 0..config.max_attempts {
@@ -158,6 +167,9 @@ where
 /// Execute an async operation with retries, using a predicate to determine if retry is appropriate
 ///
 /// Some errors (like 4xx client errors) should not be retried, while others (5xx, network) should.
+///
+/// # Panics
+/// Panics if `config.max_attempts` is 0
 pub async fn with_retry_if<T, E, F, Fut, P>(
     config: &RetryConfig,
     operation_name: &str,
@@ -170,6 +182,12 @@ where
     E: std::fmt::Display,
     P: Fn(&E) -> bool,
 {
+    assert!(
+        config.max_attempts >= 1,
+        "RetryConfig.max_attempts must be >= 1, got {}",
+        config.max_attempts
+    );
+
     let mut last_error: Option<E> = None;
 
     for attempt in 0..config.max_attempts {
@@ -586,6 +604,26 @@ mod tests {
 
         assert_eq!(result.unwrap_err(), "failure on first attempt");
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    // ==================== Zero Attempts Panic Tests ====================
+
+    #[tokio::test]
+    #[should_panic(expected = "max_attempts must be >= 1")]
+    async fn test_with_retry_panics_on_zero_attempts() {
+        let config = RetryConfig::new(0, Duration::from_millis(100));
+
+        let _result: Result<(), &str> =
+            with_retry(&config, "zero_attempts", || async { Ok(()) }).await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "max_attempts must be >= 1")]
+    async fn test_with_retry_if_panics_on_zero_attempts() {
+        let config = RetryConfig::new(0, Duration::from_millis(100));
+
+        let _result: Result<(), &str> =
+            with_retry_if(&config, "zero_attempts", || async { Ok(()) }, |_| true).await;
     }
 
     // ==================== with_retry_if Advanced Tests ====================

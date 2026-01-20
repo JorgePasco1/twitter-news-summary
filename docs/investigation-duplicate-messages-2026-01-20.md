@@ -44,7 +44,7 @@ The two messages had different formats because:
 ## Evidence
 
 From Fly.io status:
-```
+```text
 PROCESS  ID              VERSION  REGION  STATE    LAST UPDATED
 app      3d8de966c31728  12       sjc     started  2026-01-19T23:08:19Z
 app      83905ea7941268  12       sjc     started  2026-01-19T23:08:36Z

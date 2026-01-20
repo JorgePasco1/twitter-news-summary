@@ -168,17 +168,29 @@ pub async fn translate_summary(
     Ok(translated)
 }
 
-/// Determine if an error is retryable (5xx errors, network errors)
-/// 4xx client errors should not be retried
+/// Determine if an error is retryable (5xx errors, 429 rate limit, network errors)
+/// Other 4xx client errors should not be retried
 fn is_retryable_error(error: &anyhow::Error) -> bool {
     let error_str = error.to_string();
 
-    // Don't retry 4xx client errors
-    if error_str.contains("(4") && error_str.contains("OpenAI API error") {
-        return false;
+    // Check if it's an OpenAI API error with a status code
+    // Error format: "OpenAI API error during translation (400 Bad Request): ..."
+    if error_str.contains("OpenAI API error") {
+        if let Some(start) = error_str.find('(') {
+            if let Some(end) = error_str[start..].find(')') {
+                let status_str = &error_str[start + 1..start + end];
+                // Extract just the numeric status code (e.g., "400" from "400 Bad Request")
+                let status_num = status_str.split_whitespace().next().unwrap_or("");
+                if let Ok(status) = status_num.parse::<u16>() {
+                    // Retry 429 (rate limit) and 5xx errors
+                    // Don't retry other 4xx errors (400, 401, 403, etc.)
+                    return status == 429 || status >= 500;
+                }
+            }
+        }
     }
 
-    // Retry 5xx server errors, network errors, and other transient failures
+    // Retry network errors, timeouts, and other transient failures
     true
 }
 
@@ -806,6 +818,16 @@ mod tests {
         assert!(
             !is_retryable_error(&error),
             "403 errors should NOT be retryable"
+        );
+    }
+
+    #[test]
+    fn test_is_retryable_error_429_error() {
+        let error =
+            anyhow::anyhow!("OpenAI API error during translation (429): Rate Limit Exceeded");
+        assert!(
+            is_retryable_error(&error),
+            "429 errors SHOULD be retryable (rate limit is transient)"
         );
     }
 

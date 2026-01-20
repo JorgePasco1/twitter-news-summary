@@ -217,17 +217,29 @@ pub async fn summarize_tweets(
     .await
 }
 
-/// Determine if an error is retryable (5xx errors, network errors)
-/// 4xx client errors should not be retried
+/// Determine if an error is retryable (5xx errors, 429 rate limit, network errors)
+/// Other 4xx client errors should not be retried
 fn is_retryable_error(error: &anyhow::Error) -> bool {
     let error_str = error.to_string();
 
-    // Don't retry 4xx client errors
-    if error_str.contains("(4") && error_str.contains("OpenAI API error") {
-        return false;
+    // Check if it's an OpenAI API error with a status code
+    // Error format: "OpenAI API error (400 Bad Request): ..."
+    if error_str.contains("OpenAI API error") {
+        if let Some(start) = error_str.find('(') {
+            if let Some(end) = error_str[start..].find(')') {
+                let status_str = &error_str[start + 1..start + end];
+                // Extract just the numeric status code (e.g., "400" from "400 Bad Request")
+                let status_num = status_str.split_whitespace().next().unwrap_or("");
+                if let Ok(status) = status_num.parse::<u16>() {
+                    // Retry 429 (rate limit) and 5xx errors
+                    // Don't retry other 4xx errors (400, 401, 403, etc.)
+                    return status == 429 || status >= 500;
+                }
+            }
+        }
     }
 
-    // Retry 5xx server errors, network errors, and other transient failures
+    // Retry network errors, timeouts, and other transient failures
     true
 }
 
@@ -1257,19 +1269,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_summarize_tweets_no_retry_on_rate_limit_429_is_retried() {
+    async fn test_summarize_tweets_retries_on_rate_limit_429() {
         let mock_server = MockServer::start().await;
 
-        // 429 Rate Limit - this is typically retryable (it's a 4xx but transient)
-        // Our implementation checks for "(4" in the error message, so 429 might not be retried
-        // Let's verify current behavior
+        // 429 Rate Limit IS retryable (transient error)
+        // First two requests fail with 429, third succeeds
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
             .respond_with(
                 ResponseTemplate::new(429)
                     .set_body_string(r#"{"error": {"message": "Rate limit exceeded"}}"#),
             )
-            .expect(1) // Based on is_retryable_error, 429 (starts with 4) should not retry
+            .up_to_n_times(2)
+            .mount(&mock_server)
+            .await;
+
+        let response_body = create_openai_response("Success after rate limit");
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
             .mount(&mock_server)
             .await;
 
@@ -1279,8 +1298,12 @@ mod tests {
         let tweets = [create_tweet("1", "Test tweet")];
 
         let result = summarize_tweets(&client, &config, &tweets).await;
-        // 429 contains "(4" so it won't be retried per current is_retryable_error implementation
-        assert!(result.is_err(), "429 error should fail");
+        assert!(
+            result.is_ok(),
+            "429 errors should be retried and succeed: {:?}",
+            result
+        );
+        assert_eq!(result.unwrap(), "Success after rate limit");
     }
 
     #[tokio::test]
@@ -1361,8 +1384,8 @@ mod tests {
     fn test_is_retryable_error_429_error() {
         let error = anyhow::anyhow!("OpenAI API error (429): Rate Limit Exceeded");
         assert!(
-            !is_retryable_error(&error),
-            "429 errors should NOT be retryable (4xx)"
+            is_retryable_error(&error),
+            "429 errors SHOULD be retryable (rate limit is transient)"
         );
     }
 
