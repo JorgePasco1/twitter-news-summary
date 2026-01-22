@@ -41,3 +41,4 @@ primary_region = 'sjc'
   memory = '256mb'
   cpu_kind = 'shared'
   cpus = 1
+  count = 1  # Ensure only one instance runs to prevent duplicate scheduler jobs

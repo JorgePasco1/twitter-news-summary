@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::retry::{with_retry, RetryConfig};
 use crate::twitter::Tweet;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -8,11 +9,25 @@ use tracing::{info, warn};
 pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Result<Vec<Tweet>> {
     info!("Fetching RSS feeds for {} users", usernames.len());
 
-    // Verify Nitter instance is working
+    // Verify Nitter instance is working (with retries)
     info!("Testing Nitter instance: {}", config.nitter_instance);
-    if !test_nitter_instance(&config.nitter_instance, config.nitter_api_key.as_deref()).await {
+    let health_check_result = with_retry(
+        &RetryConfig::health_check(),
+        "Nitter health check",
+        || async {
+            if test_nitter_instance(&config.nitter_instance, config.nitter_api_key.as_deref()).await
+            {
+                Ok(())
+            } else {
+                Err("Nitter instance not responding or returning invalid RSS")
+            }
+        },
+    )
+    .await;
+
+    if health_check_result.is_err() {
         anyhow::bail!(
-            "Nitter instance {} is not responding or returning invalid RSS feeds.\n\
+            "Nitter instance {} is not responding or returning invalid RSS feeds after multiple retries.\n\
             Please check:\n\
             1. Your Nitter instance is running (accessible in browser)\n\
             2. You can access it: {}\n\
@@ -34,16 +49,23 @@ pub async fn fetch_tweets_from_rss(config: &Config, usernames: &[String]) -> Res
     let mut fail_count = 0;
 
     let total = usernames.len();
+    let rss_retry_config = RetryConfig::rss_feed();
+
     for (index, username) in usernames.iter().enumerate() {
         let progress = index + 1;
         info!("[{}/{}] Fetching @{}...", progress, total, username);
-        match fetch_user_rss(
-            &config.nitter_instance,
-            username,
-            config.nitter_api_key.as_deref(),
-        )
-        .await
-        {
+
+        // Fetch with retries
+        let result = with_retry(&rss_retry_config, &format!("RSS @{}", username), || {
+            fetch_user_rss(
+                &config.nitter_instance,
+                username,
+                config.nitter_api_key.as_deref(),
+            )
+        })
+        .await;
+
+        match result {
             Ok(tweets) => {
                 success_count += 1;
                 let tweet_count = tweets.len();
@@ -1130,5 +1152,405 @@ mod tests {
 
         let tweet = rss_item_to_tweet(&item, "user").unwrap();
         assert!(tweet.text.len() > 10000, "Should preserve long text");
+    }
+
+    // ==================== Retry Integration Tests ====================
+
+    #[tokio::test]
+    async fn test_health_check_retries_on_transient_failure() {
+        let mock_server = MockServer::start().await;
+
+        // Valid RSS feed for when health check succeeds
+        let valid_rss = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test tweet",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
+
+        // Set up mock that fails twice then succeeds
+        // Using expect() to limit responses
+        Mock::given(method("GET"))
+            .and(path("/OpenAI/rss"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Server Error"))
+            .up_to_n_times(2) // Fail first 2 times
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/OpenAI/rss"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(valid_rss.clone()))
+            .mount(&mock_server)
+            .await;
+
+        // User feed also succeeds
+        let user_rss = create_rss_feed(
+            "testuser",
+            vec![(
+                "User tweet",
+                "https://example.com/testuser/status/1",
+                &rfc2822_date_offset(1),
+            )],
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/testuser/rss"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(user_rss))
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(&mock_server.uri());
+        let usernames = vec!["testuser".to_string()];
+
+        // This should succeed after retries
+        let result = fetch_tweets_from_rss(&config, &usernames).await;
+        assert!(
+            result.is_ok(),
+            "Should succeed after health check retries: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_health_check_fails_after_max_retries() {
+        let mock_server = MockServer::start().await;
+
+        // Health check always fails
+        Mock::given(method("GET"))
+            .and(path("/OpenAI/rss"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Server Error"))
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(&mock_server.uri());
+        let usernames = vec!["testuser".to_string()];
+
+        let start = std::time::Instant::now();
+        let result = fetch_tweets_from_rss(&config, &usernames).await;
+        let elapsed = start.elapsed();
+
+        // Should fail after health check retries (4 attempts with 1s, 2s, 4s delays)
+        assert!(
+            result.is_err(),
+            "Should fail when health check always fails"
+        );
+
+        // With health_check() preset: 4 attempts, delays of 1s, 2s, 4s = 7s total
+        // Allow some tolerance
+        assert!(
+            elapsed >= std::time::Duration::from_secs(5),
+            "Should have spent time retrying health check, got {:?}",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rss_feed_fetch_retries_on_transient_failure() {
+        let mock_server = MockServer::start().await;
+
+        // Health check succeeds
+        let health_rss = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/OpenAI/rss"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(health_rss))
+            .mount(&mock_server)
+            .await;
+
+        // User feed fails twice then succeeds
+        Mock::given(method("GET"))
+            .and(path("/testuser/rss"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("Service Unavailable"))
+            .up_to_n_times(2)
+            .mount(&mock_server)
+            .await;
+
+        let user_rss = create_rss_feed(
+            "testuser",
+            vec![(
+                "Success tweet after retry",
+                "https://example.com/testuser/status/1",
+                &rfc2822_date_offset(1),
+            )],
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/testuser/rss"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(user_rss))
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(&mock_server.uri());
+        let usernames = vec!["testuser".to_string()];
+
+        let result = fetch_tweets_from_rss(&config, &usernames).await;
+        assert!(
+            result.is_ok(),
+            "Should succeed after RSS feed retries: {:?}",
+            result
+        );
+
+        let tweets = result.unwrap();
+        assert_eq!(tweets.len(), 1);
+        assert!(tweets[0].text.contains("Success tweet after retry"));
+    }
+
+    #[tokio::test]
+    async fn test_rss_feed_fetch_fails_after_max_retries() {
+        let mock_server = MockServer::start().await;
+
+        // Health check succeeds
+        let health_rss = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/OpenAI/rss"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(health_rss))
+            .mount(&mock_server)
+            .await;
+
+        // User feed always fails with 500
+        Mock::given(method("GET"))
+            .and(path("/testuser/rss"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(&mock_server.uri());
+        let usernames = vec!["testuser".to_string()];
+
+        let start = std::time::Instant::now();
+        let result = fetch_tweets_from_rss(&config, &usernames).await;
+        let elapsed = start.elapsed();
+
+        // Should complete (with empty tweets) after RSS feed retries
+        // rss_feed() preset: 3 attempts with 500ms, 1s delays = 1.5s total
+        assert!(result.is_ok());
+        let tweets = result.unwrap();
+        assert!(
+            tweets.is_empty(),
+            "Should have no tweets when all fetches fail"
+        );
+
+        // Verify some retry delay occurred
+        assert!(
+            elapsed >= std::time::Duration::from_millis(1000),
+            "Should have spent time retrying RSS fetch, got {:?}",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multiple_users_independent_retries() {
+        let mock_server = MockServer::start().await;
+
+        // Health check succeeds
+        let health_rss = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/OpenAI/rss"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(health_rss))
+            .mount(&mock_server)
+            .await;
+
+        // User1: fails on first attempt, succeeds on second
+        Mock::given(method("GET"))
+            .and(path("/user1/rss"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        let user1_rss = create_rss_feed(
+            "user1",
+            vec![(
+                "User1 tweet",
+                "https://example.com/user1/status/1",
+                &rfc2822_date_offset(1),
+            )],
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/user1/rss"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(user1_rss))
+            .mount(&mock_server)
+            .await;
+
+        // User2: succeeds immediately
+        let user2_rss = create_rss_feed(
+            "user2",
+            vec![(
+                "User2 tweet",
+                "https://example.com/user2/status/1",
+                &rfc2822_date_offset(2),
+            )],
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/user2/rss"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(user2_rss))
+            .mount(&mock_server)
+            .await;
+
+        // User3: always fails
+        Mock::given(method("GET"))
+            .and(path("/user3/rss"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(&mock_server.uri());
+        let usernames = vec![
+            "user1".to_string(),
+            "user2".to_string(),
+            "user3".to_string(),
+        ];
+
+        let result = fetch_tweets_from_rss(&config, &usernames).await;
+        assert!(result.is_ok());
+
+        let tweets = result.unwrap();
+        // Should have tweets from user1 (after retry) and user2, but not user3
+        assert_eq!(tweets.len(), 2);
+
+        let tweet_texts: Vec<&str> = tweets.iter().map(|t| t.text.as_str()).collect();
+        assert!(
+            tweet_texts.iter().any(|t| t.contains("User1")),
+            "Should have user1's tweet"
+        );
+        assert!(
+            tweet_texts.iter().any(|t| t.contains("User2")),
+            "Should have user2's tweet"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_health_check_succeeds_on_first_attempt() {
+        let mock_server = MockServer::start().await;
+
+        let health_rss = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/OpenAI/rss"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(health_rss))
+            .expect(1) // Should only be called once
+            .mount(&mock_server)
+            .await;
+
+        let user_rss = create_rss_feed(
+            "testuser",
+            vec![(
+                "Test tweet",
+                "https://example.com/testuser/status/1",
+                &rfc2822_date_offset(1),
+            )],
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/testuser/rss"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(user_rss))
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(&mock_server.uri());
+        let usernames = vec!["testuser".to_string()];
+
+        let start = std::time::Instant::now();
+        let result = fetch_tweets_from_rss(&config, &usernames).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok());
+        // Should complete quickly without retry delays for health check
+        // Only delay should be the 3s between user fetches
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "Should complete quickly when no retries needed, got {:?}",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_health_check_html_response_triggers_retry() {
+        let mock_server = MockServer::start().await;
+
+        // First call returns HTML (should trigger retry)
+        Mock::given(method("GET"))
+            .and(path("/OpenAI/rss"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<!DOCTYPE html><html></html>"),
+            )
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        // Second call returns valid RSS
+        let valid_rss = create_rss_feed(
+            "OpenAI",
+            vec![(
+                "Test",
+                "https://example.com/OpenAI/status/1",
+                "Mon, 15 Jan 2024 10:30:00 +0000",
+            )],
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/OpenAI/rss"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(valid_rss))
+            .mount(&mock_server)
+            .await;
+
+        let user_rss = create_rss_feed(
+            "testuser",
+            vec![(
+                "Test tweet",
+                "https://example.com/testuser/status/1",
+                &rfc2822_date_offset(1),
+            )],
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/testuser/rss"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(user_rss))
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(&mock_server.uri());
+        let usernames = vec!["testuser".to_string()];
+
+        let result = fetch_tweets_from_rss(&config, &usernames).await;
+        assert!(
+            result.is_ok(),
+            "Should succeed after HTML response retry: {:?}",
+            result
+        );
     }
 }
