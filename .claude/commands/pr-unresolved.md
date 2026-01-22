@@ -124,7 +124,7 @@ After the user confirms which comments to fix and you've completed the work:
    - Thread ID: `reviewThreads.nodes[].id` (starts with `PRRT_`)
    - Comment ID for replies: `reviewThreads.nodes[].comments.nodes[0].databaseId` (numeric)
    - File:Line: `reviewThreads.nodes[].comments.nodes[0].path:line`
-   - Topic: First 20 chars of comment body
+   - Topic: First 50-100 chars of comment body
 
 3. **Show the verification table to the user** with this exact format:
    ```markdown
