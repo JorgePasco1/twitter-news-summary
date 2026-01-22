@@ -96,9 +96,9 @@ You MUST format your response using standard Markdown compatible with Telegram M
    - 🏢 Companies and Deals
    - ⚠️ Safety and Policy
    - 💬 Debate and Opinions
-3) Each section must have 2–4 bullets max
+3) Each section must have 2-4 bullets max
 4) Every bullet MUST end with exactly ONE markdown link: [descriptive label](url)
-   - Link labels must be specific (3–8 words) and NOT generic
+   - Link labels must be specific (3-8 words) and NOT generic
    - BAD labels: Read more, Learn more, Here, Link, Thread, Watch, Details
    - GOOD labels: PyTorch 2.10 release notes, Anthropic Claude constitution, Burkov on Cursor valuation
 5) Do NOT invent facts not present in the tweets
@@ -111,10 +111,11 @@ Each bullet must follow this pattern:
 - *What happened* — Why it matters: <short reason> [source + topic](url)
 
 Guidelines:
-- Keep each bullet to ~1–2 lines
+- Keep each bullet to ~1-2 lines
 - Use specific nouns/numbers when present (versions, dates, benchmarks, funding amounts)
 - Prefer original/authoritative sources for links (maintainer/company/primary reactions)
 - Deprioritize engagement bait and vague motivational posts unless they are widely discussed or uniquely insightful
+- Don't explicitely call out our instructions, for example: don't say "Why this matters?", but rather accomplish our goals withou losing naturality.
 
 ## LENGTH
 Keep the total summary under {} words."#,

@@ -6,7 +6,7 @@
 //!   cargo run --bin experiment summarize   # Run single summarization (uses env vars)
 //!
 //! The run-all command tests these combinations:
-//!   Models: gpt-4o-mini, gpt-4o, gpt-4-turbo
+//!   Models: gpt-4o-mini, gpt-5-nano, gpt-5-mini
 //!   Temperatures: 0.3, 0.7, 1.0
 //!   = 9 total combinations
 
@@ -22,7 +22,7 @@ const CACHE_FILE: &str = "run-history/experiment_tweets.json";
 // ==================== Experiment Combinations ====================
 
 /// Models to test (ordered by cost: cheapest first)
-const MODELS: &[&str] = &["gpt-5-mini", "gpt-5-nano"];
+const MODELS: &[&str] = &["gpt-4o-mini", "gpt-5-nano", "gpt-5-mini"];
 
 /// Temperatures to test
 const TEMPERATURES: &[f32] = &[0.3, 0.7, 1.0];
@@ -211,7 +211,8 @@ fn save_tweets_cache(tweets: &[Tweet]) -> Result<()> {
     fs::create_dir_all(cache_dir).context("Failed to create run-history directory")?;
 
     let cache_path = Path::new(CACHE_FILE);
-    let json = serde_json::to_string_pretty(tweets)?;
+    let json =
+        serde_json::to_string_pretty(tweets).context("Failed to serialize tweets to JSON")?;
     fs::write(cache_path, json).context("Failed to write tweets cache")?;
 
     info!(
@@ -350,7 +351,8 @@ async fn run_all_command(base_config: &ExperimentConfig) -> Result<()> {
 
                     let file_content =
                         format_summary_file_with_run(combo, run, &config, tweets.len(), &summary);
-                    fs::write(&filepath, &file_content)?;
+                    fs::write(&filepath, &file_content)
+                        .context("Failed to write experiment result to file")?;
 
                     println!("         ✓ Saved: {}", filename);
                     results.push((combo.clone(), run, summary, filepath.display().to_string()));
@@ -365,7 +367,7 @@ async fn run_all_command(base_config: &ExperimentConfig) -> Result<()> {
     // Generate index file
     let index_path = experiment_dir.join("_INDEX.md");
     let index_content = format_index_file(&timestamp, tweets.len(), base_config, &results);
-    fs::write(&index_path, &index_content)?;
+    fs::write(&index_path, &index_content).context("Failed to write experiment index file")?;
 
     let successful = results.len();
     let failed = total_runs - successful;
@@ -531,7 +533,7 @@ fn format_index_file(
     config: &ExperimentConfig,
     results: &[(Combination, u32, String, String)],
 ) -> String {
-    let combo_count = MODELS.len() * TEMPERATURES.len();
+    let combo_count = Combination::all().len();
 
     let mut content = format!(
         r#"# Experiment Results: {}
@@ -616,7 +618,7 @@ fn print_usage() {
         .map(|t| t.to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    let combo_count = MODELS.len() * TEMPERATURES.len();
+    let combo_count = Combination::all().len();
     let total_runs = combo_count * RUNS_PER_COMBO as usize;
 
     println!(
