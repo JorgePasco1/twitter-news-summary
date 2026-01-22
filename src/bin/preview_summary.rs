@@ -48,7 +48,7 @@ impl PreviewConfig {
         Ok(Self {
             openai_api_key: std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY not set")?,
             openai_model: std::env::var("OPENAI_MODEL")
-                .unwrap_or_else(|_| "gpt-4o-mini".to_string()),
+                .unwrap_or_else(|_| "gpt-5-mini".to_string()),
             openai_api_url: std::env::var("OPENAI_API_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string()),
             nitter_instance: std::env::var("NITTER_INSTANCE").context("NITTER_INSTANCE not set")?,
@@ -83,6 +83,7 @@ impl PreviewConfig {
             openai_api_key: self.openai_api_key.clone(),
             openai_model: self.openai_model.clone(),
             openai_api_url: self.openai_api_url.clone(),
+            openai_temperature: 0.7,
             telegram_bot_token: "unused".to_string(),
             telegram_chat_id: "unused".to_string(),
             telegram_webhook_secret: "unused".to_string(),

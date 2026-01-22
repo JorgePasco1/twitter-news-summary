@@ -360,6 +360,7 @@ mod tests {
             openai_api_key: "test-openai-key".to_string(),
             openai_model: "gpt-4o-mini".to_string(),
             openai_api_url: api_url.to_string(),
+            openai_temperature: 0.7,
             telegram_bot_token: "test-token".to_string(),
             telegram_chat_id: "".to_string(),
             telegram_webhook_secret: "test-secret".to_string(),
