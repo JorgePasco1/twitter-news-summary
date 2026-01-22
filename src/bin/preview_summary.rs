@@ -83,6 +83,7 @@ impl PreviewConfig {
             openai_api_key: self.openai_api_key.clone(),
             openai_model: self.openai_model.clone(),
             openai_api_url: self.openai_api_url.clone(),
+            openai_temperature: 0.7,
             telegram_bot_token: "unused".to_string(),
             telegram_chat_id: "unused".to_string(),
             telegram_webhook_secret: "unused".to_string(),

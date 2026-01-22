@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
-    pub max_tokens: u32,
+    pub max_completion_tokens: u32,
     pub temperature: f32,
 }
 
@@ -75,48 +75,49 @@ pub fn build_system_prompt(max_words: u32) -> String {
     format!(
         r#"You are an AI/ML tech news curator summarizing Twitter/X content for Telegram.
 
-Your task is to create an informative, well-organized summary of the tweets provided.
+Your task: produce a high-signal digest that helps readers quickly understand (1) what happened, (2) why it matters, and (3) what to click.
 
-## CRITICAL FORMATTING REQUIREMENT
-
-You MUST format your response using standard Markdown syntax compatible with Telegram MarkdownV2:
+## CRITICAL FORMATTING REQUIREMENT (Telegram MarkdownV2)
+You MUST format your response using standard Markdown compatible with Telegram MarkdownV2:
 - Use *text* for bold (NOT **text**)
 - Use _text_ for italic
 - Use `code` for inline code
 - Use bullet points with - (hyphen followed by space)
-- Special characters will be escaped automatically, so use natural punctuation
+- Keep headings simple: emoji + words only (no punctuation at end)
+- Use ONE blank line between sections
+- Special characters will be escaped automatically upstream, so use natural punctuation
 
-## Guidelines
+## HARD REQUIREMENTS
+1) Start with a short "🧠 Top takeaways" section (3–5 bullets), ranked by importance
+2) Then include 3–5 topic sections chosen ONLY from this list (omit any that don't apply):
+   - 🚀 Releases
+   - 🔬 Research
+   - 🧰 Tools and Tutorials
+   - 🏢 Companies and Deals
+   - ⚠️ Safety and Policy
+   - 💬 Debate and Opinions
+3) Each section must have 2–4 bullets max
+4) Every bullet MUST end with exactly ONE markdown link: [descriptive label](url)
+   - Link labels must be specific (3–8 words) and NOT generic
+   - BAD labels: Read more, Learn more, Here, Link, Thread, Watch, Details
+   - GOOD labels: PyTorch 2.10 release notes, Anthropic Claude constitution, Burkov on Cursor valuation
+5) Do NOT invent facts not present in the tweets
+   - If something is opinion/speculation, prefix the bullet with "Opinion:"
+6) Deduplicate aggressively
+   - If multiple tweets cover the same story, merge into one bullet and link the most authoritative tweet
 
-### Content Organization
-- Group related topics into clear sections with emoji headers (e.g., "🔬 AI Research", "🏢 Industry News", "🚀 Product Launches")
-- Highlight the most important or trending discussions first
-- Include 2-3 key tweet links per section for readers who want to dive deeper
+## BULLET STYLE (MANDATORY)
+Each bullet must follow this pattern:
+- *What happened* — Why it matters: <short reason> [source + topic](url)
 
-### Formatting
-- Use bullet points (- ) for scannable reading
-- Use emojis in section headers to make them visually distinct (emojis are safe)
-- Include brief context or insights where helpful
-- Keep section headers simple (emojis + text, no other special characters)
-- Keep the total summary under {} words
+Guidelines:
+- Keep each bullet to ~1–2 lines
+- Use specific nouns/numbers when present (versions, dates, benchmarks, funding amounts)
+- Prefer original/authoritative sources for links (maintainer/company/primary reactions)
+- Deprioritize engagement bait and vague motivational posts unless they are widely discussed or uniquely insightful
 
-### Link Integration
-- Include direct links to the most significant/impactful tweets in each section
-- Use markdown link syntax: [descriptive label](url) - e.g., [Greg's take on AI](https://x.com/...)
-- Make link labels descriptive and readable (not just "link" or "here")
-- Prioritize linking to: announcements, breaking news, insightful threads, and notable opinions
-
-### Focus Areas
-This list covers AI/ML researchers, tech leaders, and industry figures. Prioritize:
-- Model releases and research papers
-- Company announcements and product launches
-- Industry trends and debates
-- Technical insights and tutorials
-- Notable opinions from thought leaders
-
-### What to Avoid
-- Do NOT use periods at the end of section headers
-- Use simple, clean formatting"#,
+## LENGTH
+Keep the total summary under {} words."#,
         max_words
     )
 }
@@ -145,7 +146,15 @@ pub fn build_chat_request(config: &Config, tweets: &[Tweet]) -> ChatRequest {
     let system_prompt = build_system_prompt(config.summary_max_words);
 
     let user_prompt = format!(
-        "Please summarize these {} recent tweets from my Twitter list. Include links to the most noteworthy tweets:\n\n{}",
+        r#"Please summarize these {} recent tweets from my Twitter/X list into a Telegram digest.
+
+Context:
+- Audience: AI/ML builders and tech professionals
+- Goal: maximize signal; rank the most important items first
+- Links: each bullet must end with exactly one markdown link using the tweet URL provided in the input
+
+Tweets:
+{}"#,
         tweets.len(),
         tweets_text
     );
@@ -162,8 +171,8 @@ pub fn build_chat_request(config: &Config, tweets: &[Tweet]) -> ChatRequest {
                 content: user_prompt,
             },
         ],
-        max_tokens: config.summary_max_tokens,
-        temperature: 0.7,
+        max_completion_tokens: config.summary_max_tokens,
+        temperature: config.openai_temperature,
     }
 }
 
@@ -266,6 +275,7 @@ mod tests {
             openai_api_key: "test-openai-key".to_string(),
             openai_model: "gpt-4o-mini".to_string(),
             openai_api_url: "https://api.openai.com/v1/chat/completions".to_string(),
+            openai_temperature: 0.7,
             telegram_bot_token: "test-token".to_string(),
             telegram_chat_id: "".to_string(),
             telegram_webhook_secret: "test-webhook-secret".to_string(),
@@ -341,7 +351,7 @@ mod tests {
                     content: "Hello".to_string(),
                 },
             ],
-            max_tokens: 1000,
+            max_completion_tokens: 1000,
             temperature: 0.7,
         };
 
@@ -524,10 +534,11 @@ mod tests {
         let required_elements = [
             "Telegram",
             "AI/ML",
-            "Group related topics",
-            "bullet points",
-            "insights",
-            "tweet links",
+            "Top takeaways",
+            "bullet",
+            "markdown link",
+            "Releases",
+            "Research",
         ];
 
         for element in required_elements {
@@ -552,7 +563,7 @@ mod tests {
         assert_eq!(request.messages[0].role, "system");
         assert_eq!(request.messages[1].role, "user");
         assert!(request.messages[1].content.contains("1 recent tweets"));
-        assert_eq!(request.max_tokens, 2500);
+        assert_eq!(request.max_completion_tokens, 2500);
         assert!((request.temperature - 0.7).abs() < f32::EPSILON);
     }
 
@@ -807,7 +818,7 @@ mod tests {
         let request = build_chat_request(&config, &tweets);
 
         // Verify expected parameters (2500 is the default for summary_max_tokens)
-        assert_eq!(request.max_tokens, 2500);
+        assert_eq!(request.max_completion_tokens, 2500);
         assert!((request.temperature - 0.7).abs() < f32::EPSILON);
     }
 
@@ -1011,13 +1022,13 @@ mod tests {
         let req1 = ChatRequest {
             model: "gpt-4".to_string(),
             messages: vec![],
-            max_tokens: 1000,
+            max_completion_tokens: 1000,
             temperature: 0.7,
         };
         let req2 = ChatRequest {
             model: "gpt-4".to_string(),
             messages: vec![],
-            max_tokens: 1000,
+            max_completion_tokens: 1000,
             temperature: 0.7,
         };
 
@@ -1032,7 +1043,7 @@ mod tests {
                 role: "user".to_string(),
                 content: "Test".to_string(),
             }],
-            max_tokens: 1000,
+            max_completion_tokens: 1000,
             temperature: 0.7,
         };
 
