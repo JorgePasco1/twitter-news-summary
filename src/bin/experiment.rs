@@ -118,7 +118,7 @@ impl ExperimentConfig {
         Ok(Self {
             openai_api_key: std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY not set")?,
             openai_model: std::env::var("OPENAI_MODEL")
-                .unwrap_or_else(|_| "gpt-4o-mini".to_string()),
+                .unwrap_or_else(|_| "gpt-5-mini".to_string()),
             openai_api_url: std::env::var("OPENAI_API_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string()),
             openai_temperature: std::env::var("OPENAI_TEMPERATURE")
@@ -328,7 +328,6 @@ async fn run_all_command(base_config: &ExperimentConfig) -> Result<()> {
     println!("║  Output folder: {:<45} ║", experiment_dir.display());
     println!("╚══════════════════════════════════════════════════════════════╝\n");
 
-    let client = reqwest::Client::new();
     // (combo, run_number, summary, filepath)
     let mut results: Vec<(Combination, u32, String, String)> = Vec::new();
     let mut run_counter = 0;
@@ -342,9 +341,33 @@ async fn run_all_command(base_config: &ExperimentConfig) -> Result<()> {
 
             let config = base_config.with_combination(combo);
             let full_config = config.to_full_config();
+            let tweets_clone = tweets.clone();
 
-            match openai::summarize_tweets(&client, &full_config, &tweets).await {
-                Ok(summary) => {
+            // Spawn each API call as a separate tokio task to avoid async runtime issues
+            // Use longer timeout for reasoning models (5 minutes vs 2 minutes)
+            let timeout_secs = if is_reasoning_model(&combo.model) {
+                300
+            } else {
+                120
+            };
+            println!(
+                "         → Spawning API call task (timeout: {}s)...",
+                timeout_secs
+            );
+            let handle = tokio::spawn(async move {
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(timeout_secs))
+                    .connect_timeout(std::time::Duration::from_secs(30))
+                    .pool_max_idle_per_host(0)
+                    .build()
+                    .expect("Failed to build HTTP client");
+
+                openai::summarize_tweets(&client, &full_config, &tweets_clone).await
+            });
+
+            println!("         → Awaiting API call result...");
+            match handle.await {
+                Ok(Ok(summary)) => {
                     // Save individual result
                     let filename = format!("{}.md", combo.file_label(run));
                     let filepath = experiment_dir.join(&filename);
@@ -357,8 +380,11 @@ async fn run_all_command(base_config: &ExperimentConfig) -> Result<()> {
                     println!("         ✓ Saved: {}", filename);
                     results.push((combo.clone(), run, summary, filepath.display().to_string()));
                 }
+                Ok(Err(e)) => {
+                    println!("         ✗ API Error: {}", e);
+                }
                 Err(e) => {
-                    println!("         ✗ Error: {}", e);
+                    println!("         ✗ Task Error: {}", e);
                 }
             }
         }
@@ -413,7 +439,21 @@ async fn summarize_command(config: &ExperimentConfig) -> Result<()> {
 
     info!("Generating summary with {} tweets...", tweets.len());
 
-    let client = reqwest::Client::new();
+    // Use longer timeout for reasoning models (5 minutes vs 2 minutes)
+    let timeout_secs = if is_reasoning_model(&adjusted_config.openai_model) {
+        300
+    } else {
+        120
+    };
+    println!("  Using timeout: {}s", timeout_secs);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .pool_max_idle_per_host(0) // Disable connection pooling
+        .build()
+        .context("Failed to build HTTP client")?;
+
     let summary = openai::summarize_tweets(&client, &full_config, &tweets).await?;
 
     // Save summary to file
@@ -642,9 +682,9 @@ COMBINATIONS (run-all):
     Total runs:     {total_runs}
 
 ENVIRONMENT VARIABLES (for 'summarize' command):
-    OPENAI_MODEL          Model to use (default: gpt-4o-mini)
+    OPENAI_MODEL          Model to use (default: gpt-5-mini)
     OPENAI_TEMPERATURE    Temperature 0.0-2.0 (default: 0.7)
-    SUMMARY_MAX_TOKENS    Max tokens in response (default: 2500)
+    SUMMARY_MAX_TOKENS    Max tokens in response (default: 16000)
     SUMMARY_MAX_WORDS     Max words in summary (default: 800)
 
 EXAMPLES:

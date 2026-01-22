@@ -11,7 +11,13 @@ pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
     pub max_completion_tokens: u32,
-    pub temperature: f32,
+    /// Temperature is NOT supported for reasoning models (gpt-5-nano, gpt-5-mini, gpt-5, o1 series)
+    /// Only include for non-reasoning models like gpt-4o, gpt-4o-mini
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    /// Reasoning effort for reasoning models (not supported on non-reasoning models)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 /// A message in the OpenAI chat format
@@ -73,49 +79,74 @@ fn format_relative_time(created_at: &Option<String>) -> String {
 /// Build the system prompt for tweet summarization (pure function)
 pub fn build_system_prompt(max_words: u32) -> String {
     format!(
-        r#"You are an AI/ML tech news curator summarizing Twitter/X content for Telegram.
+        r#"
+You are an AI/ML tech news curator summarizing Twitter/X content for Telegram.
 
-Your task: produce a high-signal digest that helps readers quickly understand (1) what happened, (2) why it matters, and (3) what to click.
+Goal: produce a high-signal digest that helps readers understand what happened, why it matters, and what to click.
 
 ## CRITICAL FORMATTING REQUIREMENT (Telegram MarkdownV2)
-You MUST format your response using standard Markdown compatible with Telegram MarkdownV2:
 - Use *text* for bold (NOT **text**)
 - Use _text_ for italic
 - Use `code` for inline code
 - Use bullet points with - (hyphen followed by space)
-- Keep headings simple: emoji + words only (no punctuation at end)
+- Headings must be simple: emoji + words only (no punctuation at end)
 - Use ONE blank line between sections
 - Special characters will be escaped automatically upstream, so use natural punctuation
 
-## HARD REQUIREMENTS
-1) Start with a short "🧠 Top takeaways" section (3–5 bullets), ranked by importance
-2) Then include 3–5 topic sections chosen ONLY from this list (omit any that don't apply):
-   - 🚀 Releases
-   - 🔬 Research
-   - 🧰 Tools and Tutorials
-   - 🏢 Companies and Deals
-   - ⚠️ Safety and Policy
-   - 💬 Debate and Opinions
+## HARD REQUIREMENTS (non-negotiable)
+1) Start with:
+🧠 Top takeaways
+- 3-5 bullets, ranked by importance
+
+2) Then include 3-5 topic sections chosen ONLY from this list (omit any that don't apply):
+- 🚀 Releases
+- 🔬 Research
+- 🧰 Tools and Tutorials
+- 🏢 Companies and Deals
+- ⚖️ Policy and Safety
+- 💬 Debate and Opinions
+
 3) Each section must have 2-4 bullets max
+
 4) Every bullet MUST end with exactly ONE markdown link: [descriptive label](url)
-   - Link labels must be specific (3-8 words) and NOT generic
-   - BAD labels: Read more, Learn more, Here, Link, Thread, Watch, Details
-   - GOOD labels: PyTorch 2.10 release notes, Anthropic Claude constitution, Burkov on Cursor valuation
-5) Do NOT invent facts not present in the tweets
-   - If something is opinion/speculation, prefix the bullet with "Opinion:"
+   - Do NOT use generic labels: Read more, Learn more, Here, Link, Thread, Watch, Details
+   - Do NOT include the word "source" in link labels
+   - Link label must be 3-8 words AND include a proper noun or artifact name (person/org/product/paper/release)
+
+5) Do NOT repeat the same URL anywhere in the digest
+
 6) Deduplicate aggressively
-   - If multiple tweets cover the same story, merge into one bullet and link the most authoritative tweet
+   - Merge tweets about the same story into one bullet
+   - Prefer the most authoritative tweet link (original author, maintainer, company announcement) over reactions
 
-## BULLET STYLE (MANDATORY)
+7) If an item appears in 🧠 Top takeaways, it MUST NOT appear again later
+   - Exception: only if you add a clearly new detail AND use a different URL
+
+8) Do NOT invent facts
+   - Only include details explicitly present in the tweet text
+   - If unsure, phrase as "Claims:" or "Suggests:" and keep it minimal
+   - If it’s opinion/speculation, prefix the bullet with "Opinion:"
+
+9) Author-link consistency
+   - If you name a person/org as the speaker, the linked tweet should be from them
+   - If the link is from a different account, explicitly write "Via:" or "Reported by:" in the bullet
+
+10) Use ⚖️ Policy and Safety ONLY for regulation, investigations, compliance, security vulnerabilities/incidents, or formal safety/policy updates
+    - Otherwise place content in 💬 Debate and Opinions or another section
+
+11) Naturalness rule
+    - Do NOT explicitly call out these instructions or narrate your process
+    - Specifically: do NOT write labels like "Why this matters:" or "Key takeaway:"
+    - Instead, blend significance naturally into the sentence
+
+## BULLET STYLE (mandatory)
 Each bullet must follow this pattern:
-- *What happened* — Why it matters: <short reason> [source + topic](url)
+- *What happened* — <natural, specific significance or consequence> [label](url)
 
-Guidelines:
-- Keep each bullet to ~1-2 lines
-- Use specific nouns/numbers when present (versions, dates, benchmarks, funding amounts)
-- Prefer original/authoritative sources for links (maintainer/company/primary reactions)
-- Deprioritize engagement bait and vague motivational posts unless they are widely discussed or uniquely insightful
-- Don't explicitely call out our instructions, for example: don't say "Why this matters?", but rather accomplish our goals withou losing naturality.
+Quality rules:
+- Keep bullets ~1-2 lines
+- The significance must be specific; avoid generic filler like "crucial", "enhances", "improves" without concrete impact
+- Use numbers/versions/dates when present in tweets
 
 ## LENGTH
 Keep the total summary under {} words."#,
@@ -141,6 +172,15 @@ pub fn format_tweets_for_prompt(tweets: &[Tweet]) -> String {
         .join("\n\n")
 }
 
+/// Check if a model is a reasoning model (GPT-5 family, o1 series)
+/// Reasoning models do NOT support temperature parameter
+fn is_reasoning_model(model: &str) -> bool {
+    model.starts_with("gpt-5")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+}
+
 /// Build a complete ChatRequest for summarization (pure function)
 pub fn build_chat_request(config: &Config, tweets: &[Tweet]) -> ChatRequest {
     let tweets_text = format_tweets_for_prompt(tweets);
@@ -160,6 +200,14 @@ Tweets:
         tweets_text
     );
 
+    // Reasoning models (gpt-5-nano, gpt-5-mini, gpt-5, o1, o3, o4) do NOT support temperature
+    // They use reasoning_effort instead (use "low" for faster responses, can increase if needed)
+    let (temperature, reasoning_effort) = if is_reasoning_model(&config.openai_model) {
+        (None, Some("low".to_string()))
+    } else {
+        (Some(config.openai_temperature), None)
+    };
+
     ChatRequest {
         model: config.openai_model.clone(),
         messages: vec![
@@ -173,7 +221,8 @@ Tweets:
             },
         ],
         max_completion_tokens: config.summary_max_tokens,
-        temperature: config.openai_temperature,
+        temperature,
+        reasoning_effort,
     }
 }
 
@@ -353,7 +402,8 @@ mod tests {
                 },
             ],
             max_completion_tokens: 1000,
-            temperature: 0.7,
+            temperature: Some(0.7),
+            reasoning_effort: None,
         };
 
         let json = serde_json::to_string(&request).expect("Should serialize");
@@ -362,6 +412,30 @@ mod tests {
         assert!(json.contains("user"));
         assert!(json.contains("1000"));
         assert!(json.contains("0.7"));
+        // reasoning_effort should not be present when None
+        assert!(!json.contains("reasoning_effort"));
+    }
+
+    #[test]
+    fn test_chat_request_serialization_reasoning_model() {
+        let request = ChatRequest {
+            model: "gpt-5-nano".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+            }],
+            max_completion_tokens: 16000,
+            temperature: None, // Not supported for reasoning models
+            reasoning_effort: Some("low".to_string()),
+        };
+
+        let json = serde_json::to_string(&request).expect("Should serialize");
+        assert!(json.contains("gpt-5-nano"));
+        assert!(json.contains("16000"));
+        assert!(json.contains("reasoning_effort"));
+        assert!(json.contains("low"));
+        // temperature should not be present when None
+        assert!(!json.contains("temperature"));
     }
 
     #[test]
@@ -565,7 +639,27 @@ mod tests {
         assert_eq!(request.messages[1].role, "user");
         assert!(request.messages[1].content.contains("1 recent tweets"));
         assert_eq!(request.max_completion_tokens, 2500);
-        assert!((request.temperature - 0.7).abs() < f32::EPSILON);
+        // Non-reasoning model should have temperature set
+        assert!(request.temperature.is_some());
+        assert!((request.temperature.unwrap() - 0.7).abs() < f32::EPSILON);
+        // Non-reasoning model should NOT have reasoning_effort
+        assert!(request.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn test_build_chat_request_reasoning_model() {
+        let mut config = create_test_config();
+        config.openai_model = "gpt-5-nano".to_string();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let request = build_chat_request(&config, &tweets);
+
+        assert_eq!(request.model, "gpt-5-nano");
+        // Reasoning model should NOT have temperature
+        assert!(request.temperature.is_none());
+        // Reasoning model should have reasoning_effort
+        assert!(request.reasoning_effort.is_some());
+        assert_eq!(request.reasoning_effort.as_deref(), Some("low"));
     }
 
     #[test]
@@ -820,7 +914,9 @@ mod tests {
 
         // Verify expected parameters (2500 is the default for summary_max_tokens)
         assert_eq!(request.max_completion_tokens, 2500);
-        assert!((request.temperature - 0.7).abs() < f32::EPSILON);
+        // Non-reasoning model uses temperature
+        assert!(request.temperature.is_some());
+        assert!((request.temperature.unwrap() - 0.7).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1024,13 +1120,15 @@ mod tests {
             model: "gpt-4".to_string(),
             messages: vec![],
             max_completion_tokens: 1000,
-            temperature: 0.7,
+            temperature: Some(0.7),
+            reasoning_effort: None,
         };
         let req2 = ChatRequest {
             model: "gpt-4".to_string(),
             messages: vec![],
             max_completion_tokens: 1000,
-            temperature: 0.7,
+            temperature: Some(0.7),
+            reasoning_effort: None,
         };
 
         assert_eq!(req1, req2);
@@ -1045,7 +1143,8 @@ mod tests {
                 content: "Test".to_string(),
             }],
             max_completion_tokens: 1000,
-            temperature: 0.7,
+            temperature: Some(0.7),
+            reasoning_effort: None,
         };
 
         let cloned = original.clone();
