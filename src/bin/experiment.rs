@@ -36,6 +36,16 @@ fn supports_custom_temperature(model: &str) -> bool {
     !matches!(model, "gpt-5-nano" | "gpt-5-mini")
 }
 
+/// Check if a model is a reasoning model (uses tokens for internal reasoning)
+/// Reasoning models need much higher max_completion_tokens because they use
+/// tokens for both reasoning (hidden) and output (visible)
+fn is_reasoning_model(model: &str) -> bool {
+    matches!(
+        model,
+        "gpt-5-nano" | "gpt-5-mini" | "o1" | "o1-mini" | "o1-preview"
+    )
+}
+
 /// A single experiment combination
 #[derive(Debug, Clone)]
 struct Combination {
@@ -88,6 +98,7 @@ impl Combination {
 // ==================== Config ====================
 
 /// Minimal config for experiment (no Telegram/DB required)
+#[derive(Clone)]
 struct ExperimentConfig {
     openai_api_key: String,
     openai_model: String,
@@ -139,6 +150,16 @@ impl ExperimentConfig {
 
     /// Create a config with specific model and temperature (for run-all)
     fn with_combination(&self, combo: &Combination) -> Self {
+        // Reasoning models (gpt-5-nano, gpt-5-mini, o1 series) use tokens for both
+        // internal reasoning and output. They need much higher max_completion_tokens.
+        // Non-reasoning models: 2500 tokens is enough for ~800 word summary
+        // Reasoning models: Need 16000+ tokens (hidden reasoning + visible output)
+        let summary_max_tokens = if is_reasoning_model(&combo.model) {
+            16000
+        } else {
+            self.summary_max_tokens
+        };
+
         Self {
             openai_api_key: self.openai_api_key.clone(),
             openai_model: combo.model.clone(),
@@ -149,7 +170,7 @@ impl ExperimentConfig {
             usernames_file: self.usernames_file.clone(),
             max_tweets: self.max_tweets,
             hours_lookback: self.hours_lookback,
-            summary_max_tokens: self.summary_max_tokens,
+            summary_max_tokens,
             summary_max_words: self.summary_max_words,
         }
     }
@@ -363,7 +384,6 @@ async fn run_all_command(base_config: &ExperimentConfig) -> Result<()> {
 
 /// Run single summarization with current config
 async fn summarize_command(config: &ExperimentConfig) -> Result<()> {
-    let full_config = config.to_full_config();
     let tweets = load_tweets_cache()?;
 
     if tweets.is_empty() {
@@ -371,13 +391,21 @@ async fn summarize_command(config: &ExperimentConfig) -> Result<()> {
         return Ok(());
     }
 
+    // Adjust token limit for reasoning models
+    let mut adjusted_config = config.clone();
+    if is_reasoning_model(&config.openai_model) {
+        adjusted_config.summary_max_tokens = 16000;
+    }
+
+    let full_config = adjusted_config.to_full_config();
+
     println!("\n========================================");
     println!("  EXPERIMENT PARAMETERS");
     println!("========================================");
-    println!("  Model:       {}", config.openai_model);
-    println!("  Temperature: {}", config.openai_temperature);
-    println!("  Max Tokens:  {}", config.summary_max_tokens);
-    println!("  Max Words:   {}", config.summary_max_words);
+    println!("  Model:       {}", adjusted_config.openai_model);
+    println!("  Temperature: {}", adjusted_config.openai_temperature);
+    println!("  Max Tokens:  {}", adjusted_config.summary_max_tokens);
+    println!("  Max Words:   {}", adjusted_config.summary_max_words);
     println!("  Tweets:      {}", tweets.len());
     println!("========================================\n");
 
@@ -391,8 +419,8 @@ async fn summarize_command(config: &ExperimentConfig) -> Result<()> {
     fs::create_dir_all(history_dir).context("Failed to create run-history directory")?;
 
     let combo = Combination {
-        model: config.openai_model.clone(),
-        temperature: config.openai_temperature,
+        model: adjusted_config.openai_model.clone(),
+        temperature: adjusted_config.openai_temperature,
     };
     let filename = format!(
         "single_{}_{}_t{}.md",
@@ -402,7 +430,7 @@ async fn summarize_command(config: &ExperimentConfig) -> Result<()> {
     );
     let filepath = history_dir.join(&filename);
 
-    let file_content = format_summary_file(&combo, config, tweets.len(), &summary);
+    let file_content = format_summary_file(&combo, &adjusted_config, tweets.len(), &summary);
     fs::write(&filepath, &file_content).context("Failed to write summary to run-history")?;
 
     println!("========== SUMMARY ==========\n");
