@@ -1,33 +1,51 @@
-.PHONY: help export run run-test preview preview-cached preview-send preview-cached-send test-send build check test clean trigger
+.PHONY: help export run run-test preview preview-cached preview-send preview-cached-send build check test clean trigger trigger-test test-send test-send-test
 
 # Default target - show help
 help:
-	@echo "Twitter News Summary - Available Commands:"
+	@echo "Twitter News Summary - Available Commands"
 	@echo ""
-	@echo "Development:"
-	@echo "  make export         - Export Twitter list members (one-time setup)"
-	@echo "  make run            - Run the news summary job locally (uses RSS feeds)"
-	@echo "  make run-test       - Run locally with .env.test settings"
-	@echo "  make preview        - Preview summary without sending (fetches tweets, saves cache)"
-	@echo "  make preview-cached - Preview with cached tweets (fast iteration on formatting)"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "DEVELOPMENT (local, no sending)"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "  make build          - Build release binary"
 	@echo "  make check          - Check code without building"
 	@echo "  make test           - Run tests"
 	@echo "  make clean          - Clean build artifacts"
+	@echo "  make export         - Export Twitter list members (one-time setup)"
 	@echo ""
-	@echo "Testing:"
-	@echo "  make preview-send        - Generate summary and send to test user (local)"
-	@echo "  make preview-cached-send - Use cached tweets and send to test user (local)"
-	@echo "  make test-send           - Send test message on Fly.io (production)"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "LOCAL PREVIEW (runs your code locally, no Telegram sending)"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "  make preview        - Fetch tweets → summarize → display (saves cache)"
+	@echo "  make preview-cached - Use cached tweets → summarize → display (fast iteration)"
 	@echo ""
-	@echo "Production:"
-	@echo "  make trigger     - Trigger summary on Fly.io (requires API_KEY in .env)"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "LOCAL TESTING (runs your code locally, sends to TEST_CHAT_ID)"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "  make preview-send        - Fetch tweets → summarize → send to TEST_CHAT_ID"
+	@echo "  make preview-cached-send - Use cached tweets → summarize → send to TEST_CHAT_ID"
+	@echo "  make run                 - Run full app locally (sends to all subscribers)"
+	@echo "  make run-test            - Run full app with .env.test settings"
 	@echo ""
-	@echo "Quick Start:"
-	@echo "  1. Copy .env.example to .env and add credentials"
-	@echo "  2. make export   # Export list members once"
-	@echo "  3. make preview  # Preview the summary first"
-	@echo "  4. make run      # Run the full application"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "REMOTE: TEST BOT (triggers Fly.io test environment)"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "  make trigger-test   - Trigger summary on TEST bot (twitter-summary-bot-test)"
+	@echo "  make test-send-test - Send test message to TEST_CHAT_ID via TEST bot"
+	@echo ""
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "REMOTE: PRODUCTION BOT (triggers Fly.io production - USE WITH CAUTION)"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "  make trigger        - Trigger summary on PROD bot (sends to all subscribers!)"
+	@echo "  make test-send      - Send test message to TEST_CHAT_ID via PROD bot"
+	@echo ""
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "QUICK START"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "  1. cp .env.example .env   # Add your credentials"
+	@echo "  2. make export            # Export list members (one-time)"
+	@echo "  3. make preview           # Preview summary locally"
+	@echo "  4. make preview-send      # Test full flow with your Telegram"
 	@echo ""
 	@echo "For detailed documentation, see COMMANDS.md"
 
@@ -79,9 +97,10 @@ clean:
 	@echo "🧹 Cleaning build artifacts..."
 	cargo clean
 
-# Trigger summary on Fly.io production
+# Trigger summary on Fly.io production (CAUTION: sends to all subscribers!)
 trigger:
-	@echo "🚀 Triggering summary on Fly.io..."
+	@echo "🚀 Triggering summary on PRODUCTION Fly.io..."
+	@echo "⚠️  WARNING: This will send to all production subscribers!"
 	@if [ -z "$$API_KEY" ]; then \
 		if [ -f .env ]; then \
 			export $$(grep "^API_KEY=" .env | xargs) && \
@@ -99,9 +118,33 @@ trigger:
 			-w "\n" || echo "❌ Failed to trigger summary"; \
 	fi
 
-# Test send to specific user in production
+# Trigger summary on Fly.io TEST environment
+trigger-test:
+	@echo "🧪 Triggering summary on TEST Fly.io..."
+	@if [ -z "$$API_KEY_TEST" ]; then \
+		if [ -f .env ]; then \
+			export $$(grep "^API_KEY_TEST=" .env | xargs) && \
+			if [ -z "$$API_KEY_TEST" ]; then \
+				echo "❌ Error: API_KEY_TEST not found in .env file"; \
+				echo "   Add API_KEY_TEST=your_test_api_key to .env"; \
+				exit 1; \
+			fi && \
+			curl -X POST https://twitter-summary-bot-test.fly.dev/trigger \
+				-H "X-API-Key: $$API_KEY_TEST" \
+				-w "\n" || echo "❌ Failed to trigger summary"; \
+		else \
+			echo "❌ Error: API_KEY_TEST not found in environment or .env file"; \
+			exit 1; \
+		fi \
+	else \
+		curl -X POST https://twitter-summary-bot-test.fly.dev/trigger \
+			-H "X-API-Key: $$API_KEY_TEST" \
+			-w "\n" || echo "❌ Failed to trigger summary"; \
+	fi
+
+# Test send to specific user via PRODUCTION bot
 test-send:
-	@echo "🧪 Sending test message to your Telegram..."
+	@echo "🧪 Sending test message via PRODUCTION bot..."
 	@if [ -z "$$API_KEY" ]; then \
 		if [ -f .env ]; then \
 			export $$(grep "^API_KEY=" .env | xargs) && \
@@ -127,6 +170,41 @@ test-send:
 		fi; \
 		curl -X POST "https://twitter-summary-bot.fly.dev/test?chat_id=$$TEST_CHAT_ID" \
 			-H "X-API-Key: $$API_KEY" \
+			-w "\n" || echo "❌ Failed to send test message"; \
+	fi
+
+# Test send to specific user via TEST bot
+test-send-test:
+	@echo "🧪 Sending test message via TEST bot..."
+	@if [ -z "$$API_KEY_TEST" ]; then \
+		if [ -f .env ]; then \
+			export $$(grep "^API_KEY_TEST=" .env | xargs) && \
+			export $$(grep "^TEST_CHAT_ID=" .env | xargs) && \
+			if [ -z "$$API_KEY_TEST" ]; then \
+				echo "❌ Error: API_KEY_TEST not found in .env file"; \
+				exit 1; \
+			fi && \
+			if [ -z "$$TEST_CHAT_ID" ]; then \
+				echo "❌ Error: TEST_CHAT_ID not found in .env file"; \
+				exit 1; \
+			fi && \
+			curl -X POST "https://twitter-summary-bot-test.fly.dev/test?chat_id=$$TEST_CHAT_ID" \
+				-H "X-API-Key: $$API_KEY_TEST" \
+				-w "\n" || echo "❌ Failed to send test message"; \
+		else \
+			echo "❌ Error: .env file not found"; \
+			exit 1; \
+		fi \
+	else \
+		if [ -z "$$TEST_CHAT_ID" ] && [ -f .env ]; then \
+			export $$(grep "^TEST_CHAT_ID=" .env | xargs); \
+		fi; \
+		if [ -z "$$TEST_CHAT_ID" ]; then \
+			echo "❌ Error: TEST_CHAT_ID not found in environment or .env file"; \
+			exit 1; \
+		fi; \
+		curl -X POST "https://twitter-summary-bot-test.fly.dev/test?chat_id=$$TEST_CHAT_ID" \
+			-H "X-API-Key: $$API_KEY_TEST" \
 			-w "\n" || echo "❌ Failed to send test message"; \
 	fi
 
