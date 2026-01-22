@@ -7,8 +7,8 @@
 //!
 //! The run-all command tests these combinations:
 //!   Models: gpt-4o-mini, gpt-5-nano, gpt-5-mini
-//!   Temperatures: 0.3, 0.7, 1.0
-//!   = 9 total combinations
+//!   Temperatures: 0.3, 0.7, 1.0 (filtered by supports_custom_temperature)
+//!   = 5 total combinations (gpt-4o-mini×3 temps + gpt-5-nano×1 + gpt-5-mini×1)
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -360,7 +360,7 @@ async fn run_all_command(base_config: &ExperimentConfig) -> Result<()> {
                     .connect_timeout(std::time::Duration::from_secs(30))
                     .pool_max_idle_per_host(0)
                     .build()
-                    .expect("Failed to build HTTP client");
+                    .context("Failed to build HTTP client")?;
 
                 openai::summarize_tweets(&client, &full_config, &tweets_clone).await
             });
@@ -684,7 +684,7 @@ COMBINATIONS (run-all):
 ENVIRONMENT VARIABLES (for 'summarize' command):
     OPENAI_MODEL          Model to use (default: gpt-5-mini)
     OPENAI_TEMPERATURE    Temperature 0.0-2.0 (default: 0.7)
-    SUMMARY_MAX_TOKENS    Max tokens in response (default: 16000)
+    SUMMARY_MAX_TOKENS    Max tokens in response (default: 2500; 16000 for reasoning models)
     SUMMARY_MAX_WORDS     Max words in summary (default: 800)
 
 EXAMPLES:

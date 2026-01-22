@@ -89,7 +89,7 @@ When the user runs this command with a PR number:
      - Whether it's outdated or collapsed
 
    **Example format:**
-   ```
+   ```text
    ## Thread 1
    - Thread ID: PRRT_kwDOQ4vS9s5qff_4
    - Comment ID: 2715647849
@@ -113,7 +113,7 @@ After the user confirms which comments to fix and you've completed the work:
 **NEVER post replies without first showing this verification table and getting user confirmation:**
 
 1. **Create a verification mapping table** from the GraphQL data:
-   ```
+   ```text
    | Thread # | Thread ID | Comment ID (databaseId) | File:Line | Topic Summary | Action | Reply Message |
    |----------|-----------|-------------------------|-----------|---------------|--------|---------------|
    | 1 | PRRT_kwD... | 271564... | experiment.rs:26 | Doc mismatch | Fix | "Fixed! Added .context()..." |
@@ -190,7 +190,7 @@ After the user confirms which comments to fix and you've completed the work:
 
 ## Example Output
 
-```
+```text
 Found 3 unresolved review threads on PR#4:
 
 ## Thread 1
