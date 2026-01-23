@@ -501,9 +501,11 @@ pub async fn send_to_subscribers(
                     Err(e) => {
                         TranslationMetrics::global().record_api_failure();
                         warn!("Translation failed for {}: {}", lang_code, e);
-                        // Use English with failure notice, cache to prevent repeated API calls
-                        let notice = get_translation_failure_notice(language);
-                        let fallback = format!("{}{}", notice, summary);
+                        // Return English content; the failure notice prefix will be added
+                        // during message formatting to avoid double-escaping.
+                        // Mark with a special prefix that we'll detect later.
+                        let marker = "\x00TRANSLATION_FAILED\x00";
+                        let fallback = format!("{}{}", marker, summary);
                         translation_cache.insert(lang_code.clone(), fallback.clone());
                         fallback
                     }
@@ -513,11 +515,26 @@ pub async fn send_to_subscribers(
 
         // Build message with language-specific header (MarkdownV2 format)
         let header = get_summary_header(language);
+
+        // Check if this is a translation failure case (marked with special prefix)
+        let translation_failed_marker = "\x00TRANSLATION_FAILED\x00";
+        let (notice_prefix, actual_content) = if content.starts_with(translation_failed_marker) {
+            // Translation failed - add pre-escaped notice and escape only the content
+            let actual = content
+                .strip_prefix(translation_failed_marker)
+                .unwrap_or(&content);
+            (get_translation_failure_notice(language), actual)
+        } else {
+            // Normal case - no notice needed
+            ("".to_string(), content.as_str())
+        };
+
         let message = format!(
-            "📰 *{}*\n_{}_\n\n{}",
+            "📰 *{}*\n_{}_\n\n{}{}",
             escape_markdownv2(header),
             escaped_timestamp,
-            escape_markdownv2(&content)
+            notice_prefix, // Already pre-escaped in i18n strings
+            escape_markdownv2(actual_content)
         );
 
         match send_message(config, subscriber.chat_id, &message).await {
@@ -5073,6 +5090,393 @@ For details: [OpenAI Blog](https://openai.com/blog)"#;
         assert!(
             es_admin.contains("Bienvenido"),
             "Spanish admin should say 'Bienvenido'"
+        );
+    }
+
+    // ==================== REGRESSION TESTS: Bug #2 - Double-Escaping of Pre-Escaped Content ====================
+    //
+    // Bug: The translation failure notice in src/i18n/strings.rs is pre-escaped for MarkdownV2:
+    // translation_failure_notice: "\\[Nota: La traducción no está disponible\\. Enviando en inglés\\.\\]\n\n"
+    //
+    // When translation failed, this notice was concatenated with the summary, then the whole thing
+    // was passed through escape_markdownv2(), causing double-escaping. Telegram then rejected the
+    // message with: "Bad Request: can't parse entities: Character '.' is reserved..."
+    //
+    // The fix uses a marker-based approach: when translation fails, the content is marked with
+    // "\x00TRANSLATION_FAILED\x00" prefix. The message formatting code detects this marker and
+    // handles the failure notice separately from content escaping.
+    //
+    // These tests ensure the fix is preserved and double-escaping never occurs.
+
+    /// Test that pre-escaped i18n strings should NOT be passed through escape_markdownv2
+    #[test]
+    fn test_regression_pre_escaped_strings_not_double_escaped() {
+        use crate::i18n::Language;
+
+        // The translation failure notice is already pre-escaped in strings.rs
+        let notice = Language::SPANISH
+            .config()
+            .strings
+            .translation_failure_notice;
+
+        // Verify the notice is pre-escaped (contains escaped characters)
+        // In Rust string literals: "\\[" represents the two-character string: backslash, bracket
+        assert!(
+            notice.contains("\\["),
+            "Notice should be pre-escaped with \\[ but got: {}",
+            notice
+        );
+        assert!(
+            notice.contains("\\]"),
+            "Notice should be pre-escaped with \\] but got: {}",
+            notice
+        );
+        assert!(
+            notice.contains("\\."),
+            "Notice should be pre-escaped with \\. but got: {}",
+            notice
+        );
+
+        // CRITICAL: If we escape again, we get double-escaping (this was the bug)
+        let double_escaped = escape_markdownv2(notice);
+
+        // Pre-escaped string already has \[ (backslash, bracket) in it
+        // When escaped AGAIN:
+        // - The backslash is NOT a special char so stays as-is
+        // - The [ IS a special char so gets escaped to \[
+        // Result: \[ becomes \\[ (backslash, backslash, bracket)
+        //
+        // In Rust string literals:
+        // - Original notice contains "\\[" = \[ (two chars)
+        // - After double-escaping contains "\\\\[" = \\[ (three chars)
+
+        // Verify double-escaping occurred - the pattern \\[ (three chars) appears
+        // In Rust: "\\\\\\[" = \\[ (backslash, backslash, bracket) - but this is what we DON'T want
+        // The double_escaped should contain this pattern if we made the mistake of escaping twice
+        assert!(
+            double_escaped.contains("\\\\["),
+            "Double-escaping should produce \\\\[ pattern but got: {}",
+            double_escaped
+        );
+
+        // This shows why we should NOT escape pre-escaped content
+        assert_ne!(
+            notice, double_escaped,
+            "Pre-escaped content changes when escaped again - this must be avoided"
+        );
+    }
+
+    /// Test the marker-based translation failure detection
+    #[test]
+    fn test_translation_failure_marker_detection() {
+        let marker = "\x00TRANSLATION_FAILED\x00";
+        let summary = "This is the English summary content.";
+
+        // Simulate a translation failure - content gets prefixed with marker
+        let marked_content = format!("{}{}", marker, summary);
+
+        // Detection logic (mirrors send_to_subscribers)
+        assert!(
+            marked_content.starts_with(marker),
+            "Marked content should start with translation failure marker"
+        );
+
+        // Extract the actual content
+        let actual_content = marked_content
+            .strip_prefix(marker)
+            .unwrap_or(&marked_content);
+
+        assert_eq!(
+            actual_content, summary,
+            "Stripping marker should reveal original content"
+        );
+    }
+
+    /// Test that translation failure notice is handled correctly in message formatting
+    #[test]
+    fn test_translation_failure_message_formatting() {
+        use crate::i18n::Language;
+        use crate::translation::get_translation_failure_notice;
+
+        let marker = "\x00TRANSLATION_FAILED\x00";
+        let summary = "AI news summary with special chars: GPT-4.5! Performance > 2x.";
+        let language = Language::SPANISH;
+
+        // Simulate the content as it would be stored in translation_cache on failure
+        let cached_content = format!("{}{}", marker, summary);
+
+        // Mirror the logic from send_to_subscribers:
+        let (notice_prefix, actual_content) = if cached_content.starts_with(marker) {
+            // Translation failed - add pre-escaped notice and escape only the content
+            let actual = cached_content
+                .strip_prefix(marker)
+                .unwrap_or(&cached_content);
+            (get_translation_failure_notice(language), actual)
+        } else {
+            // Normal case - no notice needed
+            ("".to_string(), cached_content.as_str())
+        };
+
+        // The notice_prefix is pre-escaped (from i18n strings)
+        // The actual_content needs escaping
+        let escaped_content = escape_markdownv2(actual_content);
+
+        // Construct message (simplified version of send_to_subscribers format)
+        let message = format!("{}{}", notice_prefix, escaped_content);
+
+        // Verify the notice is NOT double-escaped
+        // The notice contains \[ \] \. which should remain as single backslash escapes
+        assert!(
+            message.contains("\\[Nota"),
+            "Notice should have single backslash escape for [. Got: {}",
+            message
+        );
+        assert!(
+            message.contains("disponible\\."),
+            "Notice should have single backslash escape for periods. Got: {}",
+            message
+        );
+
+        // Verify the content IS properly escaped
+        assert!(
+            message.contains("GPT\\-4\\.5\\!"),
+            "Content should be escaped. Got: {}",
+            message
+        );
+        assert!(
+            message.contains("\\> 2x\\."),
+            "Content special chars should be escaped. Got: {}",
+            message
+        );
+
+        // CRITICAL: Verify no double-escaping patterns
+        assert!(
+            !message.contains("\\\\\\\\"),
+            "REGRESSION: Message contains double-escape patterns! Got: {}",
+            message
+        );
+    }
+
+    /// Test that successful translation (no marker) doesn't add any notice
+    #[test]
+    fn test_successful_translation_no_notice() {
+        let marker = "\x00TRANSLATION_FAILED\x00";
+        let translated_content = "Este es el resumen traducido.";
+
+        // Successful translation - content does NOT have marker
+        assert!(
+            !translated_content.starts_with(marker),
+            "Successful translation should not have marker"
+        );
+
+        // Mirror the logic from send_to_subscribers:
+        let (notice_prefix, actual_content) = if translated_content.starts_with(marker) {
+            let actual = translated_content
+                .strip_prefix(marker)
+                .unwrap_or(translated_content);
+            ("NOTICE: ".to_string(), actual)
+        } else {
+            ("".to_string(), translated_content)
+        };
+
+        assert!(
+            notice_prefix.is_empty(),
+            "Successful translation should have no notice prefix"
+        );
+        assert_eq!(actual_content, translated_content);
+    }
+
+    /// Test English subscribers (canonical language) never get translation failure notice
+    #[test]
+    fn test_english_subscribers_no_failure_notice() {
+        use crate::i18n::Language;
+        use crate::translation::get_translation_failure_notice;
+
+        let notice = get_translation_failure_notice(Language::ENGLISH);
+
+        assert!(
+            notice.is_empty(),
+            "English (canonical language) should have empty failure notice. Got: {}",
+            notice
+        );
+    }
+
+    /// Test that all i18n pre-escaped strings are properly formatted
+    #[test]
+    fn test_i18n_strings_are_pre_escaped_not_raw() {
+        use crate::i18n::Language;
+
+        // These strings contain MarkdownV2 special characters that are pre-escaped
+        // They should NOT be passed through escape_markdownv2() again
+
+        // Check Spanish translation failure notice
+        let notice = Language::SPANISH
+            .config()
+            .strings
+            .translation_failure_notice;
+        assert!(
+            notice.contains("\\[") && notice.contains("\\]"),
+            "Spanish translation notice should have pre-escaped brackets"
+        );
+        assert!(
+            notice.contains("\\."),
+            "Spanish translation notice should have pre-escaped periods"
+        );
+
+        // Check welcome messages have pre-escaped special chars
+        let welcome = Language::ENGLISH.config().strings.welcome_user;
+        assert!(
+            welcome.contains("\\!"),
+            "English welcome should have pre-escaped exclamation: {}",
+            welcome
+        );
+        assert!(
+            welcome.contains("\\-"),
+            "English welcome should have pre-escaped hyphens: {}",
+            welcome
+        );
+
+        // Verify these are ALREADY escaped (contain backslashes)
+        // If we escape them again, we'll get double backslashes
+        let double_escaped_welcome = escape_markdownv2(welcome);
+        assert!(
+            double_escaped_welcome.contains("\\\\"),
+            "Escaping pre-escaped content produces double backslashes - this must be avoided"
+        );
+    }
+
+    /// Test the complete message construction for translation failure case
+    #[test]
+    fn test_complete_translation_failure_message() {
+        use crate::i18n::Language;
+        use crate::translation::{get_summary_header, get_translation_failure_notice};
+
+        let language = Language::SPANISH;
+        let header = get_summary_header(language);
+        let timestamp = "2024-01-15 10:30 UTC";
+        let summary = "AI update: GPT-4.5 released! Performance > baseline.";
+
+        // Simulate translation failure scenario
+        let notice = get_translation_failure_notice(language);
+
+        // Construct the message as send_to_subscribers does:
+        // - header gets escaped (it's raw text)
+        // - timestamp gets escaped (it's raw text)
+        // - notice is pre-escaped (DON'T escape again)
+        // - summary gets escaped (it's raw text)
+        let message = format!(
+            "📰 *{}*\n_{}_\n\n{}{}",
+            escape_markdownv2(header),
+            escape_markdownv2(timestamp),
+            notice, // Already pre-escaped - don't escape!
+            escape_markdownv2(summary)
+        );
+
+        // Verify the message is valid MarkdownV2
+        // The header should be escaped
+        assert!(message.contains("Resumen de Twitter"));
+
+        // The notice should have single escapes (not double)
+        assert!(
+            message.contains("\\[Nota"),
+            "Notice should have proper escaping. Got: {}",
+            message
+        );
+        assert!(
+            !message.contains("\\\\\\["),
+            "Notice should NOT be double-escaped. Got: {}",
+            message
+        );
+
+        // The summary content should be escaped
+        assert!(
+            message.contains("GPT\\-4\\.5"),
+            "Summary should be escaped. Got: {}",
+            message
+        );
+    }
+
+    /// Test that marker doesn't appear in final messages sent to Telegram
+    #[test]
+    fn test_marker_stripped_from_final_message() {
+        let marker = "\x00TRANSLATION_FAILED\x00";
+        let summary = "Test summary.";
+        let cached = format!("{}{}", marker, summary);
+
+        // The marker should be stripped before constructing the message
+        let actual_content = cached.strip_prefix(marker).unwrap_or(&cached);
+        let escaped = escape_markdownv2(actual_content);
+
+        // Marker should never appear in final message
+        assert!(
+            !escaped.contains("\x00"),
+            "Marker bytes should not appear in escaped content"
+        );
+        assert!(
+            !escaped.contains("TRANSLATION_FAILED"),
+            "Marker text should not appear in escaped content"
+        );
+    }
+
+    /// Test edge case: content that looks like it might contain the marker but doesn't
+    #[test]
+    fn test_content_resembling_marker_not_confused() {
+        let marker = "\x00TRANSLATION_FAILED\x00";
+
+        // Content that contains similar text but not the actual marker
+        let similar_content = "TRANSLATION_FAILED: The API returned an error.";
+
+        assert!(
+            !similar_content.starts_with(marker),
+            "Text without null bytes should not match marker"
+        );
+
+        // This content should be treated as normal content, not as a failure
+        let (notice, actual) = if similar_content.starts_with(marker) {
+            ("NOTICE".to_string(), "stripped")
+        } else {
+            ("".to_string(), similar_content)
+        };
+
+        assert!(
+            notice.is_empty(),
+            "Similar text should not trigger failure notice"
+        );
+        assert_eq!(actual, similar_content);
+    }
+
+    /// Test that pre-escaped i18n strings work directly in Telegram messages
+    #[test]
+    fn test_pre_escaped_strings_valid_for_telegram() {
+        use crate::i18n::Language;
+
+        // These strings are designed to be used directly in MarkdownV2 messages
+        let notice = Language::SPANISH
+            .config()
+            .strings
+            .translation_failure_notice;
+
+        // Verify the escaping is correct for MarkdownV2
+        // Should have \[ not [ for brackets
+        // Should have \. not . for periods
+        // Should have \[ \] pairs properly matched
+
+        let bracket_count: usize = notice.matches("\\[").count();
+        let close_bracket_count: usize = notice.matches("\\]").count();
+
+        assert_eq!(
+            bracket_count, close_bracket_count,
+            "Pre-escaped brackets should be balanced"
+        );
+
+        // Verify the unescaped versions are NOT present
+        // (except where they're part of the escape sequence)
+        // Count of standalone '[' should match count of '\['
+        let escaped_open_brackets = notice.matches("\\[").count();
+        let total_open_brackets = notice.matches('[').count();
+        assert_eq!(
+            escaped_open_brackets, total_open_brackets,
+            "All open brackets should be escaped in pre-escaped string"
         );
     }
 }
