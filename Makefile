@@ -120,6 +120,7 @@ trigger:
 
 # Trigger summary on Fly.io TEST environment (uses .env.test)
 # After triggering, automatically tails logs and exits when the job completes
+# Uses timestamp comparison to only track OUR trigger (ignores concurrent/historical runs)
 trigger-test:
 	@echo "🧪 Triggering summary on TEST Fly.io..."
 	@if [ -f .env.test ]; then \
@@ -128,6 +129,7 @@ trigger-test:
 			echo "❌ Error: API_KEY not found in .env.test file"; \
 			exit 1; \
 		fi && \
+		START_TIME=$$(date -u +%Y-%m-%dT%H:%M:%SZ) && \
 		(curl -sf -X POST https://twitter-summary-bot-test.fly.dev/trigger \
 			-H "X-API-Key: $$API_KEY" > /dev/null 2>&1 &) && \
 		echo "⏳ Trigger request sent (check logs for confirmation)" && \
@@ -135,7 +137,14 @@ trigger-test:
 		echo "📋 Tailing logs (will auto-exit on completion, or Ctrl+C to stop)..." && \
 		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" && \
 		(fly logs -a twitter-summary-bot-test 2>&1 || echo "❌ Failed to tail logs") | \
-			awk '/Summary job completed|Manual trigger completed|No tweets found|ERROR|FATAL|panic/{print; exit} {print}' && \
+			awk -v start="$$START_TIME" ' \
+				{ print } \
+				/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z/ { \
+					ts = substr($$1, 1, 20); \
+					if (ts >= start && /Manual trigger requested/) triggered=1; \
+					if (triggered && /Summary job completed|Manual trigger completed|No tweets found|ERROR|FATAL|panic/) exit \
+				} \
+			' && \
 		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" && \
 		echo "✅ Done"; \
 	else \
