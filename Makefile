@@ -119,7 +119,7 @@ trigger:
 	fi
 
 # Trigger summary on Fly.io TEST environment (uses .env.test)
-# After triggering, automatically tails logs so you can see the process running
+# After triggering, automatically tails logs and exits when the job completes
 trigger-test:
 	@echo "🧪 Triggering summary on TEST Fly.io..."
 	@if [ -f .env.test ]; then \
@@ -132,9 +132,12 @@ trigger-test:
 			-H "X-API-Key: $$API_KEY" > /dev/null 2>&1 &) && \
 		echo "✅ Trigger request sent" && \
 		echo "" && \
-		echo "📋 Tailing logs from TEST Fly.io (Ctrl+C to stop)..." && \
+		echo "📋 Tailing logs (will auto-exit on completion, or Ctrl+C to stop)..." && \
 		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" && \
-		fly logs -a twitter-summary-bot-test || echo "❌ Failed to tail logs (is flyctl installed?)"; \
+		(fly logs -a twitter-summary-bot-test 2>&1 || echo "❌ Failed to tail logs") | \
+			awk '/Summary job completed|Manual trigger completed|No tweets found|ERROR|FATAL|panic/{print; exit} {print}' && \
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" && \
+		echo "✅ Done"; \
 	else \
 		echo "❌ Error: .env.test file not found"; \
 		echo "   Create .env.test with API_KEY for the test bot"; \
