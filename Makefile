@@ -128,9 +128,9 @@ trigger-test:
 			echo "❌ Error: API_KEY not found in .env.test file"; \
 			exit 1; \
 		fi && \
-		(curl -s -X POST https://twitter-summary-bot-test.fly.dev/trigger \
+		(curl -sf -X POST https://twitter-summary-bot-test.fly.dev/trigger \
 			-H "X-API-Key: $$API_KEY" > /dev/null 2>&1 &) && \
-		echo "✅ Trigger request sent" && \
+		echo "⏳ Trigger request sent (check logs for confirmation)" && \
 		echo "" && \
 		echo "📋 Tailing logs (will auto-exit on completion, or Ctrl+C to stop)..." && \
 		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" && \
