@@ -479,7 +479,7 @@ PORT=8080                          # Server port
 ### Optional Variables
 ```bash
 NITTER_API_KEY=...                 # API key for secured Nitter instance
-OPENAI_MODEL=gpt-4o-mini          # OpenAI model (default: gpt-4o-mini)
+OPENAI_MODEL=gpt-5-mini           # OpenAI model (default: gpt-5-mini)
 MAX_TWEETS=50                      # Max tweets per run (default: 50)
 HOURS_LOOKBACK=12                  # Time window in hours (default: 12)
 RUST_LOG=info                      # Log level (default: info)

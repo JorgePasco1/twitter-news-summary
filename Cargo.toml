@@ -66,6 +66,10 @@ path = "src/bin/fetch_list_members.rs"
 name = "preview"
 path = "src/bin/preview_summary.rs"
 
+[[bin]]
+name = "experiment"
+path = "src/bin/experiment.rs"
+
 [dev-dependencies]
 # HTTP mocking for tests
 wiremock = "0.6"
@@ -78,6 +82,9 @@ proptest = "1"
 
 # Async test utilities
 tokio-test = "0.4"
+
+# Serial test execution for tests with shared global state
+serial_test = "3"
 
 [profile.release]
 opt-level = "z"

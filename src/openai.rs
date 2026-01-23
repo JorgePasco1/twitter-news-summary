@@ -10,8 +10,14 @@ use serde::{Deserialize, Serialize};
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
-    pub max_tokens: u32,
-    pub temperature: f32,
+    pub max_completion_tokens: u32,
+    /// Temperature is NOT supported for reasoning models (gpt-5-nano, gpt-5-mini, gpt-5, o1 series)
+    /// Only include for non-reasoning models like gpt-4o, gpt-4o-mini
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    /// Reasoning effort for reasoning models (not supported on non-reasoning models)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 /// A message in the OpenAI chat format
@@ -73,50 +79,77 @@ fn format_relative_time(created_at: &Option<String>) -> String {
 /// Build the system prompt for tweet summarization (pure function)
 pub fn build_system_prompt(max_words: u32) -> String {
     format!(
-        r#"You are an AI/ML tech news curator summarizing Twitter/X content for Telegram.
+        r#"
+You are an AI/ML tech news curator summarizing Twitter/X content for Telegram.
 
-Your task is to create an informative, well-organized summary of the tweets provided.
+Goal: produce a high-signal digest that helps readers understand what happened, why it matters, and what to click.
 
-## CRITICAL FORMATTING REQUIREMENT
-
-You MUST format your response using standard Markdown syntax compatible with Telegram MarkdownV2:
+## CRITICAL FORMATTING REQUIREMENT (Telegram MarkdownV2)
 - Use *text* for bold (NOT **text**)
 - Use _text_ for italic
 - Use `code` for inline code
 - Use bullet points with - (hyphen followed by space)
-- Special characters will be escaped automatically, so use natural punctuation
+- Headings must be simple: emoji + words only (no punctuation at end)
+- Use ONE blank line between sections
+- Special characters will be escaped automatically upstream, so use natural punctuation
 
-## Guidelines
+## HARD REQUIREMENTS (non-negotiable)
+1) Start with:
+🧠 Top takeaways
+- 3-5 bullets, ranked by importance
 
-### Content Organization
-- Group related topics into clear sections with emoji headers (e.g., "🔬 AI Research", "🏢 Industry News", "🚀 Product Launches")
-- Highlight the most important or trending discussions first
-- Include 2-3 key tweet links per section for readers who want to dive deeper
+2) Then include 3-5 topic sections chosen ONLY from this list (omit any that don't apply):
+- 🚀 Releases
+- 🔬 Research
+- 🧰 Tools and Tutorials
+- 🏢 Companies and Deals
+- ⚖️ Policy and Safety
+- 💬 Debate and Opinions
 
-### Formatting
-- Use bullet points (- ) for scannable reading
-- Use emojis in section headers to make them visually distinct (emojis are safe)
-- Include brief context or insights where helpful
-- Keep section headers simple (emojis + text, no other special characters)
-- Keep the total summary under {} words
+3) Each section must have 2-4 bullets max
 
-### Link Integration
-- Include direct links to the most significant/impactful tweets in each section
-- Use markdown link syntax: [descriptive label](url) - e.g., [Greg's take on AI](https://x.com/...)
-- Make link labels descriptive and readable (not just "link" or "here")
-- Prioritize linking to: announcements, breaking news, insightful threads, and notable opinions
+4) Every bullet MUST end with exactly ONE markdown link: [descriptive label](url)
+   - Do NOT use generic labels: Read more, Learn more, Here, Link, Thread, Watch, Details
+   - Do NOT include the word "source" in link labels
+   - Link label must be 3-8 words AND include a proper noun or artifact name (person/org/product/paper/release)
 
-### Focus Areas
-This list covers AI/ML researchers, tech leaders, and industry figures. Prioritize:
-- Model releases and research papers
-- Company announcements and product launches
-- Industry trends and debates
-- Technical insights and tutorials
-- Notable opinions from thought leaders
+5) Do NOT repeat the same URL anywhere in the digest
 
-### What to Avoid
-- Do NOT use periods at the end of section headers
-- Use simple, clean formatting"#,
+6) Deduplicate aggressively
+   - Merge tweets about the same story into one bullet
+   - Prefer the most authoritative tweet link (original author, maintainer, company announcement) over reactions
+
+7) If an item appears in 🧠 Top takeaways, it MUST NOT appear again later
+   - Exception: only if you add a clearly new detail AND use a different URL
+
+8) Do NOT invent facts
+   - Only include details explicitly present in the tweet text
+   - If unsure, phrase as "Claims:" or "Suggests:" and keep it minimal
+   - If it’s opinion/speculation, prefix the bullet with "Opinion:"
+
+9) Author-link consistency
+   - If you name a person/org as the speaker, the linked tweet should be from them
+   - If the link is from a different account, explicitly write "Via:" or "Reported by:" in the bullet
+
+10) Use ⚖️ Policy and Safety ONLY for regulation, investigations, compliance, security vulnerabilities/incidents, or formal safety/policy updates
+    - Otherwise place content in 💬 Debate and Opinions or another section
+
+11) Naturalness rule
+    - Do NOT explicitly call out these instructions or narrate your process
+    - Specifically: do NOT write labels like "Why this matters:" or "Key takeaway:"
+    - Instead, blend significance naturally into the sentence
+
+## BULLET STYLE (mandatory)
+Each bullet must follow this pattern:
+- *What happened* — <natural, specific significance or consequence> [label](url)
+
+Quality rules:
+- Keep bullets ~1-2 lines
+- The significance must be specific; avoid generic filler like "crucial", "enhances", "improves" without concrete impact
+- Use numbers/versions/dates when present in tweets
+
+## LENGTH
+Keep the total summary under {} words."#,
         max_words
     )
 }
@@ -139,16 +172,41 @@ pub fn format_tweets_for_prompt(tweets: &[Tweet]) -> String {
         .join("\n\n")
 }
 
+/// Check if a model is a reasoning model (GPT-5 family, o1 series)
+/// Reasoning models do NOT support temperature parameter
+fn is_reasoning_model(model: &str) -> bool {
+    model.starts_with("gpt-5")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+}
+
 /// Build a complete ChatRequest for summarization (pure function)
 pub fn build_chat_request(config: &Config, tweets: &[Tweet]) -> ChatRequest {
     let tweets_text = format_tweets_for_prompt(tweets);
     let system_prompt = build_system_prompt(config.summary_max_words);
 
     let user_prompt = format!(
-        "Please summarize these {} recent tweets from my Twitter list. Include links to the most noteworthy tweets:\n\n{}",
+        r#"Please summarize these {} recent tweets from my Twitter/X list into a Telegram digest.
+
+Context:
+- Audience: AI/ML builders and tech professionals
+- Goal: maximize signal; rank the most important items first
+- Links: each bullet must end with exactly one markdown link using the tweet URL provided in the input
+
+Tweets:
+{}"#,
         tweets.len(),
         tweets_text
     );
+
+    // Reasoning models (gpt-5-nano, gpt-5-mini, gpt-5, o1, o3, o4) do NOT support temperature
+    // They use reasoning_effort instead (use "low" for faster responses, can increase if needed)
+    let (temperature, reasoning_effort) = if is_reasoning_model(&config.openai_model) {
+        (None, Some("low".to_string()))
+    } else {
+        (Some(config.openai_temperature), None)
+    };
 
     ChatRequest {
         model: config.openai_model.clone(),
@@ -162,8 +220,9 @@ pub fn build_chat_request(config: &Config, tweets: &[Tweet]) -> ChatRequest {
                 content: user_prompt,
             },
         ],
-        max_tokens: config.summary_max_tokens,
-        temperature: 0.7,
+        max_completion_tokens: config.summary_max_tokens,
+        temperature,
+        reasoning_effort,
     }
 }
 
@@ -266,6 +325,7 @@ mod tests {
             openai_api_key: "test-openai-key".to_string(),
             openai_model: "gpt-4o-mini".to_string(),
             openai_api_url: "https://api.openai.com/v1/chat/completions".to_string(),
+            openai_temperature: 0.7,
             telegram_bot_token: "test-token".to_string(),
             telegram_chat_id: "".to_string(),
             telegram_webhook_secret: "test-webhook-secret".to_string(),
@@ -341,8 +401,9 @@ mod tests {
                     content: "Hello".to_string(),
                 },
             ],
-            max_tokens: 1000,
-            temperature: 0.7,
+            max_completion_tokens: 1000,
+            temperature: Some(0.7),
+            reasoning_effort: None,
         };
 
         let json = serde_json::to_string(&request).expect("Should serialize");
@@ -351,6 +412,30 @@ mod tests {
         assert!(json.contains("user"));
         assert!(json.contains("1000"));
         assert!(json.contains("0.7"));
+        // reasoning_effort should not be present when None
+        assert!(!json.contains("reasoning_effort"));
+    }
+
+    #[test]
+    fn test_chat_request_serialization_reasoning_model() {
+        let request = ChatRequest {
+            model: "gpt-5-nano".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+            }],
+            max_completion_tokens: 16000,
+            temperature: None, // Not supported for reasoning models
+            reasoning_effort: Some("low".to_string()),
+        };
+
+        let json = serde_json::to_string(&request).expect("Should serialize");
+        assert!(json.contains("gpt-5-nano"));
+        assert!(json.contains("16000"));
+        assert!(json.contains("reasoning_effort"));
+        assert!(json.contains("low"));
+        // temperature should not be present when None
+        assert!(!json.contains("temperature"));
     }
 
     #[test]
@@ -524,10 +609,11 @@ mod tests {
         let required_elements = [
             "Telegram",
             "AI/ML",
-            "Group related topics",
-            "bullet points",
-            "insights",
-            "tweet links",
+            "Top takeaways",
+            "bullet",
+            "markdown link",
+            "Releases",
+            "Research",
         ];
 
         for element in required_elements {
@@ -552,8 +638,28 @@ mod tests {
         assert_eq!(request.messages[0].role, "system");
         assert_eq!(request.messages[1].role, "user");
         assert!(request.messages[1].content.contains("1 recent tweets"));
-        assert_eq!(request.max_tokens, 2500);
-        assert!((request.temperature - 0.7).abs() < f32::EPSILON);
+        assert_eq!(request.max_completion_tokens, 2500);
+        // Non-reasoning model should have temperature set
+        assert!(request.temperature.is_some());
+        assert!((request.temperature.unwrap() - 0.7).abs() < f32::EPSILON);
+        // Non-reasoning model should NOT have reasoning_effort
+        assert!(request.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn test_build_chat_request_reasoning_model() {
+        let mut config = create_test_config();
+        config.openai_model = "gpt-5-nano".to_string();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let request = build_chat_request(&config, &tweets);
+
+        assert_eq!(request.model, "gpt-5-nano");
+        // Reasoning model should NOT have temperature
+        assert!(request.temperature.is_none());
+        // Reasoning model should have reasoning_effort
+        assert!(request.reasoning_effort.is_some());
+        assert_eq!(request.reasoning_effort.as_deref(), Some("low"));
     }
 
     #[test]
@@ -807,8 +913,10 @@ mod tests {
         let request = build_chat_request(&config, &tweets);
 
         // Verify expected parameters (2500 is the default for summary_max_tokens)
-        assert_eq!(request.max_tokens, 2500);
-        assert!((request.temperature - 0.7).abs() < f32::EPSILON);
+        assert_eq!(request.max_completion_tokens, 2500);
+        // Non-reasoning model uses temperature
+        assert!(request.temperature.is_some());
+        assert!((request.temperature.unwrap() - 0.7).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1011,14 +1119,16 @@ mod tests {
         let req1 = ChatRequest {
             model: "gpt-4".to_string(),
             messages: vec![],
-            max_tokens: 1000,
-            temperature: 0.7,
+            max_completion_tokens: 1000,
+            temperature: Some(0.7),
+            reasoning_effort: None,
         };
         let req2 = ChatRequest {
             model: "gpt-4".to_string(),
             messages: vec![],
-            max_tokens: 1000,
-            temperature: 0.7,
+            max_completion_tokens: 1000,
+            temperature: Some(0.7),
+            reasoning_effort: None,
         };
 
         assert_eq!(req1, req2);
@@ -1032,8 +1142,9 @@ mod tests {
                 role: "user".to_string(),
                 content: "Test".to_string(),
             }],
-            max_tokens: 1000,
-            temperature: 0.7,
+            max_completion_tokens: 1000,
+            temperature: Some(0.7),
+            reasoning_effort: None,
         };
 
         let cloned = original.clone();
@@ -1422,6 +1533,226 @@ mod tests {
         assert!(
             is_retryable_error(&error),
             "Unknown errors should be retryable by default"
+        );
+    }
+
+    // ==================== REGRESSION TESTS: Bug #1 - API Parameter Issues ====================
+    //
+    // Bug: Both ChatRequest and TranslationRequest must use `max_completion_tokens` NOT `max_tokens`.
+    // When using reasoning models like `gpt-5-mini`, OpenAI returns a 400 error:
+    // "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."
+    //
+    // These tests ensure consistency between openai.rs and translation.rs API consumers.
+
+    #[test]
+    fn test_regression_chat_request_never_uses_max_tokens_field() {
+        // REGRESSION TEST: Verify that ChatRequest uses "max_completion_tokens" not "max_tokens"
+
+        // Test with non-reasoning model
+        let request_standard = ChatRequest {
+            model: "gpt-4o-mini".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: "Test".to_string(),
+            }],
+            max_completion_tokens: 2500,
+            temperature: Some(0.7),
+            reasoning_effort: None,
+        };
+
+        let json_standard = serde_json::to_string(&request_standard).expect("Should serialize");
+
+        // CRITICAL: "max_tokens" must NEVER appear (this was the bug in translation.rs)
+        assert!(
+            !json_standard.contains("\"max_tokens\""),
+            "REGRESSION: ChatRequest should NEVER contain 'max_tokens' field. Got: {}",
+            json_standard
+        );
+
+        // "max_completion_tokens" MUST appear
+        assert!(
+            json_standard.contains("\"max_completion_tokens\""),
+            "ChatRequest MUST contain 'max_completion_tokens' field. Got: {}",
+            json_standard
+        );
+
+        // Test with reasoning model
+        let request_reasoning = ChatRequest {
+            model: "gpt-5-mini".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: "Test".to_string(),
+            }],
+            max_completion_tokens: 16000,
+            temperature: None,
+            reasoning_effort: Some("low".to_string()),
+        };
+
+        let json_reasoning = serde_json::to_string(&request_reasoning).expect("Should serialize");
+
+        assert!(
+            !json_reasoning.contains("\"max_tokens\""),
+            "REGRESSION: Reasoning model ChatRequest should NEVER contain 'max_tokens'. Got: {}",
+            json_reasoning
+        );
+
+        assert!(
+            json_reasoning.contains("\"max_completion_tokens\""),
+            "Reasoning model ChatRequest MUST contain 'max_completion_tokens'. Got: {}",
+            json_reasoning
+        );
+    }
+
+    #[test]
+    fn test_regression_build_chat_request_reasoning_model_params() {
+        // REGRESSION TEST: Verify build_chat_request produces correct params for reasoning models
+
+        let mut config = create_test_config();
+        config.openai_model = "gpt-5-nano".to_string();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let request = build_chat_request(&config, &tweets);
+
+        // For reasoning models, temperature should be None
+        assert!(
+            request.temperature.is_none(),
+            "REGRESSION: Reasoning model should NOT have temperature set"
+        );
+
+        // For reasoning models, reasoning_effort should be set
+        assert!(
+            request.reasoning_effort.is_some(),
+            "REGRESSION: Reasoning model should have reasoning_effort set"
+        );
+
+        // Verify serialized JSON
+        let json = serde_json::to_string(&request).expect("Should serialize");
+        assert!(
+            !json.contains("\"temperature\""),
+            "REGRESSION: Serialized request for reasoning model should NOT have temperature"
+        );
+        assert!(
+            json.contains("\"reasoning_effort\""),
+            "Serialized request for reasoning model should have reasoning_effort"
+        );
+    }
+
+    #[test]
+    fn test_regression_build_chat_request_non_reasoning_model_params() {
+        // Verify build_chat_request produces correct params for non-reasoning models
+
+        let config = create_test_config(); // Uses gpt-4o-mini by default
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let request = build_chat_request(&config, &tweets);
+
+        // For non-reasoning models, temperature should be set
+        assert!(
+            request.temperature.is_some(),
+            "Non-reasoning model should have temperature set"
+        );
+
+        // For non-reasoning models, reasoning_effort should be None
+        assert!(
+            request.reasoning_effort.is_none(),
+            "Non-reasoning model should NOT have reasoning_effort set"
+        );
+
+        // Verify serialized JSON
+        let json = serde_json::to_string(&request).expect("Should serialize");
+        assert!(
+            json.contains("\"temperature\""),
+            "Serialized request for non-reasoning model should have temperature"
+        );
+        assert!(
+            !json.contains("\"reasoning_effort\""),
+            "Serialized request for non-reasoning model should NOT have reasoning_effort"
+        );
+    }
+
+    #[test]
+    fn test_openai_is_reasoning_model_consistency() {
+        // Ensure is_reasoning_model in openai.rs matches expected behavior
+        // This should be consistent with the translation.rs implementation
+
+        // Reasoning models
+        assert!(is_reasoning_model("gpt-5"));
+        assert!(is_reasoning_model("gpt-5-mini"));
+        assert!(is_reasoning_model("gpt-5-nano"));
+        assert!(is_reasoning_model("o1"));
+        assert!(is_reasoning_model("o1-mini"));
+        assert!(is_reasoning_model("o1-preview"));
+        assert!(is_reasoning_model("o3"));
+        assert!(is_reasoning_model("o3-mini"));
+        assert!(is_reasoning_model("o4"));
+        assert!(is_reasoning_model("o4-mini"));
+
+        // Non-reasoning models
+        assert!(!is_reasoning_model("gpt-4o"));
+        assert!(!is_reasoning_model("gpt-4o-mini"));
+        assert!(!is_reasoning_model("gpt-4-turbo"));
+        assert!(!is_reasoning_model("gpt-4"));
+        assert!(!is_reasoning_model("gpt-3.5-turbo"));
+    }
+
+    #[test]
+    fn test_full_chat_request_structure_non_reasoning() {
+        // Verify complete JSON structure for summarization request with non-reasoning model
+
+        let config = create_test_config();
+        let tweets = [create_tweet("1", "Test tweet content")];
+
+        let request = build_chat_request(&config, &tweets);
+        let json = serde_json::to_string(&request).expect("Should serialize");
+
+        // Parse back to verify structure
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("Should parse");
+
+        // Verify required fields are present
+        assert!(parsed["model"].is_string());
+        assert!(parsed["max_completion_tokens"].is_number());
+        assert!(parsed["temperature"].is_number());
+        assert!(parsed["messages"].is_array());
+
+        // Verify fields that should NOT be present
+        assert!(
+            parsed.get("max_tokens").is_none(),
+            "max_tokens should not be present"
+        );
+        assert!(
+            parsed.get("reasoning_effort").is_none(),
+            "reasoning_effort should not be present for non-reasoning models"
+        );
+    }
+
+    #[test]
+    fn test_full_chat_request_structure_reasoning() {
+        // Verify complete JSON structure for summarization request with reasoning model
+
+        let mut config = create_test_config();
+        config.openai_model = "gpt-5-mini".to_string();
+        let tweets = [create_tweet("1", "Test tweet content")];
+
+        let request = build_chat_request(&config, &tweets);
+        let json = serde_json::to_string(&request).expect("Should serialize");
+
+        // Parse back to verify structure
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("Should parse");
+
+        // Verify required fields are present
+        assert!(parsed["model"].is_string());
+        assert!(parsed["max_completion_tokens"].is_number());
+        assert!(parsed["reasoning_effort"].is_string());
+        assert!(parsed["messages"].is_array());
+
+        // Verify fields that should NOT be present
+        assert!(
+            parsed.get("max_tokens").is_none(),
+            "max_tokens should not be present"
+        );
+        assert!(
+            parsed.get("temperature").is_none(),
+            "temperature should not be present for reasoning models"
         );
     }
 }

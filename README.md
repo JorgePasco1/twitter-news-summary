@@ -231,7 +231,7 @@ DATABASE_URL=<PostgreSQL connection string, e.g., from Neon.tech>
 ```bash
 NITTER_API_KEY=<if your Nitter instance requires auth>
 API_KEY=<for /trigger and /subscribers endpoints>
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=gpt-5-mini
 MAX_TWEETS=50
 HOURS_LOOKBACK=12
 SCHEDULE_TIMES=08:00,20:00  # Peru time (UTC-5)

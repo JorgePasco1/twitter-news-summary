@@ -15,6 +15,7 @@ pub struct Config {
     pub openai_api_key: String,
     pub openai_model: String,
     pub openai_api_url: String,
+    pub openai_temperature: f32,
 
     // Telegram
     pub telegram_bot_token: String,
@@ -64,9 +65,16 @@ impl Config {
             openai_api_key: std::env::var("OPENAI_API_KEY")
                 .context("OPENAI_API_KEY not set")?,
             openai_model: std::env::var("OPENAI_MODEL")
-                .unwrap_or_else(|_| "gpt-4o-mini".to_string()),
+                .unwrap_or_else(|_| "gpt-5-mini".to_string()),
             openai_api_url: std::env::var("OPENAI_API_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string()),
+            // Temperature must be finite and within OpenAI's accepted range (0.0-2.0)
+            openai_temperature: std::env::var("OPENAI_TEMPERATURE")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+                .filter(|v| (0.0..=2.0).contains(v))
+                .unwrap_or(0.7),
 
             // Telegram
             telegram_bot_token: std::env::var("TELEGRAM_BOT_TOKEN")
@@ -86,11 +94,15 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(12),
 
-            // Summary generation
+            // Summary generation (16000 default optimized for gpt-5-mini with 128k output limit)
+            // NOTE: If using a different model, you MUST set SUMMARY_MAX_TOKENS appropriately:
+            //   - gpt-5-mini: up to 128,000 (default 16000 is safe)
+            //   - gpt-4o-mini: up to 16,384 (set SUMMARY_MAX_TOKENS=4000 or lower)
+            //   - gpt-4-turbo: up to 4,096 (set SUMMARY_MAX_TOKENS=2500 or lower)
             summary_max_tokens: std::env::var("SUMMARY_MAX_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(2500),
+                .unwrap_or(16000),
             summary_max_words: std::env::var("SUMMARY_MAX_WORDS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -135,6 +147,7 @@ mod tests {
             "OPENAI_API_KEY",
             "OPENAI_MODEL",
             "OPENAI_API_URL",
+            "OPENAI_TEMPERATURE",
             "TELEGRAM_BOT_TOKEN",
             "TELEGRAM_CHAT_ID",
             "TELEGRAM_WEBHOOK_SECRET",
@@ -283,14 +296,15 @@ mod tests {
         let config = Config::from_env().unwrap();
 
         // Verify default values
-        assert_eq!(config.openai_model, "gpt-4o-mini");
+        assert_eq!(config.openai_model, "gpt-5-mini");
         assert_eq!(
             config.openai_api_url,
             "https://api.openai.com/v1/chat/completions"
         );
+        assert!((config.openai_temperature - 0.7).abs() < f32::EPSILON);
         assert_eq!(config.max_tweets, 100);
         assert_eq!(config.hours_lookback, 12);
-        assert_eq!(config.summary_max_tokens, 2500);
+        assert_eq!(config.summary_max_tokens, 16000);
         assert_eq!(config.summary_max_words, 800);
         assert_eq!(config.usernames_file, "data/usernames.txt");
         assert_eq!(config.database_url, "postgres://test:test@localhost/test");
@@ -308,6 +322,115 @@ mod tests {
 
         let config = Config::from_env().unwrap();
         assert_eq!(config.openai_model, "gpt-4-turbo");
+    }
+
+    #[test]
+    fn test_config_custom_openai_temperature() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        clear_env_vars();
+        set_required_env_vars();
+        env::set_var("OPENAI_TEMPERATURE", "0.3");
+
+        let config = Config::from_env().unwrap();
+        assert!((config.openai_temperature - 0.3).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_config_invalid_openai_temperature_uses_default() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        clear_env_vars();
+        set_required_env_vars();
+        env::set_var("OPENAI_TEMPERATURE", "not_a_number");
+
+        let config = Config::from_env().unwrap();
+        assert!(
+            (config.openai_temperature - 0.7).abs() < f32::EPSILON,
+            "Should use default for invalid OPENAI_TEMPERATURE"
+        );
+    }
+
+    #[test]
+    fn test_config_openai_temperature_nan_uses_default() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        clear_env_vars();
+        set_required_env_vars();
+        env::set_var("OPENAI_TEMPERATURE", "NaN");
+
+        let config = Config::from_env().unwrap();
+        assert!(
+            (config.openai_temperature - 0.7).abs() < f32::EPSILON,
+            "Should use default for NaN OPENAI_TEMPERATURE"
+        );
+    }
+
+    #[test]
+    fn test_config_openai_temperature_infinity_uses_default() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        clear_env_vars();
+        set_required_env_vars();
+        env::set_var("OPENAI_TEMPERATURE", "inf");
+
+        let config = Config::from_env().unwrap();
+        assert!(
+            (config.openai_temperature - 0.7).abs() < f32::EPSILON,
+            "Should use default for infinite OPENAI_TEMPERATURE"
+        );
+    }
+
+    #[test]
+    fn test_config_openai_temperature_out_of_range_high_uses_default() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        clear_env_vars();
+        set_required_env_vars();
+        env::set_var("OPENAI_TEMPERATURE", "2.5"); // Above max of 2.0
+
+        let config = Config::from_env().unwrap();
+        assert!(
+            (config.openai_temperature - 0.7).abs() < f32::EPSILON,
+            "Should use default for out-of-range OPENAI_TEMPERATURE > 2.0"
+        );
+    }
+
+    #[test]
+    fn test_config_openai_temperature_negative_uses_default() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        clear_env_vars();
+        set_required_env_vars();
+        env::set_var("OPENAI_TEMPERATURE", "-0.5"); // Below min of 0.0
+
+        let config = Config::from_env().unwrap();
+        assert!(
+            (config.openai_temperature - 0.7).abs() < f32::EPSILON,
+            "Should use default for negative OPENAI_TEMPERATURE"
+        );
+    }
+
+    #[test]
+    fn test_config_openai_temperature_boundary_zero() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        clear_env_vars();
+        set_required_env_vars();
+        env::set_var("OPENAI_TEMPERATURE", "0.0");
+
+        let config = Config::from_env().unwrap();
+        assert!(
+            config.openai_temperature.abs() < f32::EPSILON,
+            "Should accept 0.0 as valid temperature"
+        );
+    }
+
+    #[test]
+    fn test_config_openai_temperature_boundary_two() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        clear_env_vars();
+        set_required_env_vars();
+        env::set_var("OPENAI_TEMPERATURE", "2.0");
+
+        let config = Config::from_env().unwrap();
+        assert!(
+            (config.openai_temperature - 2.0).abs() < f32::EPSILON,
+            "Should accept 2.0 as valid temperature"
+        );
     }
 
     #[test]

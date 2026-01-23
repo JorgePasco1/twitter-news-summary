@@ -144,6 +144,15 @@ See **Environment Variables Reference** section below for complete details.
 
 ## Important Notes
 
+### Deployment Guidelines
+
+**NEVER deploy manually using `fly deploy` unless explicitly asked by the user.** All deployments should go through CI/CD:
+- Push changes to a branch and create a PR
+- Merge to `main` triggers automatic deployment via GitHub Actions
+- This ensures proper review, testing, and deployment tracking
+
+Manual deployment bypasses important safeguards and should only be used in emergencies when explicitly requested.
+
 ### Extracting List Members
 
 **Option 1: Browser Console Script (Recommended)**
@@ -241,7 +250,7 @@ These variables are used by the running Rust application.
 | `TELEGRAM_CHAT_ID` | `""` | Admin chat ID for notifications |
 | `API_KEY` | None | Protects `/trigger`, `/test`, `/subscribers` endpoints |
 | `NITTER_API_KEY` | None | Auth key for secured Nitter instance |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model to use |
+| `OPENAI_MODEL` | `gpt-5-mini` | OpenAI model to use (reasoning model) |
 | `MAX_TWEETS` | `100` | Max tweets to fetch per run |
 | `HOURS_LOOKBACK` | `12` | Time window for tweets (hours) |
 | `SCHEDULE_TIMES` | `08:00,20:00` | Summary schedule (Peru time UTC-5) |

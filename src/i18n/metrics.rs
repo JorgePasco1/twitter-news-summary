@@ -143,6 +143,7 @@ pub struct MetricsReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     // Helper to reset metrics before each test
     fn reset_metrics() {
@@ -150,8 +151,10 @@ mod tests {
     }
 
     // ==================== Counter Tests ====================
+    // These tests use shared global state and must run serially
 
     #[test]
+    #[serial]
     fn test_record_cache_hit() {
         reset_metrics();
         let metrics = TranslationMetrics::global();
@@ -164,6 +167,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_record_cache_miss() {
         reset_metrics();
         let metrics = TranslationMetrics::global();
@@ -174,6 +178,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_record_api_call() {
         reset_metrics();
         let metrics = TranslationMetrics::global();
@@ -184,6 +189,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_record_api_failure() {
         reset_metrics();
         let metrics = TranslationMetrics::global();
@@ -196,6 +202,7 @@ mod tests {
     // ==================== Report Tests ====================
 
     #[test]
+    #[serial]
     fn test_report_empty() {
         reset_metrics();
         let metrics = TranslationMetrics::global();
@@ -210,6 +217,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_report_cache_hit_rate() {
         reset_metrics();
         let metrics = TranslationMetrics::global();
@@ -227,6 +235,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_report_api_success_rate() {
         reset_metrics();
         let metrics = TranslationMetrics::global();
@@ -245,6 +254,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_report_100_percent_cache_hit_rate() {
         reset_metrics();
         let metrics = TranslationMetrics::global();
@@ -257,6 +267,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_report_0_percent_cache_hit_rate() {
         reset_metrics();
         let metrics = TranslationMetrics::global();
@@ -269,6 +280,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_report_100_percent_api_success_rate() {
         reset_metrics();
         let metrics = TranslationMetrics::global();
@@ -281,6 +293,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_report_all_api_failures() {
         reset_metrics();
         let metrics = TranslationMetrics::global();
@@ -306,15 +319,14 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_metrics_persist_across_calls() {
-        // Note: Don't reset here - this test verifies the singleton behavior
-        // by checking that incrementing through one reference is visible through another
+        reset_metrics();
         let metrics1 = TranslationMetrics::global();
-        let initial = metrics1.cache_hits();
         metrics1.record_cache_hit();
 
         let metrics2 = TranslationMetrics::global();
-        // Value should have increased by 1 from the initial value
-        assert_eq!(metrics2.cache_hits(), initial + 1);
+        // Value should be 1 after the reset and single increment
+        assert_eq!(metrics2.cache_hits(), 1);
     }
 }
