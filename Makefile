@@ -30,7 +30,7 @@ help:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "REMOTE: TEST BOT (triggers Fly.io test environment)"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-	@echo "  make trigger-test   - Trigger summary on TEST bot (twitter-summary-bot-test)"
+	@echo "  make trigger-test   - Trigger summary on TEST bot + tail logs"
 	@echo "  make test-send-test - Send test message to TEST_CHAT_ID via TEST bot"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -119,6 +119,7 @@ trigger:
 	fi
 
 # Trigger summary on Fly.io TEST environment (uses .env.test)
+# After triggering, automatically tails logs so you can see the process running
 trigger-test:
 	@echo "🧪 Triggering summary on TEST Fly.io..."
 	@if [ -f .env.test ]; then \
@@ -129,7 +130,11 @@ trigger-test:
 		fi && \
 		curl -X POST https://twitter-summary-bot-test.fly.dev/trigger \
 			-H "X-API-Key: $$API_KEY" \
-			-w "\n" || echo "❌ Failed to trigger summary"; \
+			-w "\n" && \
+		echo "" && \
+		echo "📋 Tailing logs from TEST Fly.io (Ctrl+C to stop)..." && \
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" && \
+		fly logs -a twitter-summary-bot-test || echo "❌ Failed to tail logs (is flyctl installed?)"; \
 	else \
 		echo "❌ Error: .env.test file not found"; \
 		echo "   Create .env.test with API_KEY for the test bot"; \
