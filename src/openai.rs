@@ -1535,4 +1535,224 @@ mod tests {
             "Unknown errors should be retryable by default"
         );
     }
+
+    // ==================== REGRESSION TESTS: Bug #1 - API Parameter Issues ====================
+    //
+    // Bug: Both ChatRequest and TranslationRequest must use `max_completion_tokens` NOT `max_tokens`.
+    // When using reasoning models like `gpt-5-mini`, OpenAI returns a 400 error:
+    // "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."
+    //
+    // These tests ensure consistency between openai.rs and translation.rs API consumers.
+
+    #[test]
+    fn test_regression_chat_request_never_uses_max_tokens_field() {
+        // REGRESSION TEST: Verify that ChatRequest uses "max_completion_tokens" not "max_tokens"
+
+        // Test with non-reasoning model
+        let request_standard = ChatRequest {
+            model: "gpt-4o-mini".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: "Test".to_string(),
+            }],
+            max_completion_tokens: 2500,
+            temperature: Some(0.7),
+            reasoning_effort: None,
+        };
+
+        let json_standard = serde_json::to_string(&request_standard).expect("Should serialize");
+
+        // CRITICAL: "max_tokens" must NEVER appear (this was the bug in translation.rs)
+        assert!(
+            !json_standard.contains("\"max_tokens\""),
+            "REGRESSION: ChatRequest should NEVER contain 'max_tokens' field. Got: {}",
+            json_standard
+        );
+
+        // "max_completion_tokens" MUST appear
+        assert!(
+            json_standard.contains("\"max_completion_tokens\""),
+            "ChatRequest MUST contain 'max_completion_tokens' field. Got: {}",
+            json_standard
+        );
+
+        // Test with reasoning model
+        let request_reasoning = ChatRequest {
+            model: "gpt-5-mini".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: "Test".to_string(),
+            }],
+            max_completion_tokens: 16000,
+            temperature: None,
+            reasoning_effort: Some("low".to_string()),
+        };
+
+        let json_reasoning = serde_json::to_string(&request_reasoning).expect("Should serialize");
+
+        assert!(
+            !json_reasoning.contains("\"max_tokens\""),
+            "REGRESSION: Reasoning model ChatRequest should NEVER contain 'max_tokens'. Got: {}",
+            json_reasoning
+        );
+
+        assert!(
+            json_reasoning.contains("\"max_completion_tokens\""),
+            "Reasoning model ChatRequest MUST contain 'max_completion_tokens'. Got: {}",
+            json_reasoning
+        );
+    }
+
+    #[test]
+    fn test_regression_build_chat_request_reasoning_model_params() {
+        // REGRESSION TEST: Verify build_chat_request produces correct params for reasoning models
+
+        let mut config = create_test_config();
+        config.openai_model = "gpt-5-nano".to_string();
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let request = build_chat_request(&config, &tweets);
+
+        // For reasoning models, temperature should be None
+        assert!(
+            request.temperature.is_none(),
+            "REGRESSION: Reasoning model should NOT have temperature set"
+        );
+
+        // For reasoning models, reasoning_effort should be set
+        assert!(
+            request.reasoning_effort.is_some(),
+            "REGRESSION: Reasoning model should have reasoning_effort set"
+        );
+
+        // Verify serialized JSON
+        let json = serde_json::to_string(&request).expect("Should serialize");
+        assert!(
+            !json.contains("\"temperature\""),
+            "REGRESSION: Serialized request for reasoning model should NOT have temperature"
+        );
+        assert!(
+            json.contains("\"reasoning_effort\""),
+            "Serialized request for reasoning model should have reasoning_effort"
+        );
+    }
+
+    #[test]
+    fn test_regression_build_chat_request_non_reasoning_model_params() {
+        // Verify build_chat_request produces correct params for non-reasoning models
+
+        let config = create_test_config(); // Uses gpt-4o-mini by default
+        let tweets = [create_tweet("1", "Test tweet")];
+
+        let request = build_chat_request(&config, &tweets);
+
+        // For non-reasoning models, temperature should be set
+        assert!(
+            request.temperature.is_some(),
+            "Non-reasoning model should have temperature set"
+        );
+
+        // For non-reasoning models, reasoning_effort should be None
+        assert!(
+            request.reasoning_effort.is_none(),
+            "Non-reasoning model should NOT have reasoning_effort set"
+        );
+
+        // Verify serialized JSON
+        let json = serde_json::to_string(&request).expect("Should serialize");
+        assert!(
+            json.contains("\"temperature\""),
+            "Serialized request for non-reasoning model should have temperature"
+        );
+        assert!(
+            !json.contains("\"reasoning_effort\""),
+            "Serialized request for non-reasoning model should NOT have reasoning_effort"
+        );
+    }
+
+    #[test]
+    fn test_openai_is_reasoning_model_consistency() {
+        // Ensure is_reasoning_model in openai.rs matches expected behavior
+        // This should be consistent with the translation.rs implementation
+
+        // Reasoning models
+        assert!(is_reasoning_model("gpt-5"));
+        assert!(is_reasoning_model("gpt-5-mini"));
+        assert!(is_reasoning_model("gpt-5-nano"));
+        assert!(is_reasoning_model("o1"));
+        assert!(is_reasoning_model("o1-mini"));
+        assert!(is_reasoning_model("o1-preview"));
+        assert!(is_reasoning_model("o3"));
+        assert!(is_reasoning_model("o3-mini"));
+        assert!(is_reasoning_model("o4"));
+        assert!(is_reasoning_model("o4-mini"));
+
+        // Non-reasoning models
+        assert!(!is_reasoning_model("gpt-4o"));
+        assert!(!is_reasoning_model("gpt-4o-mini"));
+        assert!(!is_reasoning_model("gpt-4-turbo"));
+        assert!(!is_reasoning_model("gpt-4"));
+        assert!(!is_reasoning_model("gpt-3.5-turbo"));
+    }
+
+    #[test]
+    fn test_full_chat_request_structure_non_reasoning() {
+        // Verify complete JSON structure for summarization request with non-reasoning model
+
+        let config = create_test_config();
+        let tweets = [create_tweet("1", "Test tweet content")];
+
+        let request = build_chat_request(&config, &tweets);
+        let json = serde_json::to_string(&request).expect("Should serialize");
+
+        // Parse back to verify structure
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("Should parse");
+
+        // Verify required fields are present
+        assert!(parsed["model"].is_string());
+        assert!(parsed["max_completion_tokens"].is_number());
+        assert!(parsed["temperature"].is_number());
+        assert!(parsed["messages"].is_array());
+
+        // Verify fields that should NOT be present
+        assert!(
+            parsed.get("max_tokens").is_none(),
+            "max_tokens should not be present"
+        );
+        assert!(
+            parsed.get("reasoning_effort").is_none(),
+            "reasoning_effort should not be present for non-reasoning models"
+        );
+    }
+
+    #[test]
+    fn test_full_chat_request_structure_reasoning() {
+        // Verify complete JSON structure for summarization request with reasoning model
+
+        let mut config = create_test_config();
+        config.openai_model = "gpt-5-mini".to_string();
+        let tweets = [create_tweet("1", "Test tweet content")];
+
+        let request = build_chat_request(&config, &tweets);
+        let json = serde_json::to_string(&request).expect("Should serialize");
+
+        // Parse back to verify structure
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("Should parse");
+
+        // Verify required fields are present
+        assert!(parsed["model"].is_string());
+        assert!(parsed["max_completion_tokens"].is_number());
+        assert!(parsed["reasoning_effort"].is_string());
+        assert!(parsed["messages"].is_array());
+
+        // Verify fields that should NOT be present
+        assert!(
+            parsed.get("max_tokens").is_none(),
+            "max_tokens should not be present"
+        );
+        assert!(
+            parsed.get("temperature").is_none(),
+            "temperature should not be present for reasoning models"
+        );
+    }
 }
