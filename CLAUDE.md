@@ -144,6 +144,15 @@ See **Environment Variables Reference** section below for complete details.
 
 ## Important Notes
 
+### Deployment Guidelines
+
+**NEVER deploy manually using `fly deploy` unless explicitly asked by the user.** All deployments should go through CI/CD:
+- Push changes to a branch and create a PR
+- Merge to `main` triggers automatic deployment via GitHub Actions
+- This ensures proper review, testing, and deployment tracking
+
+Manual deployment bypasses important safeguards and should only be used in emergencies when explicitly requested.
+
 ### Extracting List Members
 
 **Option 1: Browser Console Script (Recommended)**
