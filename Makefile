@@ -118,28 +118,22 @@ trigger:
 			-w "\n" || echo "❌ Failed to trigger summary"; \
 	fi
 
-# Trigger summary on Fly.io TEST environment
+# Trigger summary on Fly.io TEST environment (uses .env.test)
 trigger-test:
 	@echo "🧪 Triggering summary on TEST Fly.io..."
-	@if [ -z "$$API_KEY_TEST" ]; then \
-		if [ -f .env ]; then \
-			export $$(grep "^API_KEY_TEST=" .env | xargs) && \
-			if [ -z "$$API_KEY_TEST" ]; then \
-				echo "❌ Error: API_KEY_TEST not found in .env file"; \
-				echo "   Add API_KEY_TEST=your_test_api_key to .env"; \
-				exit 1; \
-			fi && \
-			curl -X POST https://twitter-summary-bot-test.fly.dev/trigger \
-				-H "X-API-Key: $$API_KEY_TEST" \
-				-w "\n" || echo "❌ Failed to trigger summary"; \
-		else \
-			echo "❌ Error: API_KEY_TEST not found in environment or .env file"; \
+	@if [ -f .env.test ]; then \
+		export $$(grep "^API_KEY=" .env.test | xargs) && \
+		if [ -z "$$API_KEY" ]; then \
+			echo "❌ Error: API_KEY not found in .env.test file"; \
 			exit 1; \
-		fi \
-	else \
+		fi && \
 		curl -X POST https://twitter-summary-bot-test.fly.dev/trigger \
-			-H "X-API-Key: $$API_KEY_TEST" \
+			-H "X-API-Key: $$API_KEY" \
 			-w "\n" || echo "❌ Failed to trigger summary"; \
+	else \
+		echo "❌ Error: .env.test file not found"; \
+		echo "   Create .env.test with API_KEY for the test bot"; \
+		exit 1; \
 	fi
 
 # Test send to specific user via PRODUCTION bot
@@ -173,39 +167,27 @@ test-send:
 			-w "\n" || echo "❌ Failed to send test message"; \
 	fi
 
-# Test send to specific user via TEST bot
+# Test send to specific user via TEST bot (uses .env.test)
 test-send-test:
 	@echo "🧪 Sending test message via TEST bot..."
-	@if [ -z "$$API_KEY_TEST" ]; then \
-		if [ -f .env ]; then \
-			export $$(grep "^API_KEY_TEST=" .env | xargs) && \
-			export $$(grep "^TEST_CHAT_ID=" .env | xargs) && \
-			if [ -z "$$API_KEY_TEST" ]; then \
-				echo "❌ Error: API_KEY_TEST not found in .env file"; \
-				exit 1; \
-			fi && \
-			if [ -z "$$TEST_CHAT_ID" ]; then \
-				echo "❌ Error: TEST_CHAT_ID not found in .env file"; \
-				exit 1; \
-			fi && \
-			curl -X POST "https://twitter-summary-bot-test.fly.dev/test?chat_id=$$TEST_CHAT_ID" \
-				-H "X-API-Key: $$API_KEY_TEST" \
-				-w "\n" || echo "❌ Failed to send test message"; \
-		else \
-			echo "❌ Error: .env file not found"; \
+	@if [ -f .env.test ]; then \
+		export $$(grep "^API_KEY=" .env.test | xargs) && \
+		export $$(grep "^TEST_CHAT_ID=" .env.test | xargs) && \
+		if [ -z "$$API_KEY" ]; then \
+			echo "❌ Error: API_KEY not found in .env.test file"; \
 			exit 1; \
-		fi \
-	else \
-		if [ -z "$$TEST_CHAT_ID" ] && [ -f .env ]; then \
-			export $$(grep "^TEST_CHAT_ID=" .env | xargs); \
-		fi; \
+		fi && \
 		if [ -z "$$TEST_CHAT_ID" ]; then \
-			echo "❌ Error: TEST_CHAT_ID not found in environment or .env file"; \
+			echo "❌ Error: TEST_CHAT_ID not found in .env.test file"; \
 			exit 1; \
-		fi; \
+		fi && \
 		curl -X POST "https://twitter-summary-bot-test.fly.dev/test?chat_id=$$TEST_CHAT_ID" \
-			-H "X-API-Key: $$API_KEY_TEST" \
+			-H "X-API-Key: $$API_KEY" \
 			-w "\n" || echo "❌ Failed to send test message"; \
+	else \
+		echo "❌ Error: .env.test file not found"; \
+		echo "   Create .env.test with API_KEY and TEST_CHAT_ID for the test bot"; \
+		exit 1; \
 	fi
 
 # Preview and send to test user locally
