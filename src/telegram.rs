@@ -501,9 +501,11 @@ pub async fn send_to_subscribers(
                     Err(e) => {
                         TranslationMetrics::global().record_api_failure();
                         warn!("Translation failed for {}: {}", lang_code, e);
-                        // Use English with failure notice, cache to prevent repeated API calls
-                        let notice = get_translation_failure_notice(language);
-                        let fallback = format!("{}{}", notice, summary);
+                        // Return English content; the failure notice prefix will be added
+                        // during message formatting to avoid double-escaping.
+                        // Mark with a special prefix that we'll detect later.
+                        let marker = "\x00TRANSLATION_FAILED\x00";
+                        let fallback = format!("{}{}", marker, summary);
                         translation_cache.insert(lang_code.clone(), fallback.clone());
                         fallback
                     }
@@ -513,11 +515,26 @@ pub async fn send_to_subscribers(
 
         // Build message with language-specific header (MarkdownV2 format)
         let header = get_summary_header(language);
+
+        // Check if this is a translation failure case (marked with special prefix)
+        let translation_failed_marker = "\x00TRANSLATION_FAILED\x00";
+        let (notice_prefix, actual_content) = if content.starts_with(translation_failed_marker) {
+            // Translation failed - add pre-escaped notice and escape only the content
+            let actual = content
+                .strip_prefix(translation_failed_marker)
+                .unwrap_or(&content);
+            (get_translation_failure_notice(language), actual)
+        } else {
+            // Normal case - no notice needed
+            ("".to_string(), content.as_str())
+        };
+
         let message = format!(
-            "📰 *{}*\n_{}_\n\n{}",
+            "📰 *{}*\n_{}_\n\n{}{}",
             escape_markdownv2(header),
             escaped_timestamp,
-            escape_markdownv2(&content)
+            notice_prefix, // Already pre-escaped in i18n strings
+            escape_markdownv2(actual_content)
         );
 
         match send_message(config, subscriber.chat_id, &message).await {

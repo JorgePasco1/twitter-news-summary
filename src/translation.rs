@@ -10,8 +10,19 @@ use tracing::warn;
 struct TranslationRequest {
     model: String,
     messages: Vec<Message>,
-    max_tokens: u32,
-    temperature: f32,
+    max_completion_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
+}
+
+/// Check if a model is a reasoning model that doesn't support temperature
+fn is_reasoning_model(model: &str) -> bool {
+    model.starts_with("gpt-5")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -94,6 +105,14 @@ pub async fn translate_summary(
         return Ok(summary.to_string());
     }
 
+    // Reasoning models need higher token limits and don't support temperature
+    let is_reasoning = is_reasoning_model(&config.openai_model);
+    let max_completion_tokens = if is_reasoning {
+        16000
+    } else {
+        config.summary_max_tokens
+    };
+
     let request = TranslationRequest {
         model: config.openai_model.clone(),
         messages: vec![
@@ -106,8 +125,14 @@ pub async fn translate_summary(
                 content: build_translation_user_prompt(summary, target_language.name()),
             },
         ],
-        max_tokens: config.summary_max_tokens,
-        temperature: 0.3, // Lower temperature for more consistent translations
+        max_completion_tokens,
+        // Reasoning models don't support temperature - use reasoning_effort instead
+        temperature: if is_reasoning { None } else { Some(0.3) },
+        reasoning_effort: if is_reasoning {
+            Some("low".to_string())
+        } else {
+            None
+        },
     };
 
     let translated = with_retry_if(
@@ -517,16 +542,56 @@ mod tests {
                     content: "Hello world".to_string(),
                 },
             ],
-            max_tokens: 2500,
-            temperature: 0.3,
+            max_completion_tokens: 2500,
+            temperature: Some(0.3),
+            reasoning_effort: None,
         };
 
         let json = serde_json::to_string(&request).expect("Should serialize");
         assert!(json.contains("gpt-4o-mini"));
         assert!(json.contains("0.3"));
+        assert!(json.contains("max_completion_tokens"));
         assert!(json.contains("2500"));
         assert!(json.contains("system"));
         assert!(json.contains("user"));
+        // reasoning_effort should not be serialized when None
+        assert!(!json.contains("reasoning_effort"));
+    }
+
+    #[test]
+    fn test_translation_request_serialization_reasoning_model() {
+        let request = TranslationRequest {
+            model: "gpt-5-mini".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: "Test".to_string(),
+            }],
+            max_completion_tokens: 16000,
+            temperature: None, // Reasoning models don't use temperature
+            reasoning_effort: Some("low".to_string()),
+        };
+
+        let json = serde_json::to_string(&request).expect("Should serialize");
+        assert!(json.contains("gpt-5-mini"));
+        assert!(json.contains("16000"));
+        assert!(json.contains("reasoning_effort"));
+        assert!(json.contains("low"));
+        // temperature should not be serialized when None
+        assert!(!json.contains("temperature"));
+    }
+
+    #[test]
+    fn test_is_reasoning_model() {
+        assert!(is_reasoning_model("gpt-5-mini"));
+        assert!(is_reasoning_model("gpt-5-nano"));
+        assert!(is_reasoning_model("gpt-5"));
+        assert!(is_reasoning_model("o1-mini"));
+        assert!(is_reasoning_model("o1-preview"));
+        assert!(is_reasoning_model("o3"));
+        assert!(is_reasoning_model("o4-mini"));
+        assert!(!is_reasoning_model("gpt-4o-mini"));
+        assert!(!is_reasoning_model("gpt-4o"));
+        assert!(!is_reasoning_model("gpt-4-turbo"));
     }
 
     // ==================== Edge Cases ====================
