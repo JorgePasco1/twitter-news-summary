@@ -361,7 +361,8 @@ Output ONLY the condensed text, nothing else."#,
 /// Truncate text at a word boundary with ellipsis.
 ///
 /// If the text exceeds the limit, it's cut at the last whitespace before
-/// the limit and an ellipsis is appended.
+/// the limit and an ellipsis is appended. This function is UTF-8 safe and
+/// will not panic on multi-byte characters.
 pub fn truncate_at_limit(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.to_string();
@@ -373,9 +374,22 @@ pub fn truncate_at_limit(text: &str, limit: usize) -> String {
         return "...".to_string();
     }
 
-    // Find last whitespace before cut point
-    let slice = &text[..cut_at.min(text.len())];
-    let cut_point = slice.rfind(char::is_whitespace).unwrap_or(cut_at);
+    // Find a UTF-8 safe boundary before the cut point
+    // This prevents panics when limit lands mid-codepoint (e.g., "café")
+    let safe_cut_at = text
+        .char_indices()
+        .take_while(|(i, _)| *i < cut_at)
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+
+    if safe_cut_at == 0 {
+        return "...".to_string();
+    }
+
+    // Find last whitespace before the safe cut point
+    let slice = &text[..safe_cut_at];
+    let cut_point = slice.rfind(char::is_whitespace).unwrap_or(safe_cut_at);
 
     format!("{}...", &text[..cut_point])
 }
@@ -1477,5 +1491,34 @@ mod tests {
         let text = "";
         let result = truncate_at_limit(text, 10);
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_multibyte_no_panic() {
+        // "café" has a 2-byte 'é' character - cutting mid-codepoint would panic
+        let text = "café world test";
+        // Limit that would land in the middle of 'é' if not handled properly
+        let result = truncate_at_limit(text, 6);
+        // Should not panic and should produce valid UTF-8
+        assert!(result.is_ascii() || result.chars().count() > 0);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_at_limit_emoji_no_panic() {
+        // Emojis are 4 bytes - cutting mid-emoji would panic
+        let text = "Hello 🎉 world";
+        let result = truncate_at_limit(text, 9);
+        // Should not panic
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_at_limit_chinese_no_panic() {
+        // Chinese characters are 3 bytes each
+        let text = "你好世界 hello";
+        let result = truncate_at_limit(text, 8);
+        // Should not panic and produce valid output
+        assert!(result.ends_with("..."));
     }
 }
