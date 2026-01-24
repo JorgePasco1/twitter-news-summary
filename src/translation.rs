@@ -49,6 +49,12 @@ fn build_translation_system_prompt(target_language: &str) -> String {
     format!(
         r#"You are a professional translator. Translate the following summary from English to {}.
 
+## CRITICAL: Length Constraint
+The translated text MUST stay under 3800 characters total. This is a hard limit for Telegram.
+- If the translation would exceed this, condense while preserving key information
+- Prioritize keeping the most important items; trim less critical details
+- Use concise phrasing natural to the target language
+
 ## Translation Rules
 
 ### DO NOT translate:
@@ -234,6 +240,166 @@ pub fn get_translation_failure_notice(target_language: Language) -> String {
         .strings
         .translation_failure_notice
         .to_string()
+}
+
+/// Condense text to fit within a character limit while preserving key information.
+///
+/// This function asks OpenAI to shorten the text while keeping the most important
+/// information and preserving the same language (auto-detected).
+///
+/// # Arguments
+/// * `client` - HTTP client for API calls
+/// * `config` - Application configuration
+/// * `text` - The text to condense
+/// * `max_chars` - Target character limit (best-effort, not guaranteed)
+///
+/// # Returns
+/// * Condensed text on success, or an error on failure
+///
+/// # Note
+/// LLM output may exceed `max_chars` despite instructions. Callers should use
+/// `truncate_at_limit()` as a fallback if strict enforcement is required.
+/// The Telegram integration does this with iterative truncation that also
+/// accounts for MarkdownV2 escape expansion.
+pub async fn condense_text(
+    client: &reqwest::Client,
+    config: &Config,
+    text: &str,
+    max_chars: usize,
+) -> Result<String> {
+    use tracing::info;
+
+    info!(
+        "Condensing text from {} chars to max {} chars",
+        text.len(),
+        max_chars
+    );
+
+    let system_prompt = format!(
+        r#"You are an expert editor. Your task is to condense the provided text to UNDER {} characters.
+
+## Instructions:
+1. Keep the most important information and key points
+2. Remove less critical details and redundant content
+3. Use concise phrasing while maintaining clarity
+4. Preserve the SAME LANGUAGE as the input (detect automatically)
+5. Preserve markdown formatting (bold, italic, bullets)
+6. Preserve @handles, #hashtags, $cashtags, and URLs unchanged
+7. Do NOT add any explanations or meta-commentary
+
+Output ONLY the condensed text, nothing else."#,
+        max_chars
+    );
+
+    // Reasoning models need higher token limits and don't support temperature
+    let is_reasoning = is_reasoning_model(&config.openai_model);
+    let max_completion_tokens = if is_reasoning { 16000 } else { 4000 };
+
+    let request = TranslationRequest {
+        model: config.openai_model.clone(),
+        messages: vec![
+            Message {
+                role: "system".to_string(),
+                content: system_prompt,
+            },
+            Message {
+                role: "user".to_string(),
+                content: text.to_string(),
+            },
+        ],
+        max_completion_tokens,
+        temperature: if is_reasoning { None } else { Some(0.3) },
+        reasoning_effort: if is_reasoning {
+            Some("low".to_string())
+        } else {
+            None
+        },
+    };
+
+    let condensed = with_retry_if(
+        &RetryConfig::api_call(),
+        "Text condensing",
+        || async {
+            let response = client
+                .post(&config.openai_api_url)
+                .header("Authorization", format!("Bearer {}", config.openai_api_key))
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
+                .await
+                .context("Failed to send condense request to OpenAI API")?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
+                anyhow::bail!("OpenAI API error during condensing ({}): {}", status, body);
+            }
+
+            let chat_response: ChatResponse = response
+                .json()
+                .await
+                .context("Failed to parse OpenAI condense response")?;
+
+            let condensed = chat_response
+                .choices
+                .first()
+                .map(|c| c.message.content.clone())
+                .context("OpenAI condense response contained no choices")?;
+
+            Ok(condensed)
+        },
+        is_retryable_error,
+    )
+    .await?;
+
+    info!(
+        "Condensed text from {} to {} chars",
+        text.len(),
+        condensed.len()
+    );
+
+    Ok(condensed)
+}
+
+/// Truncate text at a word boundary with ellipsis.
+///
+/// If the text exceeds the limit, it's cut at the last whitespace before
+/// the limit and an ellipsis is appended. This function is UTF-8 safe and
+/// will not panic on multi-byte characters.
+pub fn truncate_at_limit(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_string();
+    }
+
+    // Reserve space for ellipsis
+    let cut_at = limit.saturating_sub(3);
+    if cut_at == 0 {
+        return "...".to_string();
+    }
+
+    // Find a UTF-8 safe boundary at or before the cut point
+    // This prevents panics when limit lands mid-codepoint (e.g., "café")
+    // and ensures the result never exceeds the byte limit
+    let safe_cut_at = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(text.len()))
+        .take_while(|i| *i <= cut_at)
+        .last()
+        .unwrap_or(0);
+
+    if safe_cut_at == 0 {
+        return "...".to_string();
+    }
+
+    // Find last whitespace before the safe cut point
+    let slice = &text[..safe_cut_at];
+    let cut_point = slice.rfind(char::is_whitespace).unwrap_or(safe_cut_at);
+
+    format!("{}...", &text[..cut_point])
 }
 
 #[cfg(test)]
@@ -1262,5 +1428,139 @@ mod tests {
         // Cases that SHOULD match due to prefix matching
         assert!(is_reasoning_model("gpt-5-turbo")); // Hypothetical future gpt-5 variant
         assert!(is_reasoning_model("o1-turbo")); // Hypothetical future o1 variant
+    }
+
+    // ==================== truncate_at_limit Tests ====================
+
+    #[test]
+    fn test_truncate_at_limit_short_text() {
+        let text = "Hello world";
+        let result = truncate_at_limit(text, 100);
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_exact_limit() {
+        let text = "Hello world"; // 11 chars
+        let result = truncate_at_limit(text, 11);
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_over_limit() {
+        let text = "Hello world this is a test";
+        let result = truncate_at_limit(text, 15);
+        // Should cut at last whitespace before limit-3=12, which is after "world"
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 15);
+    }
+
+    #[test]
+    fn test_truncate_at_limit_finds_word_boundary() {
+        let text = "Hello world test";
+        let result = truncate_at_limit(text, 14);
+        // limit - 3 = 11, last whitespace before 11 is at 5 (after "Hello")
+        assert_eq!(result, "Hello...");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_no_whitespace() {
+        let text = "HelloWorldTest";
+        let result = truncate_at_limit(text, 10);
+        // No whitespace, so cuts at limit-3=7
+        assert_eq!(result, "HelloWo...");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_very_small_limit() {
+        let text = "Hello world";
+        let result = truncate_at_limit(text, 5);
+        // Very small limit, returns truncated text
+        assert!(result.len() <= 5);
+    }
+
+    #[test]
+    fn test_truncate_at_limit_zero_limit() {
+        let text = "Hello";
+        let result = truncate_at_limit(text, 0);
+        // Should return just "..."
+        assert_eq!(result, "...");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_preserves_utf8() {
+        let text = "Hello café world";
+        let result = truncate_at_limit(text, 100);
+        assert_eq!(result, "Hello café world");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_empty_string() {
+        let text = "";
+        let result = truncate_at_limit(text, 10);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_multibyte_no_panic() {
+        // "café" has a 2-byte 'é' character - cutting mid-codepoint would panic
+        let text = "café world test";
+        // Limit that would land in the middle of 'é' if not handled properly
+        let result = truncate_at_limit(text, 6);
+        // Should not panic and should produce valid UTF-8
+        assert!(result.is_ascii() || result.chars().count() > 0);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_at_limit_emoji_no_panic() {
+        // Emojis are 4 bytes - cutting mid-emoji would panic
+        let text = "Hello 🎉 world";
+        let result = truncate_at_limit(text, 9);
+        // Should not panic
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_at_limit_chinese_no_panic() {
+        // Chinese characters are 3 bytes each
+        let text = "你好世界 hello";
+        let result = truncate_at_limit(text, 8);
+        // Should not panic and produce valid output
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_at_limit_leading_multibyte_respects_limit() {
+        // Edge case: leading multibyte character that starts before cut_at but extends beyond
+        // "é" is 2 bytes, so "élé" = é(0-1) l(2) é(3-4) = 5 bytes
+        let text = "élé test";
+        let limit = 4;
+        let result = truncate_at_limit(text, limit);
+        // Result must not exceed the limit
+        assert!(
+            result.len() <= limit,
+            "Result '{}' (len={}) exceeds limit {}",
+            result,
+            result.len(),
+            limit
+        );
+    }
+
+    #[test]
+    fn test_truncate_at_limit_always_respects_byte_limit() {
+        // Test various limits with multibyte text
+        // Start from 4 because limits < 4 return "..." (3 bytes) which is the minimum
+        let text = "αβγδε test"; // Greek letters are 2 bytes each
+        for limit in 4..20 {
+            let result = truncate_at_limit(text, limit);
+            assert!(
+                result.len() <= limit,
+                "limit={}: Result '{}' (len={}) exceeds limit",
+                limit,
+                result,
+                result.len()
+            );
+        }
     }
 }
