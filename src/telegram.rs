@@ -521,17 +521,17 @@ pub async fn send_to_subscribers(
 
         // Check if this is a translation failure case (marked with special prefix)
         let translation_failed_marker = "\x00TRANSLATION_FAILED\x00";
-        let (notice_prefix, mut actual_content_owned) =
-            if content.starts_with(translation_failed_marker) {
-                // Translation failed - add pre-escaped notice and escape only the content
-                let actual = content
-                    .strip_prefix(translation_failed_marker)
-                    .unwrap_or(&content);
-                (get_translation_failure_notice(language), actual.to_string())
-            } else {
-                // Normal case - no notice needed
-                ("".to_string(), content.clone())
-            };
+        let translation_failed = content.starts_with(translation_failed_marker);
+        let (notice_prefix, mut actual_content_owned) = if translation_failed {
+            // Translation failed - add pre-escaped notice and escape only the content
+            let actual = content
+                .strip_prefix(translation_failed_marker)
+                .unwrap_or(&content);
+            (get_translation_failure_notice(language), actual.to_string())
+        } else {
+            // Normal case - no notice needed
+            ("".to_string(), content.clone())
+        };
 
         // Universal length validation - check if message would exceed Telegram's limit
         // Build a test message to check length (uses escaped content)
@@ -559,7 +559,13 @@ pub async fn send_to_subscribers(
                 Ok(condensed) => {
                     actual_content_owned = condensed.clone();
                     // Cache condensed content for other subscribers with same language
-                    translation_cache.insert(lang_code.clone(), condensed);
+                    // Preserve the translation-failure marker so subsequent subscribers see the notice
+                    let cached = if translation_failed {
+                        format!("{}{}", translation_failed_marker, condensed)
+                    } else {
+                        condensed
+                    };
+                    translation_cache.insert(lang_code.clone(), cached);
                 }
                 Err(e) => {
                     warn!("Failed to condense text: {}, falling back to truncation", e);

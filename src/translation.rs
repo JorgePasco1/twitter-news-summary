@@ -374,13 +374,15 @@ pub fn truncate_at_limit(text: &str, limit: usize) -> String {
         return "...".to_string();
     }
 
-    // Find a UTF-8 safe boundary before the cut point
+    // Find a UTF-8 safe boundary at or before the cut point
     // This prevents panics when limit lands mid-codepoint (e.g., "café")
+    // and ensures the result never exceeds the byte limit
     let safe_cut_at = text
         .char_indices()
-        .take_while(|(i, _)| *i < cut_at)
+        .map(|(i, _)| i)
+        .chain(std::iter::once(text.len()))
+        .take_while(|i| *i <= cut_at)
         .last()
-        .map(|(i, c)| i + c.len_utf8())
         .unwrap_or(0);
 
     if safe_cut_at == 0 {
@@ -550,7 +552,7 @@ mod tests {
             max_tweets: 100,
             hours_lookback: 12,
             summary_max_tokens: 2500,
-            summary_max_words: 600,
+            summary_max_words: 800,
             nitter_instance: "https://nitter.example.com".to_string(),
             nitter_api_key: None,
             usernames_file: "data/usernames.txt".to_string(),
@@ -1520,5 +1522,39 @@ mod tests {
         let result = truncate_at_limit(text, 8);
         // Should not panic and produce valid output
         assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_at_limit_leading_multibyte_respects_limit() {
+        // Edge case: leading multibyte character that starts before cut_at but extends beyond
+        // "é" is 2 bytes, so "élé" = é(0-1) l(2) é(3-4) = 5 bytes
+        let text = "élé test";
+        let limit = 4;
+        let result = truncate_at_limit(text, limit);
+        // Result must not exceed the limit
+        assert!(
+            result.len() <= limit,
+            "Result '{}' (len={}) exceeds limit {}",
+            result,
+            result.len(),
+            limit
+        );
+    }
+
+    #[test]
+    fn test_truncate_at_limit_always_respects_byte_limit() {
+        // Test various limits with multibyte text
+        // Start from 4 because limits < 4 return "..." (3 bytes) which is the minimum
+        let text = "αβγδε test"; // Greek letters are 2 bytes each
+        for limit in 4..20 {
+            let result = truncate_at_limit(text, limit);
+            assert!(
+                result.len() <= limit,
+                "limit={}: Result '{}' (len={}) exceeds limit",
+                limit,
+                result,
+                result.len()
+            );
+        }
     }
 }
