@@ -251,10 +251,16 @@ pub fn get_translation_failure_notice(target_language: Language) -> String {
 /// * `client` - HTTP client for API calls
 /// * `config` - Application configuration
 /// * `text` - The text to condense
-/// * `max_chars` - Maximum character limit for the output
+/// * `max_chars` - Target character limit (best-effort, not guaranteed)
 ///
 /// # Returns
 /// * Condensed text on success, or an error on failure
+///
+/// # Note
+/// LLM output may exceed `max_chars` despite instructions. Callers should use
+/// `truncate_at_limit()` as a fallback if strict enforcement is required.
+/// The Telegram integration does this with iterative truncation that also
+/// accounts for MarkdownV2 escape expansion.
 pub async fn condense_text(
     client: &reqwest::Client,
     config: &Config,
