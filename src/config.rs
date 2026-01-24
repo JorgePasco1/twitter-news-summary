@@ -103,6 +103,7 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(16000),
+            // 800 words for rich summaries; length validation handles any overruns
             summary_max_words: std::env::var("SUMMARY_MAX_WORDS")
                 .ok()
                 .and_then(|v| v.parse().ok())
