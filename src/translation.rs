@@ -102,19 +102,35 @@ CRITICAL: If you see any of the English headers above, replace them with the {} 
     let translation_examples = if target_language == Language::SPANISH {
         r#"
 ## Translation Examples
-INCORRECT (English left untranslated):
+
+### Section Headers
+INCORRECT: 🧠 Top takeaways
+CORRECT: 🧠 Conclusiones principales
+
+### Full Bullet Points
+INCORRECT (link label in English):
 - *New RoPE paper suggests...* — Afirma que... [Burkov thread](url)
 
-CORRECT (fully translated):
+CORRECT (link label translated):
 - *Nuevo artículo sobre RoPE sugiere...* — Afirma que... [hilo de Burkov](url)
 
-INCORRECT (section header not translated):
-🧠 Top takeaways
-- *Item* — text
+### Link Labels (CRITICAL - these MUST be translated)
+INCORRECT: [thdxr on coding agents](url)
+CORRECT: [thdxr sobre agentes de código](url)
 
-CORRECT (section header translated):
-🧠 Conclusiones principales
-- *Elemento* — texto"#
+INCORRECT: [PyTorchCon Europe CFP](url)
+CORRECT: [convocatoria PyTorchCon Europe](url)
+
+INCORRECT: [PeterYang reaction to list](url)
+CORRECT: [reacción de PeterYang a la lista](url)
+
+INCORRECT: [tutorial announcement](url)
+CORRECT: [anuncio del tutorial](url)
+
+INCORRECT: [Sam on AI safety](url)
+CORRECT: [Sam sobre seguridad de IA](url)
+
+Note: Keep @handles, product names, and proper nouns in the link label, but translate the connecting words and descriptions."#
     } else {
         "" // No examples for languages without defined translations
     };
@@ -133,10 +149,18 @@ The translated text MUST stay under 3800 characters total. This is a hard limit 
 Each bullet follows this pattern:
 - *BOLD TITLE* — explanation [link label](url)
 
-You MUST translate:
+You MUST translate ALL THREE parts:
 1. The BOLD TITLE (text between * and * before the em-dash —)
 2. The explanation (text after the em-dash)
-3. The link label (text between [ and ])
+3. The LINK LABEL (text between [ and ] - THIS IS MANDATORY)
+
+## Link Labels (VERY IMPORTANT)
+The link label in [brackets](url) MUST be translated to {target_name}.
+- Keep @handles as-is: "@thdxr" stays "@thdxr"
+- Keep product/company names: "PyTorchCon" stays "PyTorchCon"
+- Translate descriptive words: "on", "about", "thread", "reaction", "tutorial", "announcement"
+- Example: [thdxr on AI agents] → [thdxr sobre agentes de IA]
+- Example: [OpenAI safety post] → [publicación de OpenAI sobre seguridad]
 {translation_examples}
 
 ## DO NOT translate:
@@ -153,7 +177,12 @@ You MUST translate:
 ## KEEP in original English:
 - Any quoted tweet text (text inside quotation marks)
 - Code snippets or technical identifiers
-- Acronyms (AI, ML, LLM, GPU, etc.)
+- Acronyms that are part of brand names (OpenAI, DeepMind, etc.)
+- Technical acronyms without common Spanish equivalents (GPU, CPU, LLM, API, etc.)
+
+## DO translate these acronyms:
+- "AI" → "IA" (Inteligencia Artificial is standard in Spanish)
+- "ML" → "AA" or "aprendizaje automático" (machine learning)
 
 ## Formatting:
 - Preserve all markdown formatting (bold with *, italic with _, bullets with -)
