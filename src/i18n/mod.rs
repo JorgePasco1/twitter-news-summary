@@ -36,5 +36,7 @@ mod validator;
 pub use language::Language;
 pub use metrics::{MetricsReport, TranslationMetrics};
 pub use registry::{LanguageConfig, LanguageRegistry};
-pub use strings::LanguageStrings;
-pub use validator::{TranslationValidator, ValidationReport};
+pub use strings::{
+    LanguageStrings, SectionHeaders, ENGLISH_SECTION_HEADERS, SPANISH_SECTION_HEADERS,
+};
+pub use validator::{TranslationValidator, ValidationReport, ENGLISH_HEADERS};
