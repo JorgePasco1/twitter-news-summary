@@ -1,3 +1,47 @@
+/// Section header translations for AI-generated summaries.
+///
+/// These correspond to the headers used in src/openai.rs build_system_prompt().
+/// The English values are canonical and used as-is; other languages get translated.
+#[derive(Debug, Clone)]
+pub struct SectionHeaders {
+    /// "🧠 Top takeaways" section
+    pub top_takeaways: &'static str,
+    /// "🚀 Releases" section
+    pub releases: &'static str,
+    /// "🔬 Research" section
+    pub research: &'static str,
+    /// "🧰 Tools and Tutorials" section
+    pub tools_tutorials: &'static str,
+    /// "🏢 Companies and Deals" section
+    pub companies_deals: &'static str,
+    /// "⚖️ Policy and Safety" section
+    pub policy_safety: &'static str,
+    /// "💬 Debate and Opinions" section
+    pub debate_opinions: &'static str,
+}
+
+/// English section headers (canonical - used in summarization prompt)
+pub const ENGLISH_SECTION_HEADERS: SectionHeaders = SectionHeaders {
+    top_takeaways: "🧠 Top takeaways",
+    releases: "🚀 Releases",
+    research: "🔬 Research",
+    tools_tutorials: "🧰 Tools and Tutorials",
+    companies_deals: "🏢 Companies and Deals",
+    policy_safety: "⚖️ Policy and Safety",
+    debate_opinions: "💬 Debate and Opinions",
+};
+
+/// Spanish section headers (translations)
+pub const SPANISH_SECTION_HEADERS: SectionHeaders = SectionHeaders {
+    top_takeaways: "🧠 Conclusiones principales",
+    releases: "🚀 Lanzamientos",
+    research: "🔬 Investigación",
+    tools_tutorials: "🧰 Herramientas y tutoriales",
+    companies_deals: "🏢 Empresas y acuerdos",
+    policy_safety: "⚖️ Política y seguridad",
+    debate_opinions: "💬 Debate y opiniones",
+};
+
 /// All localized user-facing strings for a language
 ///
 /// Strings are stored in their raw, unescaped form. When displaying in Telegram,
@@ -11,6 +55,9 @@ pub struct LanguageStrings {
     /// Notice shown when translation fails and falling back to English
     /// Empty string means no notice is needed (e.g., for English itself)
     pub translation_failure_notice: &'static str,
+
+    /// Section headers for AI-generated summaries
+    pub section_headers: SectionHeaders,
 
     // ==================== Welcome/Help Messages ====================
     /// Welcome message shown to admin users
@@ -97,6 +144,7 @@ pub const ENGLISH_STRINGS: LanguageStrings = LanguageStrings {
     // Summary headers
     summary_header: "Twitter Summary",
     translation_failure_notice: "", // No notice needed for English
+    section_headers: ENGLISH_SECTION_HEADERS,
 
     // Welcome messages
     welcome_admin: "👋 Welcome to Twitter News Summary Bot\\!\n\n\
@@ -164,6 +212,7 @@ pub const SPANISH_STRINGS: LanguageStrings = LanguageStrings {
     // Summary headers
     summary_header: "Resumen de Twitter",
     translation_failure_notice: "\\[Nota: La traducción no está disponible\\. Enviando en inglés\\.\\]\n\n",
+    section_headers: SPANISH_SECTION_HEADERS,
 
     // Welcome messages
     welcome_admin: "👋 ¡Bienvenido al Bot de Resumen de Noticias de Twitter\\!\n\n\
@@ -879,5 +928,115 @@ mod tests {
                 errors.join("\n")
             );
         }
+    }
+
+    // ==================== Section Headers Tests ====================
+
+    #[test]
+    fn test_english_section_headers_have_emojis() {
+        assert!(ENGLISH_SECTION_HEADERS.top_takeaways.starts_with("🧠"));
+        assert!(ENGLISH_SECTION_HEADERS.releases.starts_with("🚀"));
+        assert!(ENGLISH_SECTION_HEADERS.research.starts_with("🔬"));
+        assert!(ENGLISH_SECTION_HEADERS.tools_tutorials.starts_with("🧰"));
+        assert!(ENGLISH_SECTION_HEADERS.companies_deals.starts_with("🏢"));
+        assert!(ENGLISH_SECTION_HEADERS.policy_safety.starts_with("⚖️"));
+        assert!(ENGLISH_SECTION_HEADERS.debate_opinions.starts_with("💬"));
+    }
+
+    #[test]
+    fn test_spanish_section_headers_have_same_emojis() {
+        // Spanish headers must have the same emojis as English
+        assert!(SPANISH_SECTION_HEADERS.top_takeaways.starts_with("🧠"));
+        assert!(SPANISH_SECTION_HEADERS.releases.starts_with("🚀"));
+        assert!(SPANISH_SECTION_HEADERS.research.starts_with("🔬"));
+        assert!(SPANISH_SECTION_HEADERS.tools_tutorials.starts_with("🧰"));
+        assert!(SPANISH_SECTION_HEADERS.companies_deals.starts_with("🏢"));
+        assert!(SPANISH_SECTION_HEADERS.policy_safety.starts_with("⚖️"));
+        assert!(SPANISH_SECTION_HEADERS.debate_opinions.starts_with("💬"));
+    }
+
+    #[test]
+    fn test_spanish_section_headers_are_translated() {
+        // Spanish headers must be different from English (actually translated)
+        assert_ne!(
+            SPANISH_SECTION_HEADERS.top_takeaways,
+            ENGLISH_SECTION_HEADERS.top_takeaways
+        );
+        assert_ne!(
+            SPANISH_SECTION_HEADERS.releases,
+            ENGLISH_SECTION_HEADERS.releases
+        );
+        assert_ne!(
+            SPANISH_SECTION_HEADERS.research,
+            ENGLISH_SECTION_HEADERS.research
+        );
+        assert_ne!(
+            SPANISH_SECTION_HEADERS.tools_tutorials,
+            ENGLISH_SECTION_HEADERS.tools_tutorials
+        );
+        assert_ne!(
+            SPANISH_SECTION_HEADERS.companies_deals,
+            ENGLISH_SECTION_HEADERS.companies_deals
+        );
+        assert_ne!(
+            SPANISH_SECTION_HEADERS.policy_safety,
+            ENGLISH_SECTION_HEADERS.policy_safety
+        );
+        assert_ne!(
+            SPANISH_SECTION_HEADERS.debate_opinions,
+            ENGLISH_SECTION_HEADERS.debate_opinions
+        );
+    }
+
+    #[test]
+    fn test_spanish_section_headers_contain_spanish_words() {
+        // Verify Spanish translations contain Spanish words
+        assert!(SPANISH_SECTION_HEADERS
+            .top_takeaways
+            .contains("Conclusiones"));
+        assert!(SPANISH_SECTION_HEADERS.releases.contains("Lanzamientos"));
+        assert!(SPANISH_SECTION_HEADERS.research.contains("Investigación"));
+        assert!(SPANISH_SECTION_HEADERS
+            .tools_tutorials
+            .contains("Herramientas"));
+        assert!(SPANISH_SECTION_HEADERS.companies_deals.contains("Empresas"));
+        assert!(SPANISH_SECTION_HEADERS.policy_safety.contains("Política"));
+        assert!(SPANISH_SECTION_HEADERS.debate_opinions.contains("Debate"));
+    }
+
+    #[test]
+    fn test_language_strings_include_section_headers() {
+        // Verify that LanguageStrings correctly includes section headers
+        assert_eq!(
+            ENGLISH_STRINGS.section_headers.top_takeaways,
+            ENGLISH_SECTION_HEADERS.top_takeaways
+        );
+        assert_eq!(
+            SPANISH_STRINGS.section_headers.top_takeaways,
+            SPANISH_SECTION_HEADERS.top_takeaways
+        );
+    }
+
+    #[test]
+    fn test_all_english_section_headers_list() {
+        // Verify we can get all English headers as an array (useful for validation)
+        let headers = [
+            ENGLISH_SECTION_HEADERS.top_takeaways,
+            ENGLISH_SECTION_HEADERS.releases,
+            ENGLISH_SECTION_HEADERS.research,
+            ENGLISH_SECTION_HEADERS.tools_tutorials,
+            ENGLISH_SECTION_HEADERS.companies_deals,
+            ENGLISH_SECTION_HEADERS.policy_safety,
+            ENGLISH_SECTION_HEADERS.debate_opinions,
+        ];
+
+        // All should be non-empty and unique
+        for header in &headers {
+            assert!(!header.is_empty());
+        }
+
+        // Check all are unique
+        let unique: std::collections::HashSet<_> = headers.iter().collect();
+        assert_eq!(unique.len(), headers.len(), "All headers should be unique");
     }
 }

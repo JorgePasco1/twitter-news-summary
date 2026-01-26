@@ -437,8 +437,11 @@ pub async fn send_to_subscribers(
 ) -> Result<()> {
     use crate::i18n::Language;
     use crate::translation::{
-        get_summary_header, get_translation_failure_notice, translate_summary,
+        condense_text, get_summary_header, get_translation_failure_notice, translate_summary,
+        truncate_at_limit,
     };
+
+    const TELEGRAM_CHAR_LIMIT: usize = 4096;
 
     let subscribers = db.list_subscribers().await?;
 
@@ -518,23 +521,98 @@ pub async fn send_to_subscribers(
 
         // Check if this is a translation failure case (marked with special prefix)
         let translation_failed_marker = "\x00TRANSLATION_FAILED\x00";
-        let (notice_prefix, actual_content) = if content.starts_with(translation_failed_marker) {
+        let translation_failed = content.starts_with(translation_failed_marker);
+        let (notice_prefix, mut actual_content_owned) = if translation_failed {
             // Translation failed - add pre-escaped notice and escape only the content
             let actual = content
                 .strip_prefix(translation_failed_marker)
                 .unwrap_or(&content);
-            (get_translation_failure_notice(language), actual)
+            (get_translation_failure_notice(language), actual.to_string())
         } else {
             // Normal case - no notice needed
-            ("".to_string(), content.as_str())
+            ("".to_string(), content.clone())
         };
+
+        // Universal length validation - check if message would exceed Telegram's limit
+        // Build a test message to check length (uses escaped content)
+        let mut test_message = format!(
+            "📰 *{}*\n_{}_\n\n{}{}",
+            escape_markdownv2(header),
+            escaped_timestamp,
+            notice_prefix,
+            escape_markdownv2(&actual_content_owned)
+        );
+
+        if test_message.len() > TELEGRAM_CHAR_LIMIT {
+            info!(
+                "Message too long ({} chars > {}), condensing for {}...",
+                test_message.len(),
+                TELEGRAM_CHAR_LIMIT,
+                lang_code
+            );
+
+            // Calculate target chars: leave room for header (~200 chars with escaping)
+            let target_chars = TELEGRAM_CHAR_LIMIT.saturating_sub(300);
+
+            // Try to condense the content
+            match condense_text(&client, config, &actual_content_owned, target_chars).await {
+                Ok(condensed) => {
+                    actual_content_owned = condensed.clone();
+                    // Cache condensed content for other subscribers with same language
+                    // Preserve the translation-failure marker so subsequent subscribers see the notice
+                    let cached = if translation_failed {
+                        format!("{}{}", translation_failed_marker, condensed)
+                    } else {
+                        condensed
+                    };
+                    translation_cache.insert(lang_code.clone(), cached);
+                }
+                Err(e) => {
+                    warn!("Failed to condense text: {}, falling back to truncation", e);
+                }
+            }
+
+            // Re-check after condensing - truncate iteratively if still too long
+            test_message = format!(
+                "📰 *{}*\n_{}_\n\n{}{}",
+                escape_markdownv2(header),
+                escaped_timestamp,
+                notice_prefix,
+                escape_markdownv2(&actual_content_owned)
+            );
+
+            if test_message.len() > TELEGRAM_CHAR_LIMIT {
+                warn!(
+                    "Message still too long after condensing ({} chars), truncating",
+                    test_message.len()
+                );
+
+                // Iteratively truncate until the ESCAPED message fits
+                // Escaping can expand text length, so we must check after each truncation
+                let mut truncate_limit = target_chars.saturating_sub(100);
+                while test_message.len() > TELEGRAM_CHAR_LIMIT && truncate_limit > 100 {
+                    let overflow = test_message.len() - TELEGRAM_CHAR_LIMIT;
+                    // Reduce limit by overflow amount plus buffer for escaping expansion
+                    truncate_limit = truncate_limit.saturating_sub(overflow + 50);
+                    actual_content_owned = truncate_at_limit(&actual_content_owned, truncate_limit);
+
+                    test_message = format!(
+                        "📰 *{}*\n_{}_\n\n{}{}",
+                        escape_markdownv2(header),
+                        escaped_timestamp,
+                        notice_prefix,
+                        escape_markdownv2(&actual_content_owned)
+                    );
+                }
+            }
+        }
 
         let message = format!(
             "📰 *{}*\n_{}_\n\n{}{}",
             escape_markdownv2(header),
             escaped_timestamp,
             notice_prefix, // Already pre-escaped in i18n strings
-            escape_markdownv2(actual_content)
+            escape_markdownv2(&actual_content_owned)
         );
 
         match send_message(config, subscriber.chat_id, &message).await {

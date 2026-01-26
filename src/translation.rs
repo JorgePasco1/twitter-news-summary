@@ -1,5 +1,7 @@
 use crate::config::Config;
-use crate::i18n::{Language, TranslationValidator};
+use crate::i18n::{
+    Language, TranslationValidator, ENGLISH_SECTION_HEADERS, SPANISH_SECTION_HEADERS,
+};
 use crate::retry::{with_retry_if, RetryConfig};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -45,40 +47,152 @@ struct Choice {
 // It's imported at the top of this file and used throughout
 
 /// Build the system prompt for translation
-fn build_translation_system_prompt(target_language: &str) -> String {
+fn build_translation_system_prompt(target_language: Language) -> String {
+    let target_name = target_language.name();
+
+    // For non-canonical languages, include explicit header mappings and examples
+    // English (canonical) doesn't need translation instructions
+    if target_language.is_canonical() {
+        // English target: minimal prompt (no-op since we skip translation anyway)
+        return r#"You are a professional translator. The content is already in English.
+No translation is needed. Return the content unchanged."#
+            .to_string();
+    }
+
+    // Get the section header mappings based on target language
+    let section_header_instructions = if target_language == Language::SPANISH {
+        format!(
+            r#"
+## MANDATORY Section Header Translations
+You MUST translate these section headers EXACTLY as shown:
+
+| English | {} |
+|---------|----------|
+| "{}" | "{}" |
+| "{}" | "{}" |
+| "{}" | "{}" |
+| "{}" | "{}" |
+| "{}" | "{}" |
+| "{}" | "{}" |
+| "{}" | "{}" |
+
+CRITICAL: If you see any of the English headers above, replace them with the {} version."#,
+            target_name,
+            ENGLISH_SECTION_HEADERS.top_takeaways,
+            SPANISH_SECTION_HEADERS.top_takeaways,
+            ENGLISH_SECTION_HEADERS.releases,
+            SPANISH_SECTION_HEADERS.releases,
+            ENGLISH_SECTION_HEADERS.research,
+            SPANISH_SECTION_HEADERS.research,
+            ENGLISH_SECTION_HEADERS.tools_tutorials,
+            SPANISH_SECTION_HEADERS.tools_tutorials,
+            ENGLISH_SECTION_HEADERS.companies_deals,
+            SPANISH_SECTION_HEADERS.companies_deals,
+            ENGLISH_SECTION_HEADERS.policy_safety,
+            SPANISH_SECTION_HEADERS.policy_safety,
+            ENGLISH_SECTION_HEADERS.debate_opinions,
+            SPANISH_SECTION_HEADERS.debate_opinions,
+            target_name,
+        )
+    } else {
+        String::new() // Other non-English languages don't have header mappings defined yet
+    };
+
+    // Translation examples - use Spanish examples for Spanish, generic otherwise
+    let translation_examples = if target_language == Language::SPANISH {
+        r#"
+## Translation Examples
+
+### Section Headers
+INCORRECT: 🧠 Top takeaways
+CORRECT: 🧠 Conclusiones principales
+
+### Full Bullet Points
+INCORRECT (link label in English):
+- *New RoPE paper suggests...* — Afirma que... [Burkov thread](url)
+
+CORRECT (link label translated):
+- *Nuevo artículo sobre RoPE sugiere...* — Afirma que... [hilo de Burkov](url)
+
+### Link Labels (CRITICAL - these MUST be translated)
+INCORRECT: [thdxr on coding agents](url)
+CORRECT: [thdxr sobre agentes de código](url)
+
+INCORRECT: [PyTorchCon Europe CFP](url)
+CORRECT: [convocatoria PyTorchCon Europe](url)
+
+INCORRECT: [PeterYang reaction to list](url)
+CORRECT: [reacción de PeterYang a la lista](url)
+
+INCORRECT: [tutorial announcement](url)
+CORRECT: [anuncio del tutorial](url)
+
+INCORRECT: [Sam on AI safety](url)
+CORRECT: [Sam sobre seguridad de IA](url)
+
+Note: Keep @handles, product names, and proper nouns in the link label, but translate the connecting words and descriptions."#
+    } else {
+        "" // No examples for languages without defined translations
+    };
+
     format!(
-        r#"You are a professional translator. Translate the following summary from English to {}.
+        r#"You are a professional translator. Translate the following summary from English to {target_name}.
 
-## Translation Rules
+## CRITICAL: Length Constraint
+The translated text MUST stay under 3800 characters total. This is a hard limit for Telegram.
+- If the translation would exceed this, condense while preserving key information
+- Prioritize keeping the most important items; trim less critical details
+- Use concise phrasing natural to the target language
+{section_header_instructions}
 
-### DO NOT translate:
+## Bullet Format (CRITICAL)
+Each bullet follows this pattern:
+- *BOLD TITLE* — explanation [link label](url)
+
+You MUST translate ALL THREE parts:
+1. The BOLD TITLE (text between * and * before the em-dash —)
+2. The explanation (text after the em-dash)
+3. The LINK LABEL (text between [ and ] - THIS IS MANDATORY)
+
+## Link Labels (VERY IMPORTANT)
+The link label in [brackets](url) MUST be translated to {target_name}.
+- Keep @handles as-is: "@thdxr" stays "@thdxr"
+- Keep product/company names: "PyTorchCon" stays "PyTorchCon"
+- Translate descriptive words: "on", "about", "thread", "reaction", "tutorial", "announcement"
+- Example: [thdxr on AI agents] → [thdxr sobre agentes de IA]
+- Example: [OpenAI safety post] → [publicación de OpenAI sobre seguridad]
+{translation_examples}
+
+## DO NOT translate:
 - Twitter/X @handles (e.g., @elonmusk, @sama)
 - Hashtags (e.g., #AI, #MachineLearning)
 - Cashtags (e.g., $TSLA, $NVDA)
-- URLs and links
-- Proper names of people, companies, and products
-- Technical terms that are commonly used in English in the tech community
+- URLs and links (the URL itself, not the label)
+- Proper names of people (Sam Altman, Elon Musk, etc.)
+- Company names (OpenAI, Google, Meta, etc.)
+- Product names (ChatGPT, Claude, Gemini, etc.)
+- Paper titles if they are proper nouns
+- Technical terms commonly used in English (transformer, fine-tuning, etc.)
 
-### KEEP in original English:
+## KEEP in original English:
 - Any quoted tweet text (text inside quotation marks)
 - Code snippets or technical identifiers
-- Acronyms (AI, ML, LLM, GPU, etc.)
+- Acronyms that are part of brand names (OpenAI, DeepMind, etc.)
+- Technical acronyms without common Spanish equivalents (GPU, CPU, LLM, API, etc.)
 
-### DO translate:
-- Section headers and bullet points
-- Descriptive text and explanations
-- The general narrative and context
+## DO translate these acronyms:
+- "AI" → "IA" (Inteligencia Artificial is standard in Spanish)
+- "ML" → "AA" or "aprendizaje automático" (machine learning)
 
-### Formatting:
-- Preserve all markdown formatting (bold, italic, headers, bullet points)
+## Formatting:
+- Preserve all markdown formatting (bold with *, italic with _, bullets with -)
 - Preserve all emojis
 - Maintain the same structure and layout as the original
 
-### Tone:
+## Tone:
 - Keep the same professional but accessible tone
 - Maintain nuance and accuracy
-- If a term has no good translation, keep the English term"#,
-        target_language
+- If a term has no good translation, keep the English term"#
     )
 }
 
@@ -118,7 +232,7 @@ pub async fn translate_summary(
         messages: vec![
             Message {
                 role: "system".to_string(),
-                content: build_translation_system_prompt(target_language.name()),
+                content: build_translation_system_prompt(target_language),
             },
             Message {
                 role: "user".to_string(),
@@ -175,7 +289,7 @@ pub async fn translate_summary(
     .await?;
 
     // Validate translation quality
-    let validation = TranslationValidator::validate(summary, &translated);
+    let validation = TranslationValidator::validate(summary, &translated, target_language);
     if !validation.warnings.is_empty() {
         warn!(
             "Translation validation warnings for {} ({}): {:?}",
@@ -184,13 +298,18 @@ pub async fn translate_summary(
             validation.warnings
         );
     }
-    if !validation.errors.is_empty() {
-        warn!(
-            "Translation validation errors for {} ({}): {:?}",
+
+    // Validation errors (e.g., untranslated headers) cause translation to fail
+    // The caller will fall back to English with a notice
+    if validation.has_errors() {
+        let error_msg = format!(
+            "Translation validation failed for {} ({}): {:?}",
             target_language.name(),
             target_language.code(),
             validation.errors
         );
+        warn!("{}", error_msg);
+        anyhow::bail!("{}", error_msg);
     }
 
     Ok(translated)
@@ -234,6 +353,166 @@ pub fn get_translation_failure_notice(target_language: Language) -> String {
         .strings
         .translation_failure_notice
         .to_string()
+}
+
+/// Condense text to fit within a character limit while preserving key information.
+///
+/// This function asks OpenAI to shorten the text while keeping the most important
+/// information and preserving the same language (auto-detected).
+///
+/// # Arguments
+/// * `client` - HTTP client for API calls
+/// * `config` - Application configuration
+/// * `text` - The text to condense
+/// * `max_chars` - Target character limit (best-effort, not guaranteed)
+///
+/// # Returns
+/// * Condensed text on success, or an error on failure
+///
+/// # Note
+/// LLM output may exceed `max_chars` despite instructions. Callers should use
+/// `truncate_at_limit()` as a fallback if strict enforcement is required.
+/// The Telegram integration does this with iterative truncation that also
+/// accounts for MarkdownV2 escape expansion.
+pub async fn condense_text(
+    client: &reqwest::Client,
+    config: &Config,
+    text: &str,
+    max_chars: usize,
+) -> Result<String> {
+    use tracing::info;
+
+    info!(
+        "Condensing text from {} chars to max {} chars",
+        text.len(),
+        max_chars
+    );
+
+    let system_prompt = format!(
+        r#"You are an expert editor. Your task is to condense the provided text to UNDER {} characters.
+
+## Instructions:
+1. Keep the most important information and key points
+2. Remove less critical details and redundant content
+3. Use concise phrasing while maintaining clarity
+4. Preserve the SAME LANGUAGE as the input (detect automatically)
+5. Preserve markdown formatting (bold, italic, bullets)
+6. Preserve @handles, #hashtags, $cashtags, and URLs unchanged
+7. Do NOT add any explanations or meta-commentary
+
+Output ONLY the condensed text, nothing else."#,
+        max_chars
+    );
+
+    // Reasoning models need higher token limits and don't support temperature
+    let is_reasoning = is_reasoning_model(&config.openai_model);
+    let max_completion_tokens = if is_reasoning { 16000 } else { 4000 };
+
+    let request = TranslationRequest {
+        model: config.openai_model.clone(),
+        messages: vec![
+            Message {
+                role: "system".to_string(),
+                content: system_prompt,
+            },
+            Message {
+                role: "user".to_string(),
+                content: text.to_string(),
+            },
+        ],
+        max_completion_tokens,
+        temperature: if is_reasoning { None } else { Some(0.3) },
+        reasoning_effort: if is_reasoning {
+            Some("low".to_string())
+        } else {
+            None
+        },
+    };
+
+    let condensed = with_retry_if(
+        &RetryConfig::api_call(),
+        "Text condensing",
+        || async {
+            let response = client
+                .post(&config.openai_api_url)
+                .header("Authorization", format!("Bearer {}", config.openai_api_key))
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
+                .await
+                .context("Failed to send condense request to OpenAI API")?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
+                anyhow::bail!("OpenAI API error during condensing ({}): {}", status, body);
+            }
+
+            let chat_response: ChatResponse = response
+                .json()
+                .await
+                .context("Failed to parse OpenAI condense response")?;
+
+            let condensed = chat_response
+                .choices
+                .first()
+                .map(|c| c.message.content.clone())
+                .context("OpenAI condense response contained no choices")?;
+
+            Ok(condensed)
+        },
+        is_retryable_error,
+    )
+    .await?;
+
+    info!(
+        "Condensed text from {} to {} chars",
+        text.len(),
+        condensed.len()
+    );
+
+    Ok(condensed)
+}
+
+/// Truncate text at a word boundary with ellipsis.
+///
+/// If the text exceeds the limit, it's cut at the last whitespace before
+/// the limit and an ellipsis is appended. This function is UTF-8 safe and
+/// will not panic on multi-byte characters.
+pub fn truncate_at_limit(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_string();
+    }
+
+    // Reserve space for ellipsis
+    let cut_at = limit.saturating_sub(3);
+    if cut_at == 0 {
+        return "...".to_string();
+    }
+
+    // Find a UTF-8 safe boundary at or before the cut point
+    // This prevents panics when limit lands mid-codepoint (e.g., "café")
+    // and ensures the result never exceeds the byte limit
+    let safe_cut_at = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(text.len()))
+        .take_while(|i| *i <= cut_at)
+        .last()
+        .unwrap_or(0);
+
+    if safe_cut_at == 0 {
+        return "...".to_string();
+    }
+
+    // Find last whitespace before the safe cut point
+    let slice = &text[..safe_cut_at];
+    let cut_point = slice.rfind(char::is_whitespace).unwrap_or(safe_cut_at);
+
+    format!("{}...", &text[..cut_point])
 }
 
 #[cfg(test)]
@@ -310,7 +589,7 @@ mod tests {
 
     #[test]
     fn test_build_translation_system_prompt_spanish() {
-        let prompt = build_translation_system_prompt("Spanish");
+        let prompt = build_translation_system_prompt(Language::SPANISH);
 
         assert!(prompt.contains("Spanish"));
         assert!(prompt.contains("DO NOT translate"));
@@ -323,17 +602,60 @@ mod tests {
 
     #[test]
     fn test_build_translation_system_prompt_mentions_handles() {
-        let prompt = build_translation_system_prompt("Spanish");
+        let prompt = build_translation_system_prompt(Language::SPANISH);
         assert!(prompt.contains("@elonmusk"));
         assert!(prompt.contains("@sama"));
     }
 
     #[test]
     fn test_build_translation_system_prompt_mentions_technical_terms() {
-        let prompt = build_translation_system_prompt("Spanish");
+        let prompt = build_translation_system_prompt(Language::SPANISH);
         assert!(prompt.contains("AI"));
         assert!(prompt.contains("ML"));
         assert!(prompt.contains("LLM"));
+    }
+
+    #[test]
+    fn test_build_translation_system_prompt_includes_section_headers() {
+        let prompt = build_translation_system_prompt(Language::SPANISH);
+
+        // Should contain the section header mapping table
+        assert!(prompt.contains("MANDATORY Section Header Translations"));
+
+        // Should contain all English headers
+        assert!(prompt.contains("🧠 Top takeaways"));
+        assert!(prompt.contains("🚀 Releases"));
+        assert!(prompt.contains("🔬 Research"));
+        assert!(prompt.contains("🧰 Tools and Tutorials"));
+
+        // Should contain all Spanish translations
+        assert!(prompt.contains("🧠 Conclusiones principales"));
+        assert!(prompt.contains("🚀 Lanzamientos"));
+        assert!(prompt.contains("🔬 Investigación"));
+        assert!(prompt.contains("🧰 Herramientas y tutoriales"));
+    }
+
+    #[test]
+    fn test_build_translation_system_prompt_includes_bullet_examples() {
+        let prompt = build_translation_system_prompt(Language::SPANISH);
+
+        // Should contain the bullet format instructions
+        assert!(prompt.contains("Bullet Format"));
+        assert!(prompt.contains("BOLD TITLE"));
+        assert!(prompt.contains("em-dash"));
+
+        // Should contain examples of correct/incorrect translations
+        assert!(prompt.contains("INCORRECT"));
+        assert!(prompt.contains("CORRECT"));
+    }
+
+    #[test]
+    fn test_build_translation_system_prompt_english_no_header_mapping() {
+        let prompt = build_translation_system_prompt(Language::ENGLISH);
+
+        // English prompt should NOT contain section header mapping
+        assert!(!prompt.contains("MANDATORY Section Header Translations"));
+        assert!(!prompt.contains("Conclusiones principales"));
     }
 
     // ==================== User Prompt Tests ====================
@@ -1262,5 +1584,241 @@ mod tests {
         // Cases that SHOULD match due to prefix matching
         assert!(is_reasoning_model("gpt-5-turbo")); // Hypothetical future gpt-5 variant
         assert!(is_reasoning_model("o1-turbo")); // Hypothetical future o1 variant
+    }
+
+    // ==================== truncate_at_limit Tests ====================
+
+    #[test]
+    fn test_truncate_at_limit_short_text() {
+        let text = "Hello world";
+        let result = truncate_at_limit(text, 100);
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_exact_limit() {
+        let text = "Hello world"; // 11 chars
+        let result = truncate_at_limit(text, 11);
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_over_limit() {
+        let text = "Hello world this is a test";
+        let result = truncate_at_limit(text, 15);
+        // Should cut at last whitespace before limit-3=12, which is after "world"
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 15);
+    }
+
+    #[test]
+    fn test_truncate_at_limit_finds_word_boundary() {
+        let text = "Hello world test";
+        let result = truncate_at_limit(text, 14);
+        // limit - 3 = 11, last whitespace before 11 is at 5 (after "Hello")
+        assert_eq!(result, "Hello...");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_no_whitespace() {
+        let text = "HelloWorldTest";
+        let result = truncate_at_limit(text, 10);
+        // No whitespace, so cuts at limit-3=7
+        assert_eq!(result, "HelloWo...");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_very_small_limit() {
+        let text = "Hello world";
+        let result = truncate_at_limit(text, 5);
+        // Very small limit, returns truncated text
+        assert!(result.len() <= 5);
+    }
+
+    #[test]
+    fn test_truncate_at_limit_zero_limit() {
+        let text = "Hello";
+        let result = truncate_at_limit(text, 0);
+        // Should return just "..."
+        assert_eq!(result, "...");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_preserves_utf8() {
+        let text = "Hello café world";
+        let result = truncate_at_limit(text, 100);
+        assert_eq!(result, "Hello café world");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_empty_string() {
+        let text = "";
+        let result = truncate_at_limit(text, 10);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_truncate_at_limit_multibyte_no_panic() {
+        // "café" has a 2-byte 'é' character - cutting mid-codepoint would panic
+        let text = "café world test";
+        // Limit that would land in the middle of 'é' if not handled properly
+        let result = truncate_at_limit(text, 6);
+        // Should not panic and should produce valid UTF-8
+        assert!(result.is_ascii() || result.chars().count() > 0);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_at_limit_emoji_no_panic() {
+        // Emojis are 4 bytes - cutting mid-emoji would panic
+        let text = "Hello 🎉 world";
+        let result = truncate_at_limit(text, 9);
+        // Should not panic
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_at_limit_chinese_no_panic() {
+        // Chinese characters are 3 bytes each
+        let text = "你好世界 hello";
+        let result = truncate_at_limit(text, 8);
+        // Should not panic and produce valid output
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_at_limit_leading_multibyte_respects_limit() {
+        // Edge case: leading multibyte character that starts before cut_at but extends beyond
+        // "é" is 2 bytes, so "élé" = é(0-1) l(2) é(3-4) = 5 bytes
+        let text = "élé test";
+        let limit = 4;
+        let result = truncate_at_limit(text, limit);
+        // Result must not exceed the limit
+        assert!(
+            result.len() <= limit,
+            "Result '{}' (len={}) exceeds limit {}",
+            result,
+            result.len(),
+            limit
+        );
+    }
+
+    #[test]
+    fn test_truncate_at_limit_always_respects_byte_limit() {
+        // Test various limits with multibyte text
+        // Start from 4 because limits < 4 return "..." (3 bytes) which is the minimum
+        let text = "αβγδε test"; // Greek letters are 2 bytes each
+        for limit in 4..20 {
+            let result = truncate_at_limit(text, limit);
+            assert!(
+                result.len() <= limit,
+                "limit={}: Result '{}' (len={}) exceeds limit",
+                limit,
+                result,
+                result.len()
+            );
+        }
+    }
+
+    // ==================== Translation Validation Integration Tests ====================
+
+    #[tokio::test]
+    async fn test_translate_summary_fails_on_untranslated_headers() {
+        let mock_server = MockServer::start().await;
+
+        // API returns "translation" that still has English headers
+        let bad_translation = "🧠 Top takeaways\n- *Elemento* — texto [enlace](url)";
+        let response_body = create_openai_response(bad_translation);
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+
+        let original = "🧠 Top takeaways\n- *Item* — text [link](url)";
+        let result = translate_summary(&client, &config, original, Language::SPANISH).await;
+
+        // Should fail because the header was not translated
+        assert!(
+            result.is_err(),
+            "Should fail when headers are not translated"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("validation failed"),
+            "Error should mention validation failure: {}",
+            err
+        );
+        assert!(
+            err.contains("Top takeaways"),
+            "Error should mention the untranslated header: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_translate_summary_succeeds_with_translated_headers() {
+        let mock_server = MockServer::start().await;
+
+        // API returns proper translation with Spanish headers
+        let good_translation = "🧠 Conclusiones principales\n- *Elemento* — texto [enlace](url)";
+        let response_body = create_openai_response(good_translation);
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+
+        let original = "🧠 Top takeaways\n- *Item* — text [link](url)";
+        let result = translate_summary(&client, &config, original, Language::SPANISH).await;
+
+        // Should succeed because the header was translated
+        assert!(
+            result.is_ok(),
+            "Should succeed with translated headers: {:?}",
+            result
+        );
+        assert_eq!(result.unwrap(), good_translation);
+    }
+
+    #[tokio::test]
+    async fn test_translate_summary_validates_all_headers() {
+        let mock_server = MockServer::start().await;
+
+        // Translation has multiple untranslated headers
+        let bad_translation = "🧠 Conclusiones principales\n- item\n\n🚀 Releases\n- item";
+        let response_body = create_openai_response(bad_translation);
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+
+        let original = "🧠 Top takeaways\n- item\n\n🚀 Releases\n- item";
+        let result = translate_summary(&client, &config, original, Language::SPANISH).await;
+
+        // Should fail because "🚀 Releases" was not translated
+        assert!(
+            result.is_err(),
+            "Should fail when any header is not translated"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Releases"),
+            "Error should mention untranslated 'Releases' header: {}",
+            err
+        );
     }
 }

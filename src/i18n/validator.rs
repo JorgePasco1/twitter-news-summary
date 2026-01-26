@@ -4,6 +4,8 @@
 //! important elements are preserved during translation (e.g., @handles,
 //! #hashtags, URLs, etc.).
 
+use super::strings::ENGLISH_SECTION_HEADERS;
+use super::Language;
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -58,6 +60,18 @@ static CASHTAG_REGEX: OnceLock<Regex> = OnceLock::new();
 static URL_REGEX: OnceLock<Regex> = OnceLock::new();
 static MARKDOWN_LINK_REGEX: OnceLock<Regex> = OnceLock::new();
 
+/// List of all English section headers used in summaries.
+/// These should NOT appear in translated content for non-English targets.
+pub const ENGLISH_HEADERS: [&str; 7] = [
+    ENGLISH_SECTION_HEADERS.top_takeaways,
+    ENGLISH_SECTION_HEADERS.releases,
+    ENGLISH_SECTION_HEADERS.research,
+    ENGLISH_SECTION_HEADERS.tools_tutorials,
+    ENGLISH_SECTION_HEADERS.companies_deals,
+    ENGLISH_SECTION_HEADERS.policy_safety,
+    ENGLISH_SECTION_HEADERS.debate_opinions,
+];
+
 impl TranslationValidator {
     /// Validate that a translation preserves important elements from the original.
     ///
@@ -67,14 +81,20 @@ impl TranslationValidator {
     /// - $cashtags are preserved
     /// - URLs are preserved
     /// - Markdown links are preserved
+    /// - Section headers are translated (for non-English targets)
     ///
     /// # Arguments
     /// * `original` - The original text (before translation)
     /// * `translated` - The translated text
+    /// * `target_language` - The target language of the translation
     ///
     /// # Returns
     /// A `ValidationReport` containing any errors or warnings found.
-    pub fn validate(original: &str, translated: &str) -> ValidationReport {
+    pub fn validate(
+        original: &str,
+        translated: &str,
+        target_language: Language,
+    ) -> ValidationReport {
         let mut report = ValidationReport::new();
 
         // Check @handles
@@ -129,7 +149,33 @@ impl TranslationValidator {
             ));
         }
 
+        // Check for untranslated section headers (only for non-English targets)
+        if !target_language.is_canonical() {
+            let untranslated = Self::find_untranslated_headers(translated);
+            for header in untranslated {
+                report.errors.push(format!(
+                    "Untranslated section header found: '{}' should be translated to {}",
+                    header,
+                    target_language.name()
+                ));
+            }
+        }
+
         report
+    }
+
+    /// Find any English section headers that appear in the translated text.
+    ///
+    /// Returns a list of headers that were NOT translated.
+    /// Only matches headers at the start of lines to avoid false positives
+    /// from quoted text or bullet content that might mention header text.
+    pub fn find_untranslated_headers(translated: &str) -> Vec<&'static str> {
+        let lines: Vec<&str> = translated.lines().map(|line| line.trim()).collect();
+        ENGLISH_HEADERS
+            .iter()
+            .filter(|header| lines.iter().any(|line| line.starts_with(*header)))
+            .copied()
+            .collect()
     }
 
     /// Extract all @handles from text
@@ -324,7 +370,7 @@ mod tests {
         let original = "Check out @elonmusk talking about #AI at https://example.com";
         let translated = "Mira a @elonmusk hablando de #AI en https://example.com";
 
-        let report = TranslationValidator::validate(original, translated);
+        let report = TranslationValidator::validate(original, translated, Language::SPANISH);
         assert!(report.is_clean());
     }
 
@@ -333,7 +379,7 @@ mod tests {
         let original = "Follow @elonmusk for updates";
         let translated = "Sigue a elonmusk para actualizaciones";
 
-        let report = TranslationValidator::validate(original, translated);
+        let report = TranslationValidator::validate(original, translated, Language::SPANISH);
         assert!(report.has_warnings());
         assert!(report.warnings[0].contains("Handle mismatch"));
     }
@@ -343,7 +389,7 @@ mod tests {
         let original = "This is about #AI technology";
         let translated = "Esto es sobre tecnología AI";
 
-        let report = TranslationValidator::validate(original, translated);
+        let report = TranslationValidator::validate(original, translated, Language::SPANISH);
         assert!(report.has_warnings());
         assert!(report.warnings[0].contains("Hashtag mismatch"));
     }
@@ -353,7 +399,7 @@ mod tests {
         let original = "Read more at https://example.com";
         let translated = "Lee más aquí";
 
-        let report = TranslationValidator::validate(original, translated);
+        let report = TranslationValidator::validate(original, translated, Language::SPANISH);
         assert!(report.has_warnings());
         assert!(report.warnings[0].contains("URL mismatch"));
     }
@@ -363,7 +409,7 @@ mod tests {
         let original = "Stock price of $TSLA is up";
         let translated = "El precio de TSLA está subiendo";
 
-        let report = TranslationValidator::validate(original, translated);
+        let report = TranslationValidator::validate(original, translated, Language::SPANISH);
         assert!(report.has_warnings());
         assert!(report.warnings[0].contains("Cashtag mismatch"));
     }
@@ -375,8 +421,121 @@ mod tests {
         let translated =
             "@sama habla de #AI y $NVDA en https://example.com con [enlace](https://test.com)";
 
-        let report = TranslationValidator::validate(original, translated);
+        let report = TranslationValidator::validate(original, translated, Language::SPANISH);
         assert!(report.is_clean());
+    }
+
+    // ==================== Untranslated Header Detection Tests ====================
+
+    #[test]
+    fn test_validate_detects_untranslated_headers() {
+        let original = "🧠 Top takeaways\n- *Item* — text [link](url)";
+        // Translation leaves the header in English - this is a validation ERROR
+        let translated = "🧠 Top takeaways\n- *Elemento* — texto [enlace](url)";
+
+        let report = TranslationValidator::validate(original, translated, Language::SPANISH);
+        assert!(report.has_errors());
+        assert!(report.errors[0].contains("Untranslated section header"));
+        assert!(report.errors[0].contains("Top takeaways"));
+    }
+
+    #[test]
+    fn test_validate_accepts_translated_headers() {
+        let original = "🧠 Top takeaways\n- *Item* — text [link](url)";
+        // Properly translated - header is in Spanish
+        let translated = "🧠 Conclusiones principales\n- *Elemento* — texto [enlace](url)";
+
+        let report = TranslationValidator::validate(original, translated, Language::SPANISH);
+        // Should not have errors about untranslated headers
+        assert!(
+            !report.has_errors(),
+            "Should not have errors for properly translated headers"
+        );
+    }
+
+    #[test]
+    fn test_validate_english_target_ignores_english_headers() {
+        let original = "🧠 Top takeaways\n- *Item* — text";
+        let translated = "🧠 Top takeaways\n- *Item* — text"; // Same content
+
+        // For English target, English headers are expected - no error
+        let report = TranslationValidator::validate(original, translated, Language::ENGLISH);
+        assert!(!report.has_errors());
+    }
+
+    #[test]
+    fn test_find_untranslated_headers_single() {
+        let text = "🧠 Top takeaways\n- *Item* — text";
+        let untranslated = TranslationValidator::find_untranslated_headers(text);
+        assert_eq!(untranslated.len(), 1);
+        assert!(untranslated.contains(&"🧠 Top takeaways"));
+    }
+
+    #[test]
+    fn test_find_untranslated_headers_multiple() {
+        let text = "🧠 Top takeaways\n- item\n\n🚀 Releases\n- item\n\n🔬 Research\n- item";
+        let untranslated = TranslationValidator::find_untranslated_headers(text);
+        assert_eq!(untranslated.len(), 3);
+        assert!(untranslated.contains(&"🧠 Top takeaways"));
+        assert!(untranslated.contains(&"🚀 Releases"));
+        assert!(untranslated.contains(&"🔬 Research"));
+    }
+
+    #[test]
+    fn test_find_untranslated_headers_none_when_translated() {
+        // All headers are in Spanish - should find none
+        let text = "🧠 Conclusiones principales\n- elemento\n\n🚀 Lanzamientos\n- elemento";
+        let untranslated = TranslationValidator::find_untranslated_headers(text);
+        assert!(untranslated.is_empty());
+    }
+
+    #[test]
+    fn test_find_untranslated_headers_partial_translation() {
+        // Some headers translated, some not
+        let text = "🧠 Conclusiones principales\n- item\n\n🚀 Releases\n- item"; // Releases NOT translated
+        let untranslated = TranslationValidator::find_untranslated_headers(text);
+        assert_eq!(untranslated.len(), 1);
+        assert!(untranslated.contains(&"🚀 Releases"));
+        assert!(!untranslated.contains(&"🧠 Top takeaways")); // This was translated
+    }
+
+    #[test]
+    fn test_all_english_headers_are_covered() {
+        // Verify ENGLISH_HEADERS contains all the expected headers
+        assert_eq!(ENGLISH_HEADERS.len(), 7);
+        assert!(ENGLISH_HEADERS.contains(&"🧠 Top takeaways"));
+        assert!(ENGLISH_HEADERS.contains(&"🚀 Releases"));
+        assert!(ENGLISH_HEADERS.contains(&"🔬 Research"));
+        assert!(ENGLISH_HEADERS.contains(&"🧰 Tools and Tutorials"));
+        assert!(ENGLISH_HEADERS.contains(&"🏢 Companies and Deals"));
+        assert!(ENGLISH_HEADERS.contains(&"⚖️ Policy and Safety"));
+        assert!(ENGLISH_HEADERS.contains(&"💬 Debate and Opinions"));
+    }
+
+    #[test]
+    fn test_find_untranslated_headers_no_false_positives_from_quoted_text() {
+        // Header text appears in a bullet/quote, but the actual header is translated
+        // This should NOT trigger a false positive
+        let text = r#"🧠 Conclusiones principales
+- *Artículo menciona "🧠 Top takeaways" como título* — explicación [enlace](url)
+- *Otro punto* — texto"#;
+        let untranslated = TranslationValidator::find_untranslated_headers(text);
+        // Should be empty - the header is translated, the quote doesn't count
+        assert!(
+            untranslated.is_empty(),
+            "Should not flag quoted text as untranslated header: {:?}",
+            untranslated
+        );
+    }
+
+    #[test]
+    fn test_find_untranslated_headers_detects_actual_untranslated_header() {
+        // The actual header line is in English - this SHOULD be detected
+        let text = r#"🧠 Top takeaways
+- *Elemento* — texto [enlace](url)"#;
+        let untranslated = TranslationValidator::find_untranslated_headers(text);
+        assert_eq!(untranslated.len(), 1);
+        assert!(untranslated.contains(&"🧠 Top takeaways"));
     }
 
     #[test]
