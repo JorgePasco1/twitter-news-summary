@@ -167,10 +167,13 @@ impl TranslationValidator {
     /// Find any English section headers that appear in the translated text.
     ///
     /// Returns a list of headers that were NOT translated.
+    /// Only matches headers at the start of lines to avoid false positives
+    /// from quoted text or bullet content that might mention header text.
     pub fn find_untranslated_headers(translated: &str) -> Vec<&'static str> {
+        let lines: Vec<&str> = translated.lines().map(|line| line.trim()).collect();
         ENGLISH_HEADERS
             .iter()
-            .filter(|header| translated.contains(*header))
+            .filter(|header| lines.iter().any(|line| line.starts_with(*header)))
             .copied()
             .collect()
     }
@@ -507,6 +510,32 @@ mod tests {
         assert!(ENGLISH_HEADERS.contains(&"🏢 Companies and Deals"));
         assert!(ENGLISH_HEADERS.contains(&"⚖️ Policy and Safety"));
         assert!(ENGLISH_HEADERS.contains(&"💬 Debate and Opinions"));
+    }
+
+    #[test]
+    fn test_find_untranslated_headers_no_false_positives_from_quoted_text() {
+        // Header text appears in a bullet/quote, but the actual header is translated
+        // This should NOT trigger a false positive
+        let text = r#"🧠 Conclusiones principales
+- *Artículo menciona "🧠 Top takeaways" como título* — explicación [enlace](url)
+- *Otro punto* — texto"#;
+        let untranslated = TranslationValidator::find_untranslated_headers(text);
+        // Should be empty - the header is translated, the quote doesn't count
+        assert!(
+            untranslated.is_empty(),
+            "Should not flag quoted text as untranslated header: {:?}",
+            untranslated
+        );
+    }
+
+    #[test]
+    fn test_find_untranslated_headers_detects_actual_untranslated_header() {
+        // The actual header line is in English - this SHOULD be detected
+        let text = r#"🧠 Top takeaways
+- *Elemento* — texto [enlace](url)"#;
+        let untranslated = TranslationValidator::find_untranslated_headers(text);
+        assert_eq!(untranslated.len(), 1);
+        assert!(untranslated.contains(&"🧠 Top takeaways"));
     }
 
     #[test]
