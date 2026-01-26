@@ -1,5 +1,7 @@
 use crate::config::Config;
-use crate::i18n::{Language, TranslationValidator};
+use crate::i18n::{
+    Language, TranslationValidator, ENGLISH_SECTION_HEADERS, SPANISH_SECTION_HEADERS,
+};
 use crate::retry::{with_retry_if, RetryConfig};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -45,46 +47,123 @@ struct Choice {
 // It's imported at the top of this file and used throughout
 
 /// Build the system prompt for translation
-fn build_translation_system_prompt(target_language: &str) -> String {
+fn build_translation_system_prompt(target_language: Language) -> String {
+    let target_name = target_language.name();
+
+    // For non-canonical languages, include explicit header mappings and examples
+    // English (canonical) doesn't need translation instructions
+    if target_language.is_canonical() {
+        // English target: minimal prompt (no-op since we skip translation anyway)
+        return r#"You are a professional translator. The content is already in English.
+No translation is needed. Return the content unchanged."#
+            .to_string();
+    }
+
+    // Get the section header mappings based on target language
+    let section_header_instructions = if target_language == Language::SPANISH {
+        format!(
+            r#"
+## MANDATORY Section Header Translations
+You MUST translate these section headers EXACTLY as shown:
+
+| English | {} |
+|---------|----------|
+| "{}" | "{}" |
+| "{}" | "{}" |
+| "{}" | "{}" |
+| "{}" | "{}" |
+| "{}" | "{}" |
+| "{}" | "{}" |
+| "{}" | "{}" |
+
+CRITICAL: If you see any of the English headers above, replace them with the {} version."#,
+            target_name,
+            ENGLISH_SECTION_HEADERS.top_takeaways,
+            SPANISH_SECTION_HEADERS.top_takeaways,
+            ENGLISH_SECTION_HEADERS.releases,
+            SPANISH_SECTION_HEADERS.releases,
+            ENGLISH_SECTION_HEADERS.research,
+            SPANISH_SECTION_HEADERS.research,
+            ENGLISH_SECTION_HEADERS.tools_tutorials,
+            SPANISH_SECTION_HEADERS.tools_tutorials,
+            ENGLISH_SECTION_HEADERS.companies_deals,
+            SPANISH_SECTION_HEADERS.companies_deals,
+            ENGLISH_SECTION_HEADERS.policy_safety,
+            SPANISH_SECTION_HEADERS.policy_safety,
+            ENGLISH_SECTION_HEADERS.debate_opinions,
+            SPANISH_SECTION_HEADERS.debate_opinions,
+            target_name,
+        )
+    } else {
+        String::new() // Other non-English languages don't have header mappings defined yet
+    };
+
+    // Translation examples - use Spanish examples for Spanish, generic otherwise
+    let translation_examples = if target_language == Language::SPANISH {
+        r#"
+## Translation Examples
+INCORRECT (English left untranslated):
+- *New RoPE paper suggests...* — Afirma que... [Burkov thread](url)
+
+CORRECT (fully translated):
+- *Nuevo artículo sobre RoPE sugiere...* — Afirma que... [hilo de Burkov](url)
+
+INCORRECT (section header not translated):
+🧠 Top takeaways
+- *Item* — text
+
+CORRECT (section header translated):
+🧠 Conclusiones principales
+- *Elemento* — texto"#
+    } else {
+        "" // No examples for languages without defined translations
+    };
+
     format!(
-        r#"You are a professional translator. Translate the following summary from English to {}.
+        r#"You are a professional translator. Translate the following summary from English to {target_name}.
 
 ## CRITICAL: Length Constraint
 The translated text MUST stay under 3800 characters total. This is a hard limit for Telegram.
 - If the translation would exceed this, condense while preserving key information
 - Prioritize keeping the most important items; trim less critical details
 - Use concise phrasing natural to the target language
+{section_header_instructions}
 
-## Translation Rules
+## Bullet Format (CRITICAL)
+Each bullet follows this pattern:
+- *BOLD TITLE* — explanation [link label](url)
 
-### DO NOT translate:
+You MUST translate:
+1. The BOLD TITLE (text between * and * before the em-dash —)
+2. The explanation (text after the em-dash)
+3. The link label (text between [ and ])
+{translation_examples}
+
+## DO NOT translate:
 - Twitter/X @handles (e.g., @elonmusk, @sama)
 - Hashtags (e.g., #AI, #MachineLearning)
 - Cashtags (e.g., $TSLA, $NVDA)
-- URLs and links
-- Proper names of people, companies, and products
-- Technical terms that are commonly used in English in the tech community
+- URLs and links (the URL itself, not the label)
+- Proper names of people (Sam Altman, Elon Musk, etc.)
+- Company names (OpenAI, Google, Meta, etc.)
+- Product names (ChatGPT, Claude, Gemini, etc.)
+- Paper titles if they are proper nouns
+- Technical terms commonly used in English (transformer, fine-tuning, etc.)
 
-### KEEP in original English:
+## KEEP in original English:
 - Any quoted tweet text (text inside quotation marks)
 - Code snippets or technical identifiers
 - Acronyms (AI, ML, LLM, GPU, etc.)
 
-### DO translate:
-- Section headers and bullet points
-- Descriptive text and explanations
-- The general narrative and context
-
-### Formatting:
-- Preserve all markdown formatting (bold, italic, headers, bullet points)
+## Formatting:
+- Preserve all markdown formatting (bold with *, italic with _, bullets with -)
 - Preserve all emojis
 - Maintain the same structure and layout as the original
 
-### Tone:
+## Tone:
 - Keep the same professional but accessible tone
 - Maintain nuance and accuracy
-- If a term has no good translation, keep the English term"#,
-        target_language
+- If a term has no good translation, keep the English term"#
     )
 }
 
@@ -124,7 +203,7 @@ pub async fn translate_summary(
         messages: vec![
             Message {
                 role: "system".to_string(),
-                content: build_translation_system_prompt(target_language.name()),
+                content: build_translation_system_prompt(target_language),
             },
             Message {
                 role: "user".to_string(),
@@ -181,7 +260,7 @@ pub async fn translate_summary(
     .await?;
 
     // Validate translation quality
-    let validation = TranslationValidator::validate(summary, &translated);
+    let validation = TranslationValidator::validate(summary, &translated, target_language);
     if !validation.warnings.is_empty() {
         warn!(
             "Translation validation warnings for {} ({}): {:?}",
@@ -190,13 +269,18 @@ pub async fn translate_summary(
             validation.warnings
         );
     }
-    if !validation.errors.is_empty() {
-        warn!(
-            "Translation validation errors for {} ({}): {:?}",
+
+    // Validation errors (e.g., untranslated headers) cause translation to fail
+    // The caller will fall back to English with a notice
+    if validation.has_errors() {
+        let error_msg = format!(
+            "Translation validation failed for {} ({}): {:?}",
             target_language.name(),
             target_language.code(),
             validation.errors
         );
+        warn!("{}", error_msg);
+        anyhow::bail!("{}", error_msg);
     }
 
     Ok(translated)
@@ -476,7 +560,7 @@ mod tests {
 
     #[test]
     fn test_build_translation_system_prompt_spanish() {
-        let prompt = build_translation_system_prompt("Spanish");
+        let prompt = build_translation_system_prompt(Language::SPANISH);
 
         assert!(prompt.contains("Spanish"));
         assert!(prompt.contains("DO NOT translate"));
@@ -489,17 +573,60 @@ mod tests {
 
     #[test]
     fn test_build_translation_system_prompt_mentions_handles() {
-        let prompt = build_translation_system_prompt("Spanish");
+        let prompt = build_translation_system_prompt(Language::SPANISH);
         assert!(prompt.contains("@elonmusk"));
         assert!(prompt.contains("@sama"));
     }
 
     #[test]
     fn test_build_translation_system_prompt_mentions_technical_terms() {
-        let prompt = build_translation_system_prompt("Spanish");
+        let prompt = build_translation_system_prompt(Language::SPANISH);
         assert!(prompt.contains("AI"));
         assert!(prompt.contains("ML"));
         assert!(prompt.contains("LLM"));
+    }
+
+    #[test]
+    fn test_build_translation_system_prompt_includes_section_headers() {
+        let prompt = build_translation_system_prompt(Language::SPANISH);
+
+        // Should contain the section header mapping table
+        assert!(prompt.contains("MANDATORY Section Header Translations"));
+
+        // Should contain all English headers
+        assert!(prompt.contains("🧠 Top takeaways"));
+        assert!(prompt.contains("🚀 Releases"));
+        assert!(prompt.contains("🔬 Research"));
+        assert!(prompt.contains("🧰 Tools and Tutorials"));
+
+        // Should contain all Spanish translations
+        assert!(prompt.contains("🧠 Conclusiones principales"));
+        assert!(prompt.contains("🚀 Lanzamientos"));
+        assert!(prompt.contains("🔬 Investigación"));
+        assert!(prompt.contains("🧰 Herramientas y tutoriales"));
+    }
+
+    #[test]
+    fn test_build_translation_system_prompt_includes_bullet_examples() {
+        let prompt = build_translation_system_prompt(Language::SPANISH);
+
+        // Should contain the bullet format instructions
+        assert!(prompt.contains("Bullet Format"));
+        assert!(prompt.contains("BOLD TITLE"));
+        assert!(prompt.contains("em-dash"));
+
+        // Should contain examples of correct/incorrect translations
+        assert!(prompt.contains("INCORRECT"));
+        assert!(prompt.contains("CORRECT"));
+    }
+
+    #[test]
+    fn test_build_translation_system_prompt_english_no_header_mapping() {
+        let prompt = build_translation_system_prompt(Language::ENGLISH);
+
+        // English prompt should NOT contain section header mapping
+        assert!(!prompt.contains("MANDATORY Section Header Translations"));
+        assert!(!prompt.contains("Conclusiones principales"));
     }
 
     // ==================== User Prompt Tests ====================
@@ -1562,5 +1689,107 @@ mod tests {
                 result.len()
             );
         }
+    }
+
+    // ==================== Translation Validation Integration Tests ====================
+
+    #[tokio::test]
+    async fn test_translate_summary_fails_on_untranslated_headers() {
+        let mock_server = MockServer::start().await;
+
+        // API returns "translation" that still has English headers
+        let bad_translation = "🧠 Top takeaways\n- *Elemento* — texto [enlace](url)";
+        let response_body = create_openai_response(bad_translation);
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+
+        let original = "🧠 Top takeaways\n- *Item* — text [link](url)";
+        let result = translate_summary(&client, &config, original, Language::SPANISH).await;
+
+        // Should fail because the header was not translated
+        assert!(
+            result.is_err(),
+            "Should fail when headers are not translated"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("validation failed"),
+            "Error should mention validation failure: {}",
+            err
+        );
+        assert!(
+            err.contains("Top takeaways"),
+            "Error should mention the untranslated header: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_translate_summary_succeeds_with_translated_headers() {
+        let mock_server = MockServer::start().await;
+
+        // API returns proper translation with Spanish headers
+        let good_translation = "🧠 Conclusiones principales\n- *Elemento* — texto [enlace](url)";
+        let response_body = create_openai_response(good_translation);
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+
+        let original = "🧠 Top takeaways\n- *Item* — text [link](url)";
+        let result = translate_summary(&client, &config, original, Language::SPANISH).await;
+
+        // Should succeed because the header was translated
+        assert!(
+            result.is_ok(),
+            "Should succeed with translated headers: {:?}",
+            result
+        );
+        assert_eq!(result.unwrap(), good_translation);
+    }
+
+    #[tokio::test]
+    async fn test_translate_summary_validates_all_headers() {
+        let mock_server = MockServer::start().await;
+
+        // Translation has multiple untranslated headers
+        let bad_translation = "🧠 Conclusiones principales\n- item\n\n🚀 Releases\n- item";
+        let response_body = create_openai_response(bad_translation);
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .mount(&mock_server)
+            .await;
+
+        let config = create_test_config(&format!("{}/v1/chat/completions", mock_server.uri()));
+        let client = reqwest::Client::new();
+
+        let original = "🧠 Top takeaways\n- item\n\n🚀 Releases\n- item";
+        let result = translate_summary(&client, &config, original, Language::SPANISH).await;
+
+        // Should fail because "🚀 Releases" was not translated
+        assert!(
+            result.is_err(),
+            "Should fail when any header is not translated"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Releases"),
+            "Error should mention untranslated 'Releases' header: {}",
+            err
+        );
     }
 }
