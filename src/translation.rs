@@ -177,7 +177,12 @@ The link label in [brackets](url) MUST be translated to {target_name}.
 ## KEEP in original English:
 - Any quoted tweet text (text inside quotation marks)
 - Code snippets or technical identifiers
-- Acronyms (AI, ML, LLM, GPU, etc.)
+- Acronyms that are part of brand names (OpenAI, DeepMind, etc.)
+- Technical acronyms without common Spanish equivalents (GPU, CPU, LLM, API, etc.)
+
+## DO translate these acronyms:
+- "AI" → "IA" (Inteligencia Artificial is standard in Spanish)
+- "ML" → "AA" or "aprendizaje automático" (machine learning)
 
 ## Formatting:
 - Preserve all markdown formatting (bold with *, italic with _, bullets with -)
