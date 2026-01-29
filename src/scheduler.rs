@@ -40,6 +40,8 @@ pub async fn start_scheduler(config: Arc<Config>, db: Arc<Database>) -> Result<J
                 info!("⏰ Scheduled job triggered");
                 if let Err(e) = run_summary_job(&config, &db, &usernames).await {
                     error!("Scheduled job failed: {:?}", e);
+                    // Notify admin of job failure
+                    telegram::notify_admin_error(&config, "Scheduled summary job", &e).await;
                 }
             })
         })?;
