@@ -39,7 +39,7 @@ pub async fn start_scheduler(config: Arc<Config>, db: Arc<Database>) -> Result<J
             Box::pin(async move {
                 info!("⏰ Scheduled job triggered");
                 if let Err(e) = run_summary_job(&config, &db, &usernames).await {
-                    error!("Scheduled job failed: {}", e);
+                    error!("Scheduled job failed: {:?}", e);
                 }
             })
         })?;

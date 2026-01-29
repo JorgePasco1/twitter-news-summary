@@ -49,7 +49,12 @@ impl Database {
     pub async fn new(database_url: &str) -> Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(5)
-            .acquire_timeout(Duration::from_secs(3))
+            .acquire_timeout(Duration::from_secs(10))
+            // Close idle connections after 10 minutes to avoid stale connections
+            // (Neon serverless can sleep and invalidate connections)
+            .idle_timeout(Duration::from_secs(600))
+            // Recycle connections after 30 minutes to ensure freshness
+            .max_lifetime(Duration::from_secs(1800))
             .connect(database_url)
             .await
             .context("Failed to connect to PostgreSQL database")?;
