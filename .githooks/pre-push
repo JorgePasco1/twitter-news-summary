@@ -13,9 +13,9 @@ if ! cargo fmt -- --check; then
     exit 1
 fi
 
-# Run clippy
+# Run clippy (--all-targets includes tests, matching CI behavior)
 echo "Running clippy..."
-if ! cargo clippy -- -D warnings; then
+if ! cargo clippy --all-targets -- -D warnings; then
     echo ""
     echo "ERROR: Clippy found issues. Fix them before pushing."
     exit 1

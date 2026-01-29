@@ -837,6 +837,36 @@ pub async fn send_test_message(config: &Config, chat_id: &str, summary: &str) ->
     Ok(())
 }
 
+/// Notify the admin about a job failure or critical error
+/// Only sends if TELEGRAM_CHAT_ID is configured
+pub async fn notify_admin_error(config: &Config, error_context: &str, error: &anyhow::Error) {
+    if config.telegram_chat_id.is_empty() {
+        return;
+    }
+
+    let Ok(admin_chat_id) = config.telegram_chat_id.parse::<i64>() else {
+        tracing::warn!(
+            "Invalid TELEGRAM_CHAT_ID for admin notification: {}",
+            config.telegram_chat_id
+        );
+        return;
+    };
+
+    // Escape the error message for MarkdownV2
+    let error_str = format!("{:?}", error);
+    let escaped_error = escape_markdownv2(&error_str);
+    let escaped_context = escape_markdownv2(error_context);
+
+    let message = format!(
+        "🚨 *Job Failed*\n\n*Context:* {}\n\n*Error:*\n```\n{}\n```",
+        escaped_context, escaped_error
+    );
+
+    if let Err(e) = send_message(config, admin_chat_id, &message).await {
+        tracing::error!("Failed to send admin error notification: {}", e);
+    }
+}
+
 /// Send a Telegram message to a specific chat
 async fn send_message(config: &Config, chat_id: i64, text: &str) -> Result<()> {
     let client = reqwest::Client::new();
