@@ -2747,7 +2747,7 @@ mod tests {
 
         // Should have at least our context and the underlying error
         assert!(
-            chain.len() >= 1,
+            !chain.is_empty(),
             "Error chain should have at least one entry: {:?}",
             chain
         );
