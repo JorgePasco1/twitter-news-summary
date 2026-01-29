@@ -181,7 +181,7 @@ async fn wait_until_target_time(target_time_str: &str) -> Result<()> {
     let today_peru = now_peru.date_naive();
     let target_naive = today_peru
         .and_hms_opt(target_hour, target_minute, 0)
-        .unwrap();
+        .ok_or_else(|| anyhow::anyhow!("Invalid time: {:02}:{:02}", target_hour, target_minute))?;
     let target_peru = peru_offset
         .from_local_datetime(&target_naive)
         .single()
