@@ -4,6 +4,7 @@ use crate::openai;
 use crate::rss;
 use crate::telegram;
 use anyhow::Result;
+use chrono::{NaiveTime, TimeZone, Timelike};
 use std::sync::Arc;
 use tokio_cron_scheduler::{Job, JobScheduler};
 use tracing::{error, info};
@@ -22,23 +23,39 @@ pub async fn start_scheduler(config: Arc<Config>, db: Arc<Database>) -> Result<J
 
     info!("Loaded {} usernames for scheduled fetches", usernames.len());
 
+    // Calculate processing time offset based on user count
+    let offset_seconds = estimate_processing_seconds(usernames.len());
+    info!(
+        "Estimated processing time: {}s (~{} min) - jobs will start early to ensure on-time delivery",
+        offset_seconds,
+        offset_seconds / 60
+    );
+
     // Create scheduled jobs for each time in schedule_times
     for time in &config.schedule_times {
-        let cron_expr = time_to_cron(time)?;
-        info!("Scheduling job for {} (cron: {})", time, cron_expr);
+        let cron_expr = time_to_cron(time, offset_seconds)?;
+        info!(
+            "Scheduling job for {} Peru time (cron: {}, starts ~{}s early)",
+            time, cron_expr, offset_seconds
+        );
 
         let config_clone = Arc::clone(&config);
         let db_clone = Arc::clone(&db);
         let usernames_clone = usernames.clone();
+        let target_time = time.clone();
 
         let job = Job::new_async(cron_expr.as_str(), move |_uuid, _l| {
             let config = Arc::clone(&config_clone);
             let db = Arc::clone(&db_clone);
             let usernames = usernames_clone.clone();
+            let target = target_time.clone();
 
             Box::pin(async move {
-                info!("⏰ Scheduled job triggered");
-                if let Err(e) = run_summary_job(&config, &db, &usernames).await {
+                info!(
+                    "⏰ Scheduled job triggered (target send time: {} Peru)",
+                    target
+                );
+                if let Err(e) = run_summary_job(&config, &db, &usernames, Some(&target)).await {
                     error!("Scheduled job failed: {}", e);
                 }
             })
@@ -53,8 +70,21 @@ pub async fn start_scheduler(config: Arc<Config>, db: Arc<Database>) -> Result<J
     Ok(scheduler)
 }
 
+/// Calculate estimated processing time in seconds based on user count
+/// This accounts for: rate limiting delays (3s/user), fetch time, and summarization
+fn estimate_processing_seconds(user_count: usize) -> u32 {
+    // 3 seconds rate limiting delay per user
+    // + ~1 second average fetch time per user
+    // + 30 seconds buffer for OpenAI summarization and sending
+    // + 30 seconds safety buffer
+    let per_user_seconds = 4;
+    let base_buffer = 60;
+    (user_count as u32 * per_user_seconds) + base_buffer
+}
+
 /// Convert time string (HH:MM) to cron expression in Peru time (UTC-5)
-fn time_to_cron(time: &str) -> Result<String> {
+/// Optionally applies an offset (in seconds) to start the job earlier
+fn time_to_cron(time: &str, offset_seconds: u32) -> Result<String> {
     let parts: Vec<&str> = time.split(':').collect();
     if parts.len() != 2 {
         anyhow::bail!("Invalid time format: {}. Expected HH:MM", time);
@@ -63,17 +93,31 @@ fn time_to_cron(time: &str) -> Result<String> {
     let hour: u8 = parts[0].parse()?;
     let minute: u8 = parts[1].parse()?;
 
-    // Convert FROM Peru time (UTC-5) TO UTC
-    // For example: 08:00 Peru becomes 13:00 UTC (add 5 hours)
-    let utc_hour = (hour + 5) % 24;
+    // Parse the target time
+    let target_time = NaiveTime::from_hms_opt(hour as u32, minute as u32, 0)
+        .ok_or_else(|| anyhow::anyhow!("Invalid time: {}:{}", hour, minute))?;
+
+    // Subtract offset to get the job start time
+    let offset_duration = chrono::Duration::seconds(offset_seconds as i64);
+    let job_start_time = target_time - offset_duration;
+
+    // Convert FROM Peru time (UTC-5) TO UTC (add 5 hours)
+    let utc_hour = (job_start_time.hour() + 5) % 24;
+    let utc_minute = job_start_time.minute();
 
     // Cron format: "second minute hour day month day_of_week"
     // We run daily, so: "0 <minute> <hour> * * *"
-    Ok(format!("0 {} {} * * *", minute, utc_hour))
+    Ok(format!("0 {} {} * * *", utc_minute, utc_hour))
 }
 
 /// Run the summary job: fetch tweets, summarize, send to subscribers
-async fn run_summary_job(config: &Config, db: &Database, usernames: &[String]) -> Result<()> {
+/// If target_send_time is provided (HH:MM in Peru time), waits until that time before sending
+async fn run_summary_job(
+    config: &Config,
+    db: &Database,
+    usernames: &[String],
+    target_send_time: Option<&str>,
+) -> Result<()> {
     info!("Starting summary job");
 
     // Fetch tweets
@@ -96,6 +140,17 @@ async fn run_summary_job(config: &Config, db: &Database, usernames: &[String]) -
     let summary_id = db.save_summary(&summary).await?;
     info!("✓ Summary saved to database (id: {})", summary_id);
 
+    // If we have a target send time, wait until that time before sending
+    if let Some(target_time_str) = target_send_time {
+        if let Err(e) = wait_until_target_time(target_time_str).await {
+            // Log the error but continue - better to send slightly early than not at all
+            error!(
+                "Failed to wait for target time: {}. Sending immediately.",
+                e
+            );
+        }
+    }
+
     // Send to all subscribers (with language-specific translations)
     info!("Sending summary via Telegram");
     telegram::send_to_subscribers(config, db, &summary, summary_id).await?;
@@ -105,7 +160,84 @@ async fn run_summary_job(config: &Config, db: &Database, usernames: &[String]) -
     Ok(())
 }
 
+/// Calculate how long to wait until target time.
+/// Returns Some(duration) if we need to wait, None if time has already passed.
+/// This pure function is easily testable with any fixed `now_utc` value.
+fn calculate_wait_duration(
+    target_time_str: &str,
+    now_utc: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<chrono::Duration>> {
+    use chrono::FixedOffset;
+
+    let parts: Vec<&str> = target_time_str.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("Invalid target time format: {}", target_time_str);
+    }
+
+    let target_hour: u32 = parts[0].parse()?;
+    let target_minute: u32 = parts[1].parse()?;
+
+    // Peru is UTC-5
+    let peru_offset = FixedOffset::west_opt(5 * 3600).unwrap();
+    let now_peru = now_utc.with_timezone(&peru_offset);
+
+    // Build today's target time in Peru timezone
+    let today_peru = now_peru.date_naive();
+    let target_naive = today_peru
+        .and_hms_opt(target_hour, target_minute, 0)
+        .ok_or_else(|| anyhow::anyhow!("Invalid time: {:02}:{:02}", target_hour, target_minute))?;
+    let target_peru = peru_offset
+        .from_local_datetime(&target_naive)
+        .single()
+        .ok_or_else(|| anyhow::anyhow!("Failed to create target datetime"))?;
+
+    // Convert to UTC for comparison
+    let target_utc = target_peru.with_timezone(&chrono::Utc);
+
+    // Calculate how long to wait
+    let wait_duration = target_utc.signed_duration_since(now_utc);
+
+    if wait_duration.num_milliseconds() <= 0 {
+        Ok(None) // Time has already passed
+    } else {
+        Ok(Some(wait_duration))
+    }
+}
+
+/// Wait until the target time (HH:MM in Peru time, UTC-5)
+async fn wait_until_target_time(target_time_str: &str) -> Result<()> {
+    let wait_duration = calculate_wait_duration(target_time_str, chrono::Utc::now())?;
+
+    match wait_duration {
+        None => {
+            info!(
+                "Target time {} already passed, sending immediately",
+                target_time_str
+            );
+        }
+        Some(duration) => {
+            let wait_secs = duration.num_seconds();
+            info!(
+                "Waiting {}s (~{} min) until target send time {} Peru",
+                wait_secs,
+                wait_secs / 60,
+                target_time_str
+            );
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(
+                duration.num_milliseconds() as u64,
+            ))
+            .await;
+
+            info!("✓ Target time reached, proceeding to send");
+        }
+    }
+
+    Ok(())
+}
+
 /// Manually trigger a summary job (for /trigger endpoint)
+/// Sends immediately without waiting for a target time
 pub async fn trigger_summary(config: &Config, db: &Database) -> Result<()> {
     // Read usernames from file
     let usernames_content = std::fs::read_to_string(&config.usernames_file)?;
@@ -115,7 +247,7 @@ pub async fn trigger_summary(config: &Config, db: &Database) -> Result<()> {
         .filter(|s| !s.is_empty())
         .collect();
 
-    run_summary_job(config, db, &usernames).await
+    run_summary_job(config, db, &usernames, None).await
 }
 
 /// Generate a fresh summary and save to database WITHOUT broadcasting to subscribers.
@@ -153,66 +285,131 @@ pub async fn generate_summary_only(config: &Config, db: &Database) -> Result<Str
     Ok(summary)
 }
 
+/// Calculate estimated processing time for a given user count (exposed for testing)
+pub fn get_estimated_processing_seconds(user_count: usize) -> u32 {
+    estimate_processing_seconds(user_count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ==================== time_to_cron Tests ====================
+    // ==================== estimate_processing_seconds Tests ====================
+
+    #[test]
+    fn test_estimate_processing_seconds_zero_users() {
+        let estimate = estimate_processing_seconds(0);
+        assert_eq!(estimate, 60); // Just the base buffer
+    }
+
+    #[test]
+    fn test_estimate_processing_seconds_10_users() {
+        let estimate = estimate_processing_seconds(10);
+        // 10 * 4 + 60 = 100 seconds
+        assert_eq!(estimate, 100);
+    }
+
+    #[test]
+    fn test_estimate_processing_seconds_50_users() {
+        let estimate = estimate_processing_seconds(50);
+        // 50 * 4 + 60 = 260 seconds (~4.3 minutes)
+        assert_eq!(estimate, 260);
+    }
+
+    // ==================== time_to_cron Tests (no offset) ====================
 
     #[test]
     fn test_time_to_cron_basic() {
         // 08:00 Peru (UTC-5) = 13:00 UTC
-        let cron = time_to_cron("08:00").expect("Should parse");
+        let cron = time_to_cron("08:00", 0).expect("Should parse");
         assert_eq!(cron, "0 0 13 * * *");
     }
 
     #[test]
     fn test_time_to_cron_afternoon() {
         // 20:00 Peru (UTC-5) = 01:00 UTC (next day)
-        let cron = time_to_cron("20:00").expect("Should parse");
+        let cron = time_to_cron("20:00", 0).expect("Should parse");
         assert_eq!(cron, "0 0 1 * * *");
     }
 
     #[test]
     fn test_time_to_cron_midnight() {
         // 00:00 Peru (UTC-5) = 05:00 UTC
-        let cron = time_to_cron("00:00").expect("Should parse");
+        let cron = time_to_cron("00:00", 0).expect("Should parse");
         assert_eq!(cron, "0 0 5 * * *");
     }
 
     #[test]
     fn test_time_to_cron_with_minutes() {
         // 08:30 Peru (UTC-5) = 13:30 UTC
-        let cron = time_to_cron("08:30").expect("Should parse");
+        let cron = time_to_cron("08:30", 0).expect("Should parse");
         assert_eq!(cron, "0 30 13 * * *");
     }
 
     #[test]
     fn test_time_to_cron_late_night() {
         // 23:00 Peru (UTC-5) = 04:00 UTC (next day)
-        let cron = time_to_cron("23:00").expect("Should parse");
+        let cron = time_to_cron("23:00", 0).expect("Should parse");
         assert_eq!(cron, "0 0 4 * * *");
     }
 
     #[test]
     fn test_time_to_cron_early_morning() {
         // 06:00 Peru (UTC-5) = 11:00 UTC
-        let cron = time_to_cron("06:00").expect("Should parse");
+        let cron = time_to_cron("06:00", 0).expect("Should parse");
         assert_eq!(cron, "0 0 11 * * *");
     }
 
     #[test]
     fn test_time_to_cron_hour_wraparound() {
         // 19:00 Peru (UTC-5) = 00:00 UTC (midnight)
-        let cron = time_to_cron("19:00").expect("Should parse");
+        let cron = time_to_cron("19:00", 0).expect("Should parse");
         assert_eq!(cron, "0 0 0 * * *");
+    }
+
+    // ==================== time_to_cron with offset Tests ====================
+
+    #[test]
+    fn test_time_to_cron_with_60_second_offset() {
+        // 08:00 Peru - 60 seconds = 07:59 Peru = 12:59 UTC
+        let cron = time_to_cron("08:00", 60).expect("Should parse");
+        assert_eq!(cron, "0 59 12 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_with_5_minute_offset() {
+        // 08:00 Peru - 300 seconds = 07:55 Peru = 12:55 UTC
+        let cron = time_to_cron("08:00", 300).expect("Should parse");
+        assert_eq!(cron, "0 55 12 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_offset_crosses_hour_boundary() {
+        // 08:00 Peru - 10 minutes (600s) = 07:50 Peru = 12:50 UTC
+        let cron = time_to_cron("08:00", 600).expect("Should parse");
+        assert_eq!(cron, "0 50 12 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_offset_crosses_midnight_peru() {
+        // 00:05 Peru - 10 minutes (600s) = 23:55 Peru (previous day) = 04:55 UTC
+        let cron = time_to_cron("00:05", 600).expect("Should parse");
+        assert_eq!(cron, "0 55 4 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_large_offset() {
+        // 08:00 Peru - 260 seconds (~4.3 min) = 07:55:40 Peru ≈ 07:55 Peru = 12:55 UTC
+        let cron = time_to_cron("08:00", 260).expect("Should parse");
+        // 260 seconds = 4 minutes 20 seconds, so 08:00 - 4:20 = 07:55:40 → cron uses 07:55
+        assert_eq!(cron, "0 55 12 * * *");
     }
 
     // ==================== Invalid Time Format Tests ====================
 
     #[test]
     fn test_time_to_cron_invalid_format_no_colon() {
-        let result = time_to_cron("0800");
+        let result = time_to_cron("0800", 0);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Invalid time format"));
@@ -220,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_time_to_cron_invalid_format_too_many_parts() {
-        let result = time_to_cron("08:00:00");
+        let result = time_to_cron("08:00:00", 0);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Invalid time format"));
@@ -228,43 +425,39 @@ mod tests {
 
     #[test]
     fn test_time_to_cron_invalid_hour() {
-        let result = time_to_cron("25:00");
-        // This will wrap around due to modulo, but the parse will succeed
-        // 25 + 5 = 30, 30 % 24 = 6
-        let cron = result.expect("Should parse (wraps)");
-        assert!(cron.contains("6"));
+        // 25 is not a valid hour, NaiveTime::from_hms_opt will return None
+        let result = time_to_cron("25:00", 0);
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_time_to_cron_invalid_minute() {
-        let result = time_to_cron("08:60");
-        // This will parse but might not be valid cron
-        // The function doesn't validate minute range
-        let cron = result.expect("Should parse");
-        assert!(cron.contains("60")); // Invalid but accepted
+        // 60 is not a valid minute, NaiveTime::from_hms_opt will return None
+        let result = time_to_cron("08:60", 0);
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_time_to_cron_non_numeric_hour() {
-        let result = time_to_cron("ab:00");
+        let result = time_to_cron("ab:00", 0);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_time_to_cron_non_numeric_minute() {
-        let result = time_to_cron("08:cd");
+        let result = time_to_cron("08:cd", 0);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_time_to_cron_empty_string() {
-        let result = time_to_cron("");
+        let result = time_to_cron("", 0);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_time_to_cron_only_colon() {
-        let result = time_to_cron(":");
+        let result = time_to_cron(":", 0);
         assert!(result.is_err());
     }
 
@@ -272,7 +465,7 @@ mod tests {
 
     #[test]
     fn test_cron_format_structure() {
-        let cron = time_to_cron("12:30").expect("Should parse");
+        let cron = time_to_cron("12:30", 0).expect("Should parse");
 
         // Cron format: "second minute hour day month day_of_week"
         let parts: Vec<&str> = cron.split_whitespace().collect();
@@ -401,7 +594,7 @@ mod tests {
         ];
 
         for (peru_time, expected_utc_hour) in test_cases {
-            let cron = time_to_cron(peru_time).expect("Should parse");
+            let cron = time_to_cron(peru_time, 0).expect("Should parse");
             let parts: Vec<&str> = cron.split_whitespace().collect();
             let actual_hour: u8 = parts[2].parse().expect("Should parse hour");
 
@@ -420,7 +613,7 @@ mod tests {
         let schedule_times = vec!["08:00".to_string(), "20:00".to_string()];
 
         for time in &schedule_times {
-            let result = time_to_cron(time);
+            let result = time_to_cron(time, 0);
             assert!(result.is_ok(), "Should parse {}", time);
         }
     }
@@ -453,14 +646,14 @@ mod tests {
 
     #[test]
     fn test_single_digit_hour() {
-        let cron = time_to_cron("8:00").expect("Should parse");
+        let cron = time_to_cron("8:00", 0).expect("Should parse");
         // 8 + 5 = 13
         assert!(cron.contains("13"));
     }
 
     #[test]
     fn test_single_digit_minute() {
-        let cron = time_to_cron("08:5").expect("Should parse");
+        let cron = time_to_cron("08:5", 0).expect("Should parse");
         // Should contain "5" for minutes
         let parts: Vec<&str> = cron.split_whitespace().collect();
         assert_eq!(parts[1], "5");
@@ -468,9 +661,592 @@ mod tests {
 
     #[test]
     fn test_padded_zeros() {
-        let cron = time_to_cron("08:00").expect("Should parse");
+        let cron = time_to_cron("08:00", 0).expect("Should parse");
         let parts: Vec<&str> = cron.split_whitespace().collect();
         assert_eq!(parts[1], "0", "Minutes should be 0");
         assert_eq!(parts[2], "13", "Hour should be 13");
+    }
+
+    // ==================== Additional estimate_processing_seconds Tests ====================
+
+    #[test]
+    fn test_estimate_processing_seconds_single_user() {
+        let estimate = estimate_processing_seconds(1);
+        // 1 * 4 + 60 = 64 seconds
+        assert_eq!(estimate, 64);
+    }
+
+    #[test]
+    fn test_estimate_processing_seconds_100_users() {
+        let estimate = estimate_processing_seconds(100);
+        // 100 * 4 + 60 = 460 seconds (~7.7 minutes)
+        assert_eq!(estimate, 460);
+    }
+
+    #[test]
+    fn test_estimate_processing_seconds_500_users() {
+        let estimate = estimate_processing_seconds(500);
+        // 500 * 4 + 60 = 2060 seconds (~34 minutes)
+        assert_eq!(estimate, 2060);
+    }
+
+    #[test]
+    fn test_estimate_processing_seconds_1000_users() {
+        let estimate = estimate_processing_seconds(1000);
+        // 1000 * 4 + 60 = 4060 seconds (~67 minutes)
+        assert_eq!(estimate, 4060);
+    }
+
+    #[test]
+    fn test_estimate_processing_seconds_formula() {
+        // Verify the formula: user_count * 4 + 60
+        for user_count in [0, 1, 5, 10, 25, 50, 100, 250, 500] {
+            let estimate = estimate_processing_seconds(user_count);
+            let expected = (user_count as u32 * 4) + 60;
+            assert_eq!(
+                estimate, expected,
+                "For {} users, expected {} but got {}",
+                user_count, expected, estimate
+            );
+        }
+    }
+
+    #[test]
+    fn test_estimate_processing_seconds_large_value_no_overflow() {
+        // Test that u32 can handle very large user counts without overflow
+        // Max u32 is ~4.29 billion, so 100 million users should be safe
+        let estimate = estimate_processing_seconds(100_000);
+        // 100,000 * 4 + 60 = 400,060 seconds (~111 hours)
+        assert_eq!(estimate, 400_060);
+    }
+
+    // ==================== Additional time_to_cron with Offset Tests ====================
+
+    #[test]
+    fn test_time_to_cron_30_minute_offset() {
+        // 08:00 Peru - 30 minutes (1800s) = 07:30 Peru = 12:30 UTC
+        let cron = time_to_cron("08:00", 1800).expect("Should parse");
+        assert_eq!(cron, "0 30 12 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_1_hour_offset() {
+        // 08:00 Peru - 60 minutes (3600s) = 07:00 Peru = 12:00 UTC
+        let cron = time_to_cron("08:00", 3600).expect("Should parse");
+        assert_eq!(cron, "0 0 12 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_offset_crosses_utc_midnight() {
+        // 19:30 Peru - 35 minutes (2100s) = 18:55 Peru
+        // 18:55 Peru + 5 hours = 23:55 UTC
+        let cron = time_to_cron("19:30", 2100).expect("Should parse");
+        assert_eq!(cron, "0 55 23 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_offset_from_midnight_peru() {
+        // 00:00 Peru - 5 minutes = 23:55 Peru (previous day) = 04:55 UTC
+        let cron = time_to_cron("00:00", 300).expect("Should parse");
+        assert_eq!(cron, "0 55 4 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_offset_one_second() {
+        // 08:00 Peru - 1 second = 07:59:59 Peru, cron uses minutes so 07:59 = 12:59 UTC
+        let cron = time_to_cron("08:00", 1).expect("Should parse");
+        assert_eq!(cron, "0 59 12 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_offset_59_seconds() {
+        // 08:00 Peru - 59 seconds = 07:59:01 Peru, cron uses minutes so 07:59 = 12:59 UTC
+        let cron = time_to_cron("08:00", 59).expect("Should parse");
+        assert_eq!(cron, "0 59 12 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_offset_exactly_at_hour() {
+        // 08:00 Peru - 120 seconds (2 min) = 07:58 Peru = 12:58 UTC
+        let cron = time_to_cron("08:00", 120).expect("Should parse");
+        assert_eq!(cron, "0 58 12 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_offset_multiple_hours() {
+        // 10:00 Peru - 2 hours (7200s) = 08:00 Peru = 13:00 UTC
+        let cron = time_to_cron("10:00", 7200).expect("Should parse");
+        assert_eq!(cron, "0 0 13 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_offset_crosses_peru_midnight_from_early_morning() {
+        // 01:00 Peru - 2 hours (7200s) = 23:00 Peru (previous day) = 04:00 UTC
+        let cron = time_to_cron("01:00", 7200).expect("Should parse");
+        assert_eq!(cron, "0 0 4 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_realistic_50_user_offset() {
+        // For 50 users: offset = 50 * 4 + 60 = 260 seconds (~4.3 minutes)
+        // 20:00 Peru - 260s = 19:55:40 Peru ≈ 19:55 Peru = 00:55 UTC
+        let offset = estimate_processing_seconds(50);
+        assert_eq!(offset, 260);
+        let cron = time_to_cron("20:00", offset).expect("Should parse");
+        assert_eq!(cron, "0 55 0 * * *");
+    }
+
+    #[test]
+    fn test_time_to_cron_realistic_100_user_offset() {
+        // For 100 users: offset = 100 * 4 + 60 = 460 seconds (~7.7 minutes)
+        // 08:00 Peru - 460s = 07:52:20 Peru ≈ 07:52 Peru = 12:52 UTC
+        let offset = estimate_processing_seconds(100);
+        assert_eq!(offset, 460);
+        let cron = time_to_cron("08:00", offset).expect("Should parse");
+        assert_eq!(cron, "0 52 12 * * *");
+    }
+
+    // ==================== wait_until_target_time Tests ====================
+
+    // Note: Testing wait_until_target_time is challenging because it involves
+    // real time operations. We test the parsing and error handling logic,
+    // and use a helper function to extract the validation logic for testing.
+
+    /// Helper to validate time string format (extracted for testing)
+    fn validate_time_format(time_str: &str) -> Result<(u32, u32)> {
+        let parts: Vec<&str> = time_str.split(':').collect();
+        if parts.len() != 2 {
+            anyhow::bail!("Invalid target time format: {}", time_str);
+        }
+
+        let hour: u32 = parts[0].parse()?;
+        let minute: u32 = parts[1].parse()?;
+
+        if hour > 23 {
+            anyhow::bail!("Invalid hour: {}", hour);
+        }
+        if minute > 59 {
+            anyhow::bail!("Invalid minute: {}", minute);
+        }
+
+        Ok((hour, minute))
+    }
+
+    #[test]
+    fn test_wait_time_format_valid_basic() {
+        let result = validate_time_format("08:00");
+        assert!(result.is_ok());
+        let (hour, minute) = result.unwrap();
+        assert_eq!(hour, 8);
+        assert_eq!(minute, 0);
+    }
+
+    #[test]
+    fn test_wait_time_format_valid_midnight() {
+        let result = validate_time_format("00:00");
+        assert!(result.is_ok());
+        let (hour, minute) = result.unwrap();
+        assert_eq!(hour, 0);
+        assert_eq!(minute, 0);
+    }
+
+    #[test]
+    fn test_wait_time_format_valid_end_of_day() {
+        let result = validate_time_format("23:59");
+        assert!(result.is_ok());
+        let (hour, minute) = result.unwrap();
+        assert_eq!(hour, 23);
+        assert_eq!(minute, 59);
+    }
+
+    #[test]
+    fn test_wait_time_format_valid_with_leading_zeros() {
+        let result = validate_time_format("01:05");
+        assert!(result.is_ok());
+        let (hour, minute) = result.unwrap();
+        assert_eq!(hour, 1);
+        assert_eq!(minute, 5);
+    }
+
+    #[test]
+    fn test_wait_time_format_valid_single_digit() {
+        let result = validate_time_format("8:5");
+        assert!(result.is_ok());
+        let (hour, minute) = result.unwrap();
+        assert_eq!(hour, 8);
+        assert_eq!(minute, 5);
+    }
+
+    #[test]
+    fn test_wait_time_format_invalid_no_colon() {
+        let result = validate_time_format("0800");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wait_time_format_invalid_too_many_colons() {
+        let result = validate_time_format("08:00:00");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wait_time_format_invalid_empty() {
+        let result = validate_time_format("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wait_time_format_invalid_only_colon() {
+        let result = validate_time_format(":");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wait_time_format_invalid_non_numeric_hour() {
+        let result = validate_time_format("ab:00");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wait_time_format_invalid_non_numeric_minute() {
+        let result = validate_time_format("08:cd");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wait_time_format_invalid_hour_too_large() {
+        let result = validate_time_format("24:00");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wait_time_format_invalid_minute_too_large() {
+        let result = validate_time_format("08:60");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wait_time_format_invalid_negative() {
+        let result = validate_time_format("-1:00");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wait_time_format_invalid_whitespace() {
+        let result = validate_time_format(" 08:00 ");
+        // This will fail because " 08" is not a valid number
+        assert!(result.is_err());
+    }
+
+    // ==================== Async wait_until_target_time Tests ====================
+
+    // These tests verify the actual wait_until_target_time function behavior
+
+    #[tokio::test]
+    async fn test_wait_until_target_time_invalid_format_no_colon() {
+        let result = wait_until_target_time("0800").await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid target time format"));
+    }
+
+    #[tokio::test]
+    async fn test_wait_until_target_time_invalid_format_too_many_parts() {
+        let result = wait_until_target_time("08:00:00").await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid target time format"));
+    }
+
+    #[tokio::test]
+    async fn test_wait_until_target_time_invalid_non_numeric() {
+        let result = wait_until_target_time("ab:cd").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_wait_until_target_time_empty_string() {
+        let result = wait_until_target_time("").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_wait_until_target_time_only_colon() {
+        let result = wait_until_target_time(":").await;
+        assert!(result.is_err());
+    }
+
+    // ==================== calculate_wait_duration Tests (Deterministic) ====================
+    // These tests use the pure calculate_wait_duration function with fixed times,
+    // making them deterministic regardless of when they run.
+
+    #[test]
+    fn test_calculate_wait_duration_past_time_returns_none() {
+        use chrono::TimeZone;
+
+        // Fixed time: 10:00 AM UTC (05:00 AM Peru time)
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 10, 0, 0).unwrap();
+
+        // Target: 04:00 AM Peru time (already passed by 1 hour)
+        let result = calculate_wait_duration("04:00", now_utc);
+
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap().is_none(),
+            "Past time should return None (no wait needed)"
+        );
+    }
+
+    #[test]
+    fn test_calculate_wait_duration_future_time_returns_duration() {
+        use chrono::TimeZone;
+
+        // Fixed time: 10:00 AM UTC (05:00 AM Peru time)
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 10, 0, 0).unwrap();
+
+        // Target: 08:00 AM Peru time (3 hours in the future)
+        let result = calculate_wait_duration("08:00", now_utc);
+
+        assert!(result.is_ok());
+        let duration = result.unwrap();
+        assert!(
+            duration.is_some(),
+            "Future time should return Some(duration)"
+        );
+
+        // 08:00 Peru = 13:00 UTC, so wait should be 3 hours
+        let wait_hours = duration.unwrap().num_hours();
+        assert_eq!(wait_hours, 3, "Should wait 3 hours");
+    }
+
+    #[test]
+    fn test_calculate_wait_duration_exact_time_returns_none() {
+        use chrono::TimeZone;
+
+        // Fixed time: 13:00 UTC (08:00 AM Peru time)
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 13, 0, 0).unwrap();
+
+        // Target: 08:00 AM Peru time (exactly now)
+        let result = calculate_wait_duration("08:00", now_utc);
+
+        assert!(result.is_ok());
+        // At exactly the target time, duration is 0, which should return None
+        assert!(
+            result.unwrap().is_none(),
+            "Exact time should return None (no wait needed)"
+        );
+    }
+
+    #[test]
+    fn test_calculate_wait_duration_late_night_peru() {
+        use chrono::TimeZone;
+
+        // Fixed time: 03:00 UTC (22:00 Peru time)
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 3, 0, 0).unwrap();
+
+        // Target: 23:00 Peru time (1 hour in the future)
+        let result = calculate_wait_duration("23:00", now_utc);
+
+        assert!(result.is_ok());
+        let duration = result.unwrap();
+        assert!(
+            duration.is_some(),
+            "Future time should return Some(duration)"
+        );
+        assert_eq!(duration.unwrap().num_hours(), 1, "Should wait 1 hour");
+    }
+
+    #[test]
+    fn test_calculate_wait_duration_with_minutes() {
+        use chrono::TimeZone;
+
+        // Fixed time: 12:00 UTC (07:00 AM Peru time)
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+
+        // Target: 08:30 AM Peru time (1 hour 30 minutes in the future)
+        let result = calculate_wait_duration("08:30", now_utc);
+
+        assert!(result.is_ok());
+        let duration = result.unwrap();
+        assert!(duration.is_some());
+        assert_eq!(
+            duration.unwrap().num_minutes(),
+            90,
+            "Should wait 90 minutes"
+        );
+    }
+
+    #[test]
+    fn test_calculate_wait_duration_invalid_format() {
+        use chrono::TimeZone;
+
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+
+        // Invalid formats should return errors
+        assert!(calculate_wait_duration("0800", now_utc).is_err());
+        assert!(calculate_wait_duration("08:00:00", now_utc).is_err());
+        assert!(calculate_wait_duration("", now_utc).is_err());
+        assert!(calculate_wait_duration(":", now_utc).is_err());
+        assert!(calculate_wait_duration("ab:cd", now_utc).is_err());
+    }
+
+    #[test]
+    fn test_calculate_wait_duration_invalid_hour() {
+        use chrono::TimeZone;
+
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+
+        // Hour 24 is invalid (and_hms_opt returns None)
+        let result = calculate_wait_duration("24:00", now_utc);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_calculate_wait_duration_invalid_minute() {
+        use chrono::TimeZone;
+
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+
+        // Minute 60 is invalid (and_hms_opt returns None)
+        let result = calculate_wait_duration("08:60", now_utc);
+        assert!(result.is_err());
+    }
+
+    // Async test to verify wait_until_target_time still works for immediate return
+    #[tokio::test]
+    async fn test_wait_until_target_time_integration() {
+        // This test uses a time that's definitely in the past: 00:00
+        // Since we're testing the integration, we just verify it doesn't hang
+        // by using a very short timeout expectation
+        use std::time::Instant;
+
+        let start = Instant::now();
+        // 00:00 Peru time is likely in the past for most test runs
+        // We're mainly testing that the function completes quickly when time has passed
+        let result = wait_until_target_time("00:00").await;
+
+        // Either it returns Ok (past time) or an error (edge case), but it should be fast
+        // If the time hasn't passed, this could wait, but that's acceptable behavior
+        if result.is_ok() {
+            assert!(
+                start.elapsed().as_secs() < 5,
+                "Should return quickly when time has passed"
+            );
+        }
+    }
+
+    // ==================== Integration Tests: Offset + Cron ====================
+
+    #[test]
+    fn test_estimate_and_cron_integration_8am() {
+        // Simulate realistic scenario: 25 users at 08:00 Peru time
+        let user_count = 25;
+        let offset = estimate_processing_seconds(user_count);
+        // 25 * 4 + 60 = 160 seconds (~2.7 minutes)
+        assert_eq!(offset, 160);
+
+        // 08:00 Peru - 160s = 07:57:20 Peru ≈ 07:57 Peru = 12:57 UTC
+        let cron = time_to_cron("08:00", offset).expect("Should parse");
+        assert_eq!(cron, "0 57 12 * * *");
+    }
+
+    #[test]
+    fn test_estimate_and_cron_integration_8pm() {
+        // Simulate realistic scenario: 25 users at 20:00 Peru time
+        let user_count = 25;
+        let offset = estimate_processing_seconds(user_count);
+        assert_eq!(offset, 160);
+
+        // 20:00 Peru - 160s = 19:57:20 Peru ≈ 19:57 Peru = 00:57 UTC
+        let cron = time_to_cron("20:00", offset).expect("Should parse");
+        assert_eq!(cron, "0 57 0 * * *");
+    }
+
+    #[test]
+    fn test_estimate_and_cron_edge_case_early_morning() {
+        // Edge case: scheduled at 00:30 Peru with 20 users
+        let user_count = 20;
+        let offset = estimate_processing_seconds(user_count);
+        // 20 * 4 + 60 = 140 seconds (~2.3 minutes)
+        assert_eq!(offset, 140);
+
+        // 00:30 Peru - 140s = 00:27:40 Peru ≈ 00:27 Peru = 05:27 UTC
+        let cron = time_to_cron("00:30", offset).expect("Should parse");
+        assert_eq!(cron, "0 27 5 * * *");
+    }
+
+    #[test]
+    fn test_estimate_and_cron_edge_case_crosses_peru_midnight() {
+        // Edge case: scheduled at 00:01 Peru with 10 users (should cross to previous day)
+        let user_count = 10;
+        let offset = estimate_processing_seconds(user_count);
+        // 10 * 4 + 60 = 100 seconds (~1.7 minutes)
+        assert_eq!(offset, 100);
+
+        // 00:01 Peru - 100s = 23:59:20 Peru (previous day) ≈ 23:59 Peru = 04:59 UTC
+        let cron = time_to_cron("00:01", offset).expect("Should parse");
+        assert_eq!(cron, "0 59 4 * * *");
+    }
+
+    // ==================== Boundary Value Tests ====================
+
+    #[test]
+    fn test_time_boundary_values() {
+        // Test all corner times
+        let boundary_times = vec![
+            ("00:00", 0, "0 0 5 * * *"),   // Midnight Peru = 05:00 UTC
+            ("00:59", 0, "0 59 5 * * *"),  // Just before 01:00 Peru
+            ("23:00", 0, "0 0 4 * * *"),   // 23:00 Peru = 04:00 UTC
+            ("23:59", 0, "0 59 4 * * *"),  // Last minute of day Peru
+            ("12:00", 0, "0 0 17 * * *"),  // Noon Peru = 17:00 UTC
+            ("18:59", 0, "0 59 23 * * *"), // Just before 19:00 Peru = 23:59 UTC
+            ("19:00", 0, "0 0 0 * * *"),   // 19:00 Peru = 00:00 UTC (boundary)
+            ("19:01", 0, "0 1 0 * * *"),   // Just after boundary
+        ];
+
+        for (peru_time, offset, expected_cron) in boundary_times {
+            let cron = time_to_cron(peru_time, offset).expect("Should parse");
+            assert_eq!(
+                cron, expected_cron,
+                "Peru {} with offset {} should produce {} but got {}",
+                peru_time, offset, expected_cron, cron
+            );
+        }
+    }
+
+    #[test]
+    fn test_offset_boundary_at_hour_change() {
+        // Test offset that lands exactly on minute boundaries
+        // 08:00 Peru - 60s = 07:59:00 Peru = 12:59 UTC
+        let cron = time_to_cron("08:00", 60).expect("Should parse");
+        assert_eq!(cron, "0 59 12 * * *");
+
+        // 08:01 Peru - 60s = 08:00:00 Peru = 13:00 UTC
+        let cron = time_to_cron("08:01", 60).expect("Should parse");
+        assert_eq!(cron, "0 0 13 * * *");
+    }
+
+    #[test]
+    fn test_zero_offset_produces_exact_time() {
+        // Verify that zero offset doesn't change the time
+        for hour in 0..24 {
+            for minute in [0, 15, 30, 45] {
+                let peru_time = format!("{:02}:{:02}", hour, minute);
+                let cron = time_to_cron(&peru_time, 0).expect("Should parse");
+
+                let expected_utc_hour = (hour + 5) % 24;
+                let expected_cron = format!("0 {} {} * * *", minute, expected_utc_hour);
+
+                assert_eq!(
+                    cron, expected_cron,
+                    "Peru {} should produce {} but got {}",
+                    peru_time, expected_cron, cron
+                );
+            }
+        }
     }
 }
