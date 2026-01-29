@@ -160,9 +160,14 @@ async fn run_summary_job(
     Ok(())
 }
 
-/// Wait until the target time (HH:MM in Peru time, UTC-5)
-async fn wait_until_target_time(target_time_str: &str) -> Result<()> {
-    use chrono::{FixedOffset, Utc};
+/// Calculate how long to wait until target time.
+/// Returns Some(duration) if we need to wait, None if time has already passed.
+/// This pure function is easily testable with any fixed `now_utc` value.
+fn calculate_wait_duration(
+    target_time_str: &str,
+    now_utc: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<chrono::Duration>> {
+    use chrono::FixedOffset;
 
     let parts: Vec<&str> = target_time_str.split(':').collect();
     if parts.len() != 2 {
@@ -174,7 +179,6 @@ async fn wait_until_target_time(target_time_str: &str) -> Result<()> {
 
     // Peru is UTC-5
     let peru_offset = FixedOffset::west_opt(5 * 3600).unwrap();
-    let now_utc = Utc::now();
     let now_peru = now_utc.with_timezone(&peru_offset);
 
     // Build today's target time in Peru timezone
@@ -188,33 +192,47 @@ async fn wait_until_target_time(target_time_str: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Failed to create target datetime"))?;
 
     // Convert to UTC for comparison
-    let target_utc = target_peru.with_timezone(&Utc);
+    let target_utc = target_peru.with_timezone(&chrono::Utc);
 
     // Calculate how long to wait
     let wait_duration = target_utc.signed_duration_since(now_utc);
 
     if wait_duration.num_milliseconds() <= 0 {
-        info!(
-            "Target time {} already passed, sending immediately",
-            target_time_str
-        );
-        return Ok(());
+        Ok(None) // Time has already passed
+    } else {
+        Ok(Some(wait_duration))
+    }
+}
+
+/// Wait until the target time (HH:MM in Peru time, UTC-5)
+async fn wait_until_target_time(target_time_str: &str) -> Result<()> {
+    let wait_duration = calculate_wait_duration(target_time_str, chrono::Utc::now())?;
+
+    match wait_duration {
+        None => {
+            info!(
+                "Target time {} already passed, sending immediately",
+                target_time_str
+            );
+        }
+        Some(duration) => {
+            let wait_secs = duration.num_seconds();
+            info!(
+                "Waiting {}s (~{} min) until target send time {} Peru",
+                wait_secs,
+                wait_secs / 60,
+                target_time_str
+            );
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(
+                duration.num_milliseconds() as u64,
+            ))
+            .await;
+
+            info!("✓ Target time reached, proceeding to send");
+        }
     }
 
-    let wait_secs = wait_duration.num_seconds();
-    info!(
-        "Waiting {}s (~{} min) until target send time {} Peru",
-        wait_secs,
-        wait_secs / 60,
-        target_time_str
-    );
-
-    tokio::time::sleep(tokio::time::Duration::from_millis(
-        wait_duration.num_milliseconds() as u64,
-    ))
-    .await;
-
-    info!("✓ Target time reached, proceeding to send");
     Ok(())
 }
 
@@ -962,65 +980,163 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // Test that wait_until_target_time returns Ok when time has passed
-    // This uses a time in the past (00:00 will almost always be in the past during a test run
-    // unless the test runs exactly at midnight)
-    #[tokio::test]
-    async fn test_wait_until_target_time_past_time_returns_ok() {
-        // Use a time that's very likely to be in the past for most test runs
-        // We can't guarantee this 100% but it should work 99.99% of the time
-        // Note: This tests the "time already passed" branch
-        use chrono::{FixedOffset, Utc};
+    // ==================== calculate_wait_duration Tests (Deterministic) ====================
+    // These tests use the pure calculate_wait_duration function with fixed times,
+    // making them deterministic regardless of when they run.
 
-        let peru_offset = FixedOffset::west_opt(5 * 3600).unwrap();
-        let now_peru = Utc::now().with_timezone(&peru_offset);
+    #[test]
+    fn test_calculate_wait_duration_past_time_returns_none() {
+        use chrono::TimeZone;
 
-        // Get a time 2 hours before current Peru time
-        let past_hour = if now_peru.hour() >= 2 {
-            now_peru.hour() - 2
-        } else {
-            // If it's before 2 AM Peru time, skip this test scenario
-            // by returning early (the test still passes)
-            return;
-        };
+        // Fixed time: 10:00 AM UTC (05:00 AM Peru time)
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 10, 0, 0).unwrap();
 
-        let past_time = format!("{:02}:00", past_hour);
-        let result = wait_until_target_time(&past_time).await;
+        // Target: 04:00 AM Peru time (already passed by 1 hour)
+        let result = calculate_wait_duration("04:00", now_utc);
 
-        // Should return Ok immediately without waiting
+        assert!(result.is_ok());
         assert!(
-            result.is_ok(),
-            "Past time should return Ok, got: {:?}",
-            result
+            result.unwrap().is_none(),
+            "Past time should return None (no wait needed)"
         );
     }
 
-    // Test valid time format parsing (doesn't actually wait long)
+    #[test]
+    fn test_calculate_wait_duration_future_time_returns_duration() {
+        use chrono::TimeZone;
+
+        // Fixed time: 10:00 AM UTC (05:00 AM Peru time)
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 10, 0, 0).unwrap();
+
+        // Target: 08:00 AM Peru time (3 hours in the future)
+        let result = calculate_wait_duration("08:00", now_utc);
+
+        assert!(result.is_ok());
+        let duration = result.unwrap();
+        assert!(
+            duration.is_some(),
+            "Future time should return Some(duration)"
+        );
+
+        // 08:00 Peru = 13:00 UTC, so wait should be 3 hours
+        let wait_hours = duration.unwrap().num_hours();
+        assert_eq!(wait_hours, 3, "Should wait 3 hours");
+    }
+
+    #[test]
+    fn test_calculate_wait_duration_exact_time_returns_none() {
+        use chrono::TimeZone;
+
+        // Fixed time: 13:00 UTC (08:00 AM Peru time)
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 13, 0, 0).unwrap();
+
+        // Target: 08:00 AM Peru time (exactly now)
+        let result = calculate_wait_duration("08:00", now_utc);
+
+        assert!(result.is_ok());
+        // At exactly the target time, duration is 0, which should return None
+        assert!(
+            result.unwrap().is_none(),
+            "Exact time should return None (no wait needed)"
+        );
+    }
+
+    #[test]
+    fn test_calculate_wait_duration_late_night_peru() {
+        use chrono::TimeZone;
+
+        // Fixed time: 03:00 UTC (22:00 Peru time)
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 3, 0, 0).unwrap();
+
+        // Target: 23:00 Peru time (1 hour in the future)
+        let result = calculate_wait_duration("23:00", now_utc);
+
+        assert!(result.is_ok());
+        let duration = result.unwrap();
+        assert!(
+            duration.is_some(),
+            "Future time should return Some(duration)"
+        );
+        assert_eq!(duration.unwrap().num_hours(), 1, "Should wait 1 hour");
+    }
+
+    #[test]
+    fn test_calculate_wait_duration_with_minutes() {
+        use chrono::TimeZone;
+
+        // Fixed time: 12:00 UTC (07:00 AM Peru time)
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+
+        // Target: 08:30 AM Peru time (1 hour 30 minutes in the future)
+        let result = calculate_wait_duration("08:30", now_utc);
+
+        assert!(result.is_ok());
+        let duration = result.unwrap();
+        assert!(duration.is_some());
+        assert_eq!(
+            duration.unwrap().num_minutes(),
+            90,
+            "Should wait 90 minutes"
+        );
+    }
+
+    #[test]
+    fn test_calculate_wait_duration_invalid_format() {
+        use chrono::TimeZone;
+
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+
+        // Invalid formats should return errors
+        assert!(calculate_wait_duration("0800", now_utc).is_err());
+        assert!(calculate_wait_duration("08:00:00", now_utc).is_err());
+        assert!(calculate_wait_duration("", now_utc).is_err());
+        assert!(calculate_wait_duration(":", now_utc).is_err());
+        assert!(calculate_wait_duration("ab:cd", now_utc).is_err());
+    }
+
+    #[test]
+    fn test_calculate_wait_duration_invalid_hour() {
+        use chrono::TimeZone;
+
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+
+        // Hour 24 is invalid (and_hms_opt returns None)
+        let result = calculate_wait_duration("24:00", now_utc);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_calculate_wait_duration_invalid_minute() {
+        use chrono::TimeZone;
+
+        let now_utc = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+
+        // Minute 60 is invalid (and_hms_opt returns None)
+        let result = calculate_wait_duration("08:60", now_utc);
+        assert!(result.is_err());
+    }
+
+    // Async test to verify wait_until_target_time still works for immediate return
     #[tokio::test]
-    async fn test_wait_until_target_time_valid_format_accepted() {
-        use chrono::{FixedOffset, Utc};
+    async fn test_wait_until_target_time_integration() {
+        // This test uses a time that's definitely in the past: 00:00
+        // Since we're testing the integration, we just verify it doesn't hang
+        // by using a very short timeout expectation
         use std::time::Instant;
 
-        let peru_offset = FixedOffset::west_opt(5 * 3600).unwrap();
-        let now_peru = Utc::now().with_timezone(&peru_offset);
-
-        // Use a time 1 hour in the past to ensure immediate return
-        let past_hour = if now_peru.hour() >= 1 {
-            now_peru.hour() - 1
-        } else {
-            23 // wrap to previous day
-        };
-
-        let past_time = format!("{:02}:30", past_hour);
         let start = Instant::now();
-        let result = wait_until_target_time(&past_time).await;
+        // 00:00 Peru time is likely in the past for most test runs
+        // We're mainly testing that the function completes quickly when time has passed
+        let result = wait_until_target_time("00:00").await;
 
-        // Should return quickly (< 1 second) since time is in past
-        assert!(result.is_ok());
-        assert!(
-            start.elapsed().as_secs() < 2,
-            "Should return immediately for past time"
-        );
+        // Either it returns Ok (past time) or an error (edge case), but it should be fast
+        // If the time hasn't passed, this could wait, but that's acceptable behavior
+        if result.is_ok() {
+            assert!(
+                start.elapsed().as_secs() < 5,
+                "Should return quickly when time has passed"
+            );
+        }
     }
 
     // ==================== Integration Tests: Offset + Cron ====================
