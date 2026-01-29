@@ -177,7 +177,8 @@ async fn trigger_handler(
             (StatusCode::OK, "Summary sent").into_response()
         }
         Err(e) => {
-            warn!("Manual trigger failed: {}", e);
+            warn!("Manual trigger failed: {:?}", e);
+            telegram::notify_admin_error(&state.config, "Manual trigger (/trigger)", &e).await;
             (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e)).into_response()
         }
     }
