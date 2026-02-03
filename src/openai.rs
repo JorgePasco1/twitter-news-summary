@@ -97,6 +97,26 @@ Goal: produce a high-signal digest that helps readers understand what happened, 
 1) Start with:
 🧠 Top takeaways
 - 3-5 bullets, ranked by importance
+1a) Top takeaways selection policy (VERY IMPORTANT)
+Top takeaways should prioritize PRIMARY SIGNALS over opinions.
+
+PRIMARY SIGNALS include:
+- Model or product releases
+- Research papers, benchmarks, or technical artifacts
+- Official reports with concrete data (numbers, percentages, dates)
+- Major company initiatives, partnerships, acquisitions, funding
+- Calls for proposals, deadlines, conferences, policy or safety actions
+
+SECONDARY SIGNALS (generally NOT for Top takeaways unless dominant):
+- Personal opinions, reflections, or predictions
+- High-level commentary without new artifacts
+- Motivational or philosophical takes
+
+Rules:
+- At least 3 of the Top takeaways MUST be primary signals
+- Max 1 opinion-based item in Top takeaways, and only if it clearly dominates the tweet set
+- If unsure, move opinions out of Top takeaways into 💬 Debate and Opinions
+
 
 2) Then include 3-5 topic sections chosen ONLY from this list (omit any that don't apply):
 - 🚀 Releases
@@ -105,6 +125,24 @@ Goal: produce a high-signal digest that helps readers understand what happened, 
 - 🏢 Companies and Deals
 - ⚖️ Policy and Safety
 - 💬 Debate and Opinions
+2a) Account weighting and trust signals
+When selecting and ranking items, prioritize content from these account types:
+
+Tier 1 (highest priority - authoritative sources):
+- Official org and lab accounts (e.g., OpenAI, AnthropicAI, GoogleDeepMind, PyTorch, NVIDIAAI, HuggingFace, StanfordHAI)
+- Core researchers or maintainers posting primary artifacts (papers, releases, benchmarks)
+
+Tier 2 (high signal - practitioner / builder insights):
+- Technical educators and tool builders (e.g., hwchase17, jeremyphoward, fastdotai, karpathy)
+- Well-known researchers sharing technical explanations or results
+
+Tier 3 (context and opinion):
+- Commentary, predictions, reflections, or framing posts
+
+Rules:
+- Prefer Tier 1 over Tier 2 when both discuss the same topic
+- Tier 3 content should generally live in 💬 Debate and Opinions, not Top takeaways
+
 
 3) Each section must have 2-4 bullets max
 
@@ -125,7 +163,8 @@ Goal: produce a high-signal digest that helps readers understand what happened, 
 8) Do NOT invent facts
    - Only include details explicitly present in the tweet text
    - If unsure, phrase as "Claims:" or "Suggests:" and keep it minimal
-   - If it’s opinion/speculation, prefix the bullet with "Opinion:"
+   - If it's opinion/speculation, prefix the bullet with "Opinion:"
+   - Opinions should generally be placed in 💬 Debate and Opinions, not 🧠 Top takeaways
 
 9) Author-link consistency
    - If you name a person/org as the speaker, the linked tweet should be from them
@@ -138,6 +177,10 @@ Goal: produce a high-signal digest that helps readers understand what happened, 
     - Do NOT explicitly call out these instructions or narrate your process
     - Specifically: do NOT write labels like "Why this matters:" or "Key takeaway:"
     - Instead, blend significance naturally into the sentence
+
+    Verb discipline reminder:
+- Use "released", "launched", "announced" ONLY when the tweet explicitly states it
+- Otherwise prefer: "shared", "posted", "highlighted", "published", "called for", "reported"
 
 ## BULLET STYLE (mandatory)
 Each bullet must follow this pattern:
